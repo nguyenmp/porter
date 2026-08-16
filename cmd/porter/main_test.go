@@ -12,7 +12,7 @@ import (
 	"porter/internal/config"
 )
 
-func TestRunStreamsRawSSE(t *testing.T) {
+func TestRunStreamsJSONL(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/chat/completions" {
 			t.Errorf("unexpected path %s", r.URL.Path)
@@ -22,7 +22,12 @@ func TestRunStreamsRawSSE(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprint(w, "data: {\"first\":true}\n\ndata: {\"second\":true}\n\ndata: [DONE]\n")
+		fmt.Fprint(w,
+			`data: {"choices":[{"delta":{"content":"Hel"},"finish_reason":null}]}`+"\n\n"+
+				`data: {"choices":[{"delta":{"content":"lo"},"finish_reason":null}]}`+"\n\n"+
+				`data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":20}}`+"\n\n"+
+				`data: [DONE]`+"\n",
+		)
 	}))
 	defer server.Close()
 
@@ -38,9 +43,21 @@ func TestRunStreamsRawSSE(t *testing.T) {
 	}
 
 	got := out.String()
-	for _, want := range []string{`data: {"first":true}`, `data: {"second":true}`, `data: [DONE]`} {
+	for _, want := range []string{
+		`"type":"message_delta"`,
+		`"delta":"Hel"`,
+		`"delta":"lo"`,
+		`"type":"message"`,
+		`"content":"Hello"`,
+		`"type":"usage"`,
+		`"input_tokens":10`,
+		`"output_tokens":20`,
+	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("output missing %q; got:\n%s", want, got)
 		}
+	}
+	if strings.Contains(got, "data:") {
+		t.Errorf("raw SSE leaked through; got:\n%s", got)
 	}
 }

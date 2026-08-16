@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 
+	"porter/internal/codec"
 	"porter/internal/config"
 	"porter/internal/llm"
 )
@@ -42,8 +43,9 @@ func runCLI(args []string, stdout io.Writer, stdin io.Reader) error {
 	return run(context.Background(), cfg, prompt, stdout)
 }
 
-// run resolves a prompt against cfg and streams the raw SSE response lines to
-// out. It is split from runCLI so it can be tested with a fixed config.
+// run resolves a prompt against cfg and streams the response to out as
+// structured JSONL events. It is split from runCLI so it can be tested with a
+// fixed config.
 func run(ctx context.Context, cfg config.Config, prompt string, out io.Writer) error {
 	if err := cfg.Validate(); err != nil {
 		return err
@@ -55,8 +57,15 @@ func run(ctx context.Context, cfg config.Config, prompt string, out io.Writer) e
 	}
 	defer body.Close()
 
+	dec := codec.NewDecoder(codec.NewEncoder(out))
 	for line := range llm.SSELines(body) {
-		fmt.Fprintln(out, line)
+		done, err := dec.Process(line)
+		if err != nil {
+			return err
+		}
+		if done {
+			break
+		}
 	}
 	return nil
 }
