@@ -1,0 +1,10 @@
+# Local secrets / config (gitignored)
+.env
+
+# Go
+/porter
+*.test
+*.out
+
+# Editors / OS
+.DS_Store

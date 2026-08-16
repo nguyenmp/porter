@@ -47,6 +47,17 @@ A tree of turns. Each turn has a single parent and can fork into many children.
 - **git worktree is slow** on my giant repo (GBs). Want a hot-cache of worktrees, a faster approach like a filesystem clone, or an alternative to worktrees.
 - Tokens/sec (encode and decode), tool run time, output size, time to first/last token, time spent connecting
 
+## Building & running
+
+We build and run through Docker so the pinned Go version is used for portable development and runtime
+
+1. `cp .env.example .env` and set the env vars.
+2. `make test` / `make vet` to verify
+3. `make build` — builds the `porter:dev` image
+4. `make run PROMPT="say hi"` — runs the built image in CLI mode
+
+Note: `make run` runs the prebuilt `porter:dev` image.  To run an updated image, you need to `make build` first.  `make test` and `make vet` always mounts the local sourcecode, so it does not require rebuilding.
+
 ## Why I'm building this
 
 I'm tired of my existing agents. I juggle three styles:
