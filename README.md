@@ -86,13 +86,25 @@ General pain points:
 Build order:
 
 1. One-shot CLI (JSONL output)
-2. Forks (tree model)
-3. TTY REPL
-4. Tool-call shell (file edits + network calls)
-5. SQLite-backed history
-6. Web UI (HTMX)
-7. Handoff / async execution
-8. Dynamic MCP
+2. TTY REPL
+3. Tool-call shell (file edits + network calls)
+4. SQLite-backed history
+5. Web UI (HTMX)
+6. Handoff / async execution
+7. Metrics & performance (tokens/sec, tool timing, worktree cache)
+8. Token cost management (`tool_output` trimming, `read_output`, budget before send)
+9. Dynamic MCP
+
+**As-needed (ad hoc, when the need arises):**
+
+- Forks / resume
+- Memory
+- TODO
+- Skills
+- Auth
+- Share / link (conversation, fork, turn)
+- Chat with a subagent after it finishes
+- Subagents
 
 **Non-goals:** IDE integration, mobile apps, native desktop apps, advanced TUI, plugins.
 
