@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"porter/internal/config"
 )
@@ -29,6 +30,10 @@ type Client struct {
 	cfg    config.Config
 	http   *http.Client
 	closer io.Closer
+
+	// Debug, when non-nil, receives progress lines (connect, upload, first
+	// byte) on a writer such as stderr. Leave nil to keep output quiet.
+	Debug io.Writer
 }
 
 // NewClient returns a Client for the given configuration.
@@ -37,6 +42,14 @@ func NewClient(cfg config.Config, hc *http.Client) *Client {
 		hc = http.DefaultClient
 	}
 	return &Client{cfg: cfg, http: hc}
+}
+
+// debugf writes a formatted progress line to Debug, if set.
+func (c *Client) debugf(format string, args ...any) {
+	if c.Debug == nil {
+		return
+	}
+	fmt.Fprintf(c.Debug, "porter: "+format+"\n", args...)
 }
 
 // After returns the underlying HTTP connection for closing after streaming.
@@ -58,6 +71,8 @@ func (c *Client) Stream(ctx context.Context, prompt string) (io.ReadCloser, erro
 	}
 
 	endpoint := strings.TrimSuffix(c.cfg.BaseURL, "/") + "/chat/completions"
+	c.debugf("uploading %d byte prompt to %s (model=%s)", len(body), endpoint, c.cfg.Model)
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("build request: %w", err)
@@ -67,10 +82,14 @@ func (c *Client) Stream(ctx context.Context, prompt string) (io.ReadCloser, erro
 		req.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
 	}
 
+	c.debugf("connecting to %s...", endpoint)
+	start := time.Now()
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", endpoint, err)
 	}
+	c.debugf("connected in %s: status=%s content-type=%s", time.Since(start).Round(time.Millisecond), resp.Status, resp.Header.Get("Content-Type"))
+
 	if resp.StatusCode != http.StatusOK {
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		resp.Body.Close()

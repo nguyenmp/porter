@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"time"
 
 	"porter/internal/codec"
 	"porter/internal/config"
@@ -45,20 +46,28 @@ func runCLI(args []string, stdout io.Writer, stdin io.Reader) error {
 
 // run resolves a prompt against cfg and streams the response to out as
 // structured JSONL events. It is split from runCLI so it can be tested with a
-// fixed config.
+// fixed config. Connect/upload/timing progress is written to stderr.
 func run(ctx context.Context, cfg config.Config, prompt string, out io.Writer) error {
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
+
 	client := llm.NewClient(cfg, nil)
+	client.Debug = os.Stderr
 	body, err := client.Stream(ctx, prompt)
 	if err != nil {
 		return err
 	}
 	defer body.Close()
 
+	start := time.Now()
+	first := true
 	dec := codec.NewDecoder(codec.NewEncoder(out))
 	for line := range llm.SSELines(body) {
+		if first {
+			first = false
+			fmt.Fprintf(os.Stderr, "porter: first byte in %s\n", time.Since(start).Round(time.Millisecond))
+		}
 		done, err := dec.Process(line)
 		if err != nil {
 			return err
@@ -67,6 +76,7 @@ func run(ctx context.Context, cfg config.Config, prompt string, out io.Writer) e
 			break
 		}
 	}
+	fmt.Fprintf(os.Stderr, "porter: stream complete in %s\n", time.Since(start).Round(time.Millisecond))
 	return nil
 }
 
