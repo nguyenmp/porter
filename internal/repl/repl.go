@@ -21,11 +21,25 @@ import (
 
 // Run drives a linear, multi-turn conversation. in supplies the user's lines,
 // out receives the human-readable view (prompt + streamed reply), and jsonl
-// receives the structured event stream (normally stderr).
+// receives the structured event stream (normally stderr). When cfg.LogFile is
+// set, the event stream and progress lines go to that file instead, so an
+// interactive container stays quiet.
 func Run(ctx context.Context, cfg config.Config, in io.Reader, out, jsonl io.Writer) error {
+	if cfg.LogFile != "" {
+		f, err := os.OpenFile(cfg.LogFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+		if err != nil {
+			return fmt.Errorf("open log file: %w", err)
+		}
+		defer f.Close()
+		jsonl = f
+	}
+
 	r := bufio.NewReader(in)
 	client := llm.NewClient(cfg, nil)
 	client.Debug = os.Stderr
+	if cfg.LogFile != "" {
+		client.Debug = jsonl
+	}
 	js := tools.NewDispatcher()
 
 	var history []llm.ChatMessage

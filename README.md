@@ -58,6 +58,10 @@ We build and run through Docker so the pinned Go version is used for portable de
 
 Note: `make run` runs the prebuilt `porter:dev` image.  To run an updated image, you need to `make build` first.  `make test` and `make vet` always mounts the local sourcecode, so it does not require rebuilding.
 
+### Quiet REPL logs
+
+In the REPL the human-readable conversation goes to stdout while the structured JSONL event stream (plus progress lines) goes to stderr. When run interactively through a container, both land on the same terminal and the JSONL can get noisy. Set `PORTER_LOG=/path/to/porter.log` in `.env` to redirect that stream to a file instead — the REPL then only prints the conversation. When running via `make shell` (which mounts the repo at `/app`), a relative path like `porter.log` is written into the repo and gitignored.
+
 ## Why I'm building this
 
 I'm tired of my existing agents. I juggle three styles:

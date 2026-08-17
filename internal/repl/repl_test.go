@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -112,5 +114,32 @@ func TestRunToolCallAcrossTurns(t *testing.T) {
 	}
 	if !strings.Contains(jsonl.String(), `"type":"tool_result"`) {
 		t.Errorf("jsonl missing tool_result; got:\n%s", jsonl.String())
+	}
+}
+
+func TestRunLogFileKeepsTerminalQuiet(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprintf(w, `data: {"choices":[{"delta":{"content":"hi"},"finish_reason":"stop"}]}`+"\n\n"+`data: [DONE]`+"\n")
+	}))
+	defer server.Close()
+
+	logPath := filepath.Join(t.TempDir(), "porter.log")
+	cfg := config.Config{BaseURL: server.URL + "/v1", Model: "test-model", APIKey: "k", LogFile: logPath}
+
+	var out, jsonl bytes.Buffer
+	if err := Run(context.Background(), cfg, strings.NewReader("hello\nquit\n"), &out, &jsonl); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if jsonl.Len() != 0 {
+		t.Errorf("jsonl writer should be unused when LogFile set; got:\n%s", jsonl.String())
+	}
+	raw, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read log file: %v", err)
+	}
+	if !strings.Contains(string(raw), `"type":"message_delta"`) {
+		t.Errorf("log file missing events; got:\n%s", raw)
 	}
 }

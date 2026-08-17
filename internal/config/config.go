@@ -15,6 +15,10 @@ type Config struct {
 	BaseURL string
 	Model   string
 	APIKey  string
+	// LogFile, when non-empty, redirects the structured event stream and
+	// progress lines from stderr to this file (e.g. to keep the REPL terminal
+	// quiet when run inside a container).
+	LogFile string
 }
 
 // Env reads configuration from environment variables without validating
@@ -24,6 +28,7 @@ func Env() Config {
 		BaseURL: getenv("PORTER_BASE_URL", DefaultBaseURL),
 		Model:   getenv("PORTER_MODEL", DefaultModel),
 		APIKey:  os.Getenv("PORTER_API_KEY"),
+		LogFile: os.Getenv("PORTER_LOG"),
 	}
 }
 

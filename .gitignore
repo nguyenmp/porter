@@ -1,6 +1,9 @@
 # Local secrets / config (gitignored)
 .env
 
+# REPL log file (see PORTER_LOG)
+porter.log
+
 # Go
 /porter
 *.test
