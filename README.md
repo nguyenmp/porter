@@ -7,7 +7,7 @@ I want an agent that is:
 - **Simple:** single-user, minimal dependencies, fast, minimal configuration, sane defaults, no LLM jargon.
 - **Everywhere:** chat from any device, and run code on any backend. Start a task on my laptop, then walk away — keep sending messages from my phone, and hand execution to a server or the cloud when the laptop is off. This is the killer feature: fluid handoff between local, remote, and cloud execution.
 - **Transparent:** you see what an agent did and what the model actually received (memories, notes, todo), with realtime feedback on what's being sent or waited on. Nothing is magic — the full toolset is visible, nothing is snuck into context, and it never waits on tools you didn't ask for. You can even keep chatting with a subagent after it finishes.
-- **Efficient:** runs quickly and cuts token cost in deliberate ways, then shows you the cost up front.
+- **Efficient:** runs quickly and cuts token cost in deliberate ways, then shows you the cost up front, can be run on a tiny VPS
 
 Above all, it works with my use cases: work and personal, coding and research.
 
@@ -46,6 +46,7 @@ A tree of turns. Each turn has a single parent and can fork into many children.
 
 - **git worktree is slow** on my giant repo (GBs). Want a hot-cache of worktrees, a faster approach like a filesystem clone, or an alternative to worktrees.
 - Tokens/sec (encode and decode), tool run time, output size, time to first/last token, time spent connecting
+- Should not use a boatload of RAM or CPU -- I'm offloading so much work to GPUs in data centers
 
 ## Building & running
 
@@ -85,6 +86,8 @@ General pain points:
 - Claude's local skills aren't synced to the cloud automatically
 - Open WebUI frequently hard-refreshes to an empty chat when switching between chats
 - I'm happy to use Claude because my work pays for it, but I would never personally
+- Open WebUI idles at 512MB RAM, using 25% of my VPS which is already beefy for a hobby.  They recommend 1-4GB RAM, wtf.  It even uses 5% of my CPU while idle, constantly.
+- [Open WebUI docs are pure AI slop](https://docs.openwebui.com/troubleshooting/performance/#4-sqlite-memory-footprint-on-constrained-containers).  Also a lot of these configurations should be automatic, the app can self-detect the conditions that require these settings to be changed.
 
 ## Technical decisions
 
