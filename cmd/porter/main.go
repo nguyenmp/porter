@@ -10,6 +10,7 @@ import (
 	"porter/internal/codec"
 	"porter/internal/config"
 	"porter/internal/llm"
+	"porter/internal/repl"
 )
 
 func main() {
@@ -19,10 +20,14 @@ func main() {
 	}
 }
 
-// runCLI wires up a single prompt against env-var configuration and streams the
-// raw SSE response lines to out. Prompts come from the first argument or stdin.
+// runCLI dispatches to the interactive REPL (when stdin is a TTY and no prompt
+// is given) or the one-shot JSONL path.
 func runCLI(args []string, stdout io.Writer, stdin io.Reader) error {
 	cfg := config.Env()
+
+	if len(args) == 0 && isTerminal(stdin) {
+		return repl.Run(context.Background(), cfg, stdin, stdout, os.Stderr)
+	}
 
 	var prompt string
 	switch {
@@ -54,7 +59,7 @@ func run(ctx context.Context, cfg config.Config, prompt string, out io.Writer) e
 
 	client := llm.NewClient(cfg, nil)
 	client.Debug = os.Stderr
-	body, err := client.Stream(ctx, prompt)
+	body, err := client.Stream(ctx, []llm.ChatMessage{{Role: "user", Content: prompt}})
 	if err != nil {
 		return err
 	}

@@ -16,11 +16,12 @@ import (
 // chatRequest is the subset of the Chat Completions request body we send.
 type chatRequest struct {
 	Model    string        `json:"model"`
-	Messages []chatMessage `json:"messages"`
+	Messages []ChatMessage `json:"messages"`
 	Stream   bool          `json:"stream"`
 }
 
-type chatMessage struct {
+// ChatMessage is a single conversation turn sent to the model.
+type ChatMessage struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
 }
@@ -57,13 +58,13 @@ func (c *Client) After() io.Closer {
 	return c.closer
 }
 
-// Stream starts a streaming Chat Completions request for the given user
-// prompt and returns the raw SSE response body. Strip the base URL's trailing
-// slash so the endpoint join is predictable.
-func (c *Client) Stream(ctx context.Context, prompt string) (io.ReadCloser, error) {
+// Stream starts a streaming Chat Completions request for the given messages
+// and returns the raw SSE response body. Strip the base URL's trailing slash
+// so the endpoint join is predictable.
+func (c *Client) Stream(ctx context.Context, messages []ChatMessage) (io.ReadCloser, error) {
 	body, err := json.Marshal(chatRequest{
 		Model:    c.cfg.Model,
-		Messages: []chatMessage{{Role: "user", Content: prompt}},
+		Messages: messages,
 		Stream:   true,
 	})
 	if err != nil {

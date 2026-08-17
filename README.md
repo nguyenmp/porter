@@ -97,7 +97,7 @@ General pain points:
 Build order:
 
 - [x] 1. One-shot CLI (JSONL output)
-- [ ] 2. TTY REPL
+- [x] 2. TTY REPL
 - [ ] 3. Tool-call shell (file edits + network calls)
 - [ ] 4. SQLite-backed history
 - [ ] 5. Web UI (HTMX)

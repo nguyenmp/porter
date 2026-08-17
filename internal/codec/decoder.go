@@ -42,11 +42,29 @@ type Decoder struct {
 	reasoning strings.Builder
 	inTokens  int
 	outTokens int
+
+	// OnEvent, when set, is invoked for every Event the decoder produces, in
+	// addition to writing it to enc. It lets consumers render or react to the
+	// stream without re-parsing.
+	OnEvent func(Event)
 }
 
 // NewDecoder builds a Decoder that emits events onto enc.
 func NewDecoder(enc *Encoder) *Decoder {
 	return &Decoder{enc: enc}
+}
+
+// emit writes an event to enc (if any) and notifies OnEvent (if set).
+func (d *Decoder) emit(ev Event) error {
+	if d.enc != nil {
+		if err := d.enc.Write(ev); err != nil {
+			return err
+		}
+	}
+	if d.OnEvent != nil {
+		d.OnEvent(ev)
+	}
+	return nil
 }
 
 // Process consumes one raw SSE `data:` line (with the marker still attached, as
@@ -76,13 +94,13 @@ func (d *Decoder) Process(line string) (bool, error) {
 	for _, choice := range c.Choices {
 		if c := choice.Delta.Content; c != "" {
 			d.full.WriteString(c)
-			if err := d.enc.Write(Event{Type: TypeMessageDelta, Role: "assistant", Delta: c}); err != nil {
+			if err := d.emit(Event{Type: TypeMessageDelta, Role: "assistant", Delta: c}); err != nil {
 				return false, err
 			}
 		}
 		if r := reasoningOf(choice.Delta); r != "" {
 			d.reasoning.WriteString(r)
-			if err := d.enc.Write(Event{Type: TypeReasoningDelta, Reasoning: r}); err != nil {
+			if err := d.emit(Event{Type: TypeReasoningDelta, Reasoning: r}); err != nil {
 				return false, err
 			}
 		}
@@ -99,9 +117,9 @@ func (d *Decoder) Process(line string) (bool, error) {
 
 // emitFinal writes the accumulated message and usage events and reports done.
 func (d *Decoder) emitFinal() bool {
-	_ = d.enc.Write(Event{Type: TypeMessage, Role: "assistant", Content: d.full.String(), Reasoning: d.reasoning.String()})
+	_ = d.emit(Event{Type: TypeMessage, Role: "assistant", Content: d.full.String(), Reasoning: d.reasoning.String()})
 	if d.inTokens > 0 || d.outTokens > 0 {
-		_ = d.enc.Write(Event{Type: TypeUsage, InputTokens: d.inTokens, OutputTokens: d.outTokens})
+		_ = d.emit(Event{Type: TypeUsage, InputTokens: d.inTokens, OutputTokens: d.outTokens})
 	}
 	return true
 }
