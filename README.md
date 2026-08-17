@@ -96,15 +96,15 @@ General pain points:
 
 Build order:
 
-1. One-shot CLI (JSONL output)
-2. TTY REPL
-3. Tool-call shell (file edits + network calls)
-4. SQLite-backed history
-5. Web UI (HTMX)
-6. Handoff / async execution
-7. Metrics & performance (tokens/sec, tool timing, worktree cache)
-8. Token cost management (`tool_output` trimming, `read_output`, budget before send)
-9. Dynamic MCP
+- [x] 1. One-shot CLI (JSONL output)
+- [ ] 2. TTY REPL
+- [ ] 3. Tool-call shell (file edits + network calls)
+- [ ] 4. SQLite-backed history
+- [ ] 5. Web UI (HTMX)
+- [ ] 6. Handoff / async execution
+- [ ] 7. Metrics & performance (tokens/sec, tool timing, worktree cache)
+- [ ] 8. Token cost management (`tool_output` trimming, `read_output`, budget before send)
+- [ ] 9. Dynamic MCP
 
 **As-needed (ad hoc, when the need arises):**
 
