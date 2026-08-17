@@ -77,3 +77,40 @@ func TestRunStreamsMultiTurn(t *testing.T) {
 		t.Errorf("jsonl writer missing events; got:\n%s", jsonl.String())
 	}
 }
+
+func TestRunToolCallAcrossTurns(t *testing.T) {
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "text/event-stream")
+		switch calls {
+		case 1: // first turn: ask for a tool call
+			fmt.Fprintf(w,
+				`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","type":"function","function":{"name":"shell","arguments":"{\"command\":\"echo hi\"}"}}]},"finish_reason":"tool_calls"}]}`+"\n\n"+
+					`data: [DONE]`+"\n")
+		case 2: // first turn: final reply after tool result
+			fmt.Fprintf(w, `data: {"choices":[{"delta":{"content":"done1"},"finish_reason":"stop"}]}`+"\n\n"+`data: [DONE]`+"\n")
+		default: // second turn
+			fmt.Fprintf(w, `data: {"choices":[{"delta":{"content":"done2"},"finish_reason":"stop"}]}`+"\n\n"+`data: [DONE]`+"\n")
+		}
+	}))
+	defer server.Close()
+
+	cfg := config.Config{BaseURL: server.URL + "/v1", Model: "test-model", APIKey: "k"}
+	var out, jsonl bytes.Buffer
+	err := Run(context.Background(), cfg, strings.NewReader("first\nsecond\nquit\n"), &out, &jsonl)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	got := out.String()
+	if !strings.Contains(got, "done1") || !strings.Contains(got, "done2") {
+		t.Errorf("expected both turns' replies; got:\n%s", got)
+	}
+	if !strings.Contains(got, "shell") {
+		t.Errorf("tool call should surface in stdout view; got:\n%s", got)
+	}
+	if !strings.Contains(jsonl.String(), `"type":"tool_result"`) {
+		t.Errorf("jsonl missing tool_result; got:\n%s", jsonl.String())
+	}
+}

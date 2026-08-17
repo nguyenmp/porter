@@ -17,13 +17,8 @@ import (
 type chatRequest struct {
 	Model    string        `json:"model"`
 	Messages []ChatMessage `json:"messages"`
+	Tools    []Tool        `json:"tools,omitempty"`
 	Stream   bool          `json:"stream"`
-}
-
-// ChatMessage is a single conversation turn sent to the model.
-type ChatMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
 }
 
 // Client makes streaming Chat Completions requests.
@@ -60,11 +55,13 @@ func (c *Client) After() io.Closer {
 
 // Stream starts a streaming Chat Completions request for the given messages
 // and returns the raw SSE response body. Strip the base URL's trailing slash
-// so the endpoint join is predictable.
-func (c *Client) Stream(ctx context.Context, messages []ChatMessage) (io.ReadCloser, error) {
+// so the endpoint join is predictable. When tools is non-empty it is declared
+// to the model so it may respond with tool calls.
+func (c *Client) Stream(ctx context.Context, messages []ChatMessage, tools []Tool) (io.ReadCloser, error) {
 	body, err := json.Marshal(chatRequest{
 		Model:    c.cfg.Model,
 		Messages: messages,
+		Tools:    tools,
 		Stream:   true,
 	})
 	if err != nil {
@@ -73,6 +70,7 @@ func (c *Client) Stream(ctx context.Context, messages []ChatMessage) (io.ReadClo
 
 	endpoint := strings.TrimSuffix(c.cfg.BaseURL, "/") + "/chat/completions"
 	c.debugf("uploading %d byte prompt to %s (model=%s)", len(body), endpoint, c.cfg.Model)
+	c.debugf("payload: %s", body)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {

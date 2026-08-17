@@ -98,7 +98,7 @@ Build order:
 
 - [x] 1. One-shot CLI (JSONL output)
 - [x] 2. TTY REPL
-- [ ] 3. Tool-call shell (file edits + network calls)
+- [x] 3. Tool-call shell (file edits + network calls)
 - [ ] 4. SQLite-backed history
 - [ ] 5. Web UI (HTMX)
 - [ ] 6. Handoff / async execution

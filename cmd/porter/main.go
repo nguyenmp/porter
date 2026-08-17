@@ -7,10 +7,11 @@ import (
 	"os"
 	"time"
 
-	"porter/internal/codec"
+	"porter/internal/agent"
 	"porter/internal/config"
 	"porter/internal/llm"
 	"porter/internal/repl"
+	"porter/internal/tools"
 )
 
 func main() {
@@ -59,27 +60,11 @@ func run(ctx context.Context, cfg config.Config, prompt string, out io.Writer) e
 
 	client := llm.NewClient(cfg, nil)
 	client.Debug = os.Stderr
-	body, err := client.Stream(ctx, []llm.ChatMessage{{Role: "user", Content: prompt}})
-	if err != nil {
-		return err
-	}
-	defer body.Close()
 
 	start := time.Now()
-	first := true
-	dec := codec.NewDecoder(codec.NewEncoder(out))
-	for line := range llm.SSELines(body) {
-		if first {
-			first = false
-			fmt.Fprintf(os.Stderr, "porter: first byte in %s\n", time.Since(start).Round(time.Millisecond))
-		}
-		done, err := dec.Process(line)
-		if err != nil {
-			return err
-		}
-		if done {
-			break
-		}
+	_, err := agent.RunTurn(ctx, client, []llm.ChatMessage{llm.UserMessage(prompt)}, tools.NewDispatcher(), io.Discard, out)
+	if err != nil {
+		return err
 	}
 	fmt.Fprintf(os.Stderr, "porter: stream complete in %s\n", time.Since(start).Round(time.Millisecond))
 	return nil

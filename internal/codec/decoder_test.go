@@ -81,6 +81,26 @@ func TestDecoderReasoningStaysSeparate(t *testing.T) {
 	}
 }
 
+func TestDecoderToolCallAccumulatesAcrossDeltas(t *testing.T) {
+	got, err := feed(t,
+		// Tool call split over three deltas: id/name first, then args chunks.
+		`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"shell","arguments":""}}]},"finish_reason":null}]}`,
+		`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"echo "}}]},"finish_reason":null}]}`,
+		`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"hi"}}]},"finish_reason":"tool_calls"}]}`,
+		`data: [DONE]`,
+	)
+	if err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	for _, want := range []string{
+		`"type":"tool_call"`, `"name":"shell"`, `"arguments":"echo hi"`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("output missing %q; got:\n%s", want, got)
+		}
+	}
+}
+
 func TestDecoderRejectsNonDataLine(t *testing.T) {
 	if _, err := feed(t, "event: ping"); err == nil {
 		t.Fatal("expected error for non-data line")
