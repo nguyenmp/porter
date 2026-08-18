@@ -3,39 +3,33 @@ package main
 import (
 	"bytes"
 	"context"
-	"fmt"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"porter/internal/api"
+	"porter/internal/codec"
 	"porter/internal/config"
 )
 
 func TestRunStreamsJSONL(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/chat/completions" {
+		if r.URL.Path != api.StreamPath {
 			t.Errorf("unexpected path %s", r.URL.Path)
 		}
-		if got := r.Header.Get("Authorization"); got != "Bearer test-key" {
-			t.Errorf("authorization = %q", got)
-		}
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.WriteHeader(http.StatusOK)
-		fmt.Fprint(w,
-			`data: {"choices":[{"delta":{"content":"Hel"},"finish_reason":null}]}`+"\n\n"+
-				`data: {"choices":[{"delta":{"content":"lo"},"finish_reason":null}]}`+"\n\n"+
-				`data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":20}}`+"\n\n"+
-				`data: [DONE]`+"\n",
-		)
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		enc := json.NewEncoder(w)
+		_ = enc.Encode(codec.Event{Type: codec.TypeMessageDelta, Role: "assistant", Delta: "Hel"})
+		_ = enc.Encode(codec.Event{Type: codec.TypeMessageDelta, Role: "assistant", Delta: "lo"})
+		_ = enc.Encode(codec.Event{Type: codec.TypeMessage, Role: "assistant", Content: "Hello"})
+		_ = enc.Encode(codec.Event{Type: codec.TypeUsage, InputTokens: 10, OutputTokens: 20})
+		_ = enc.Encode(api.Completion{Completed: true, Text: "Hello", Input: 10, Output: 20})
 	}))
 	defer server.Close()
 
-	cfg := config.Config{
-		BaseURL: server.URL + "/v1",
-		Model:   "test-model",
-		APIKey:  "test-key",
-	}
+	cfg := config.ClientConfig{ServerURL: server.URL}
 	var out bytes.Buffer
 	err := run(context.Background(), cfg, "hey", &out)
 	if err != nil {

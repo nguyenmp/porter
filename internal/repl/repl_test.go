@@ -12,12 +12,38 @@ import (
 	"strings"
 	"testing"
 
+	"porter/internal/api"
 	"porter/internal/config"
+	"porter/internal/llm"
 )
+
+// streamServer serves /api/stream. For each request it streams a reply whose
+// text is the number of messages the client sent, then a completion carrying
+// that reply and the extended history.
+func streamServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != api.StreamPath {
+			t.Errorf("unexpected path %s", r.URL.Path)
+		}
+		var req api.StreamRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		n := len(req.History)
+		reply := fmt.Sprintf("reply %d", n)
+		history := append(append([]llm.ChatMessage{}, req.History...), llm.AssistantMessage(reply, nil))
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		enc := json.NewEncoder(w)
+		_ = enc.Encode(map[string]string{"type": "message_delta", "role": "assistant", "delta": reply})
+		_ = enc.Encode(api.Completion{Completed: true, Text: reply, Input: 4, Output: 5, History: history})
+	}))
+	return srv
+}
 
 func TestRunReadsAndQuits(t *testing.T) {
 	var out, jsonl bytes.Buffer
-	cfg := config.Config{BaseURL: "http://unused.invalid/v1", Model: "m"}
+	cfg := config.ClientConfig{ServerURL: "http://unused.invalid"}
 	err := Run(context.Background(), cfg, strings.NewReader("quit\n"), &out, &jsonl)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
@@ -28,32 +54,16 @@ func TestRunReadsAndQuits(t *testing.T) {
 }
 
 func TestRunEOF(t *testing.T) {
-	if err := Run(context.Background(), config.Config{}, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{}); err != nil {
+	if err := Run(context.Background(), config.ClientConfig{}, strings.NewReader(""), &bytes.Buffer{}, &bytes.Buffer{}); err != nil {
 		t.Fatalf("Run on EOF: %v", err)
 	}
 }
 
 func TestRunStreamsMultiTurn(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Echo the number of messages the client sent, proving history grows.
-		var req struct {
-			Messages []json.RawMessage `json:"messages"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			t.Errorf("decode request: %v", err)
-		}
-		n := len(req.Messages)
-		w.Header().Set("Content-Type", "text/event-stream")
-		fmt.Fprintf(w,
-			`data: {"choices":[{"delta":{"reasoning_content":"think"},"finish_reason":null}]}`+"\n\n"+
-				`data: {"choices":[{"delta":{"content":"reply "},"finish_reason":null}]}`+"\n\n"+
-				`data: {"choices":[{"delta":{"content":"%d"},"finish_reason":"stop"}],"usage":{"prompt_tokens":4,"completion_tokens":5}}`+"\n\n"+
-				`data: [DONE]`+"\n", n,
-		)
-	}))
+	server := streamServer(t)
 	defer server.Close()
 
-	cfg := config.Config{BaseURL: server.URL + "/v1", Model: "test-model", APIKey: "k"}
+	cfg := config.ClientConfig{ServerURL: server.URL}
 	var out, jsonl bytes.Buffer
 	// Two turns: first "hello", then "again". History should grow 1 -> 3.
 	err := Run(context.Background(), cfg, strings.NewReader("hello\nagain\nquit\n"), &out, &jsonl)
@@ -82,23 +92,26 @@ func TestRunStreamsMultiTurn(t *testing.T) {
 
 func TestRunToolCallAcrossTurns(t *testing.T) {
 	var calls int
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		calls++
-		w.Header().Set("Content-Type", "text/event-stream")
-		switch calls {
-		case 1: // first turn: ask for a tool call
-			fmt.Fprintf(w,
-				`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","type":"function","function":{"name":"shell","arguments":"{\"command\":\"echo hi\"}"}}]},"finish_reason":"tool_calls"}]}`+"\n\n"+
-					`data: [DONE]`+"\n")
-		case 2: // first turn: final reply after tool result
-			fmt.Fprintf(w, `data: {"choices":[{"delta":{"content":"done1"},"finish_reason":"stop"}]}`+"\n\n"+`data: [DONE]`+"\n")
-		default: // second turn
-			fmt.Fprintf(w, `data: {"choices":[{"delta":{"content":"done2"},"finish_reason":"stop"}]}`+"\n\n"+`data: [DONE]`+"\n")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req api.StreamRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decode request: %v", err)
 		}
-	}))
-	defer server.Close()
+		calls++
+		reply := fmt.Sprintf("done%d", calls)
+		history := append(append([]llm.ChatMessage{}, req.History...), llm.AssistantMessage(reply, nil))
 
-	cfg := config.Config{BaseURL: server.URL + "/v1", Model: "test-model", APIKey: "k"}
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		enc := json.NewEncoder(w)
+		// A tool call + result, then the final reply.
+		_ = enc.Encode(map[string]string{"type": "tool_call", "tool_call_id": "c1", "name": "shell", "arguments": `{"command":"echo hi"}`})
+		_ = enc.Encode(map[string]string{"type": "tool_result", "tool_call_id": "c1", "name": "shell", "result": "exit code: 0"})
+		_ = enc.Encode(map[string]string{"type": "message_delta", "role": "assistant", "delta": reply})
+		_ = enc.Encode(api.Completion{Completed: true, Text: reply, History: history})
+	}))
+	defer srv.Close()
+
+	cfg := config.ClientConfig{ServerURL: srv.URL}
 	var out, jsonl bytes.Buffer
 	err := Run(context.Background(), cfg, strings.NewReader("first\nsecond\nquit\n"), &out, &jsonl)
 	if err != nil {
@@ -118,14 +131,11 @@ func TestRunToolCallAcrossTurns(t *testing.T) {
 }
 
 func TestRunLogFileKeepsTerminalQuiet(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		fmt.Fprintf(w, `data: {"choices":[{"delta":{"content":"hi"},"finish_reason":"stop"}]}`+"\n\n"+`data: [DONE]`+"\n")
-	}))
+	server := streamServer(t)
 	defer server.Close()
 
 	logPath := filepath.Join(t.TempDir(), "porter.log")
-	cfg := config.Config{BaseURL: server.URL + "/v1", Model: "test-model", APIKey: "k", LogFile: logPath}
+	cfg := config.ClientConfig{ServerURL: server.URL, LogFile: logPath}
 
 	var out, jsonl bytes.Buffer
 	if err := Run(context.Background(), cfg, strings.NewReader("hello\nquit\n"), &out, &jsonl); err != nil {

@@ -8,10 +8,11 @@ import (
 	"time"
 
 	"porter/internal/agent"
+	"porter/internal/client"
 	"porter/internal/config"
 	"porter/internal/llm"
 	"porter/internal/repl"
-	"porter/internal/tools"
+	"porter/internal/server"
 )
 
 func main() {
@@ -21,10 +22,18 @@ func main() {
 	}
 }
 
-// runCLI dispatches to the interactive REPL (when stdin is a TTY and no prompt
-// is given) or the one-shot JSONL path.
+// runCLI dispatches to the server, the interactive REPL (when stdin is a TTY
+// and no prompt is given), or the one-shot JSONL path.
 func runCLI(args []string, stdout io.Writer, stdin io.Reader) error {
-	cfg := config.Env()
+	if len(args) > 0 && args[0] == "server" {
+		cfg := config.Env()
+		if err := cfg.Validate(); err != nil {
+			return err
+		}
+		return server.Serve(cfg)
+	}
+
+	cfg := config.ClientEnv()
 
 	if len(args) == 0 && isTerminal(stdin) {
 		return repl.Run(context.Background(), cfg, stdin, stdout, os.Stderr)
@@ -50,19 +59,12 @@ func runCLI(args []string, stdout io.Writer, stdin io.Reader) error {
 	return run(context.Background(), cfg, prompt, stdout)
 }
 
-// run resolves a prompt against cfg and streams the response to out as
-// structured JSONL events. It is split from runCLI so it can be tested with a
-// fixed config. Connect/upload/timing progress is written to stderr.
-func run(ctx context.Context, cfg config.Config, prompt string, out io.Writer) error {
-	if err := cfg.Validate(); err != nil {
-		return err
-	}
-
-	client := llm.NewClient(cfg, nil)
-	client.Debug = os.Stderr
-
+// run sends a one-shot prompt to the server and streams the response to out as
+// structured JSONL events. Connect/upload/timing progress goes to stderr.
+func run(ctx context.Context, cfg config.ClientConfig, prompt string, out io.Writer) error {
+	c := client.New(cfg.ServerURL)
 	start := time.Now()
-	_, err := agent.RunTurn(ctx, client, []llm.ChatMessage{llm.UserMessage(prompt)}, tools.NewDispatcher(), agent.EncodeJSON(out))
+_, err := c.Stream(ctx, []llm.ChatMessage{llm.UserMessage(prompt)}, agent.EncodeJSON(out))
 	if err != nil {
 		return err
 	}

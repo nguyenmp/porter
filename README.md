@@ -54,10 +54,8 @@ We build and run through Docker so the pinned Go version is used for portable de
 
 1. `cp .env.example .env` and set the env vars.
 2. `make test` / `make vet` to verify
-3. `make build` — builds the `porter:dev` image
-4. `make run PROMPT="say hi"` — runs the built image in CLI mode
-
-Note: `make run` runs the prebuilt `porter:dev` image.  To run an updated image, you need to `make build` first.  `make test` and `make vet` always mounts the local sourcecode, so it does not require rebuilding.
+3. `make server` — starts the server (owns the LLM connection + tool execution) in one terminal
+4. `make repl` — starts the interactive REPL client in another, or `make run PROMPT="say hi"` for one-shot
 
 ### Quiet REPL logs
 
@@ -106,8 +104,8 @@ Build order:
 - [x] 1. One-shot CLI (JSONL output)
 - [x] 2. TTY REPL
 - [x] 3. Tool-call shell (file edits + network calls)
-- [ ] 4. SQLite-backed history
-- [ ] 5. Web UI (HTMX)
+- [ ] 4. Web UI
+- [ ] 5. SQLite-backed history
 - [ ] 6. Handoff / async execution
 - [ ] 7. Metrics & performance (tokens/sec, tool timing, worktree cache)
 - [ ] 8. Token cost management (`tool_output` trimming, `read_output`, budget before send)

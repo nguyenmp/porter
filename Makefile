@@ -11,7 +11,11 @@ MOUNTS   := -v "$(CURDIR):/app" -w /app -v gomod:/go/pkg/mod -v gocache:/root/.c
 DEV      := docker run --rm $(if $(wildcard .env),--env-file .env,) $(MOUNTS) $(GOLANG)
 GO       := $(DEV) go
 
-.PHONY: test vet build run shell
+# Bridge network so the REPL client container can reach the server container.
+NET      := porter-dev
+SERVER   := porter-server
+
+.PHONY: test vet build run server repl shell
 
 ## test: run the Go test suite in the pinned dev container
 test:
@@ -25,9 +29,23 @@ vet:
 build:
 	docker build -t $(IMAGE) .
 
-## run: run the built image. Usage: make run PROMPT="say hi"
+## server: run the server (owns LLM + tools) in the dev container
+server:
+	docker network inspect $(NET) >/dev/null 2>&1 || docker network create $(NET)
+	docker run --rm --name $(SERVER) --network $(NET) \
+		--env-file .env -e PORTER_ADDR=0.0.0.0:8787 \
+		$(MOUNTS) $(GOLANG) sh -c 'go run ./cmd/porter server'
+
+## repl: interactive REPL client against the running server
+repl:
+	docker run -it --rm --network $(NET) --env-file .env \
+		-e PORTER_SERVER_URL=http://$(SERVER):8787 \
+		$(MOUNTS) $(GOLANG) sh -c 'go run ./cmd/porter'
+
+## run: one-shot client against the running server. Usage: make run PROMPT="say hi"
 run: build
-	docker run --rm --env-file .env $(IMAGE) $(PROMPT)
+	docker run --rm --network $(NET) --env-file .env \
+		-e PORTER_SERVER_URL=http://$(SERVER):8787 $(IMAGE) $(PROMPT)
 
 ## shell: interactive shell in the dev container
 shell: build
