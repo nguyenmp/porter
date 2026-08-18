@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"porter/internal/agent"
+	"porter/internal/codec"
 	"porter/internal/config"
 	"porter/internal/llm"
 	"porter/internal/tools"
@@ -42,6 +43,13 @@ func Run(ctx context.Context, cfg config.Config, in io.Reader, out, jsonl io.Wri
 	}
 	js := tools.NewDispatcher()
 
+	// One sink sends every event to both the JSONL stream and the
+	// human-readable view.
+	emit := func(ev codec.Event) {
+		agent.EncodeJSON(jsonl)(ev)
+		agent.Render(out, agent.IsTerminal(out))(ev)
+	}
+
 	var history []llm.ChatMessage
 	for {
 		fmt.Fprint(out, "> ")
@@ -63,7 +71,7 @@ func Run(ctx context.Context, cfg config.Config, in io.Reader, out, jsonl io.Wri
 		}
 
 		history = append(history, llm.UserMessage(text))
-		res, err := agent.RunTurn(ctx, client, history, js, out, jsonl)
+		res, err := agent.RunTurn(ctx, client, history, js, emit)
 		if err != nil {
 			return err
 		}

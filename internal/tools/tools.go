@@ -38,12 +38,29 @@ func Defs() []llm.Tool {
 	return []llm.Tool{shellDef()}
 }
 
+// Provider runs the tools an agent uses. It declares the tool schemas the model
+// sees and executes the calls the model requests. The agent depends on this
+// interface, not a concrete dispatcher, so execution can later move to a
+// server, a remote host, or the cloud without changing the agent.
+type Provider interface {
+	// Defs returns the tools the agent may call.
+	Defs() []llm.Tool
+	// Run executes the tool named name with raw JSON arguments and returns the
+	// result as a string.
+	Run(name string, args []byte) (string, error)
+}
+
 // Dispatcher maps an assistant tool call to a handler and returns its result.
 type Dispatcher struct{}
 
 // NewDispatcher returns a dispatcher that can run the available tools.
 func NewDispatcher() *Dispatcher {
 	return &Dispatcher{}
+}
+
+// Defs returns every tool a Dispatcher may run.
+func (d *Dispatcher) Defs() []llm.Tool {
+	return Defs()
 }
 
 // Run executes the tool named name with the given raw JSON arguments and

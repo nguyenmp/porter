@@ -34,41 +34,39 @@ type TurnResult struct {
 	History []llm.ChatMessage
 }
 
-// RunTurn drives one conversation turn. history is read and extended so the
-// caller can keep it for the next turn. text receives the human-readable view
-// (pass io.Discard when emitting only JSONL), while jsonl receives the
-// structured event stream. Rendering dims reasoning only when text is a real
-// terminal.
-func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage, js *tools.Dispatcher, text, jsonl io.Writer) (TurnResult, error) {
+// RunTurn drives one conversation turn. It reads history and extends it so the
+// caller can keep it for the next turn. Every event the loop produces (message
+// deltas, reasoning, tool calls and results, usage) goes to emit, so the caller
+// can render, persist, or relay it without the loop knowing the destination.
+// The loop does no rendering; presentation is the caller's job.
+func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage, js tools.Provider, emit func(codec.Event)) (TurnResult, error) {
 	res := TurnResult{History: history}
-	dim := isTerminal(text)
 
 	for {
-		dec, enc := newCodec(jsonl)
 		var reply strings.Builder
 		var calls []codec.ToolCall
 		var usage Usage
 
+		dec := codec.NewDecoder(nil)
 		dec.OnEvent = func(ev codec.Event) {
 			switch ev.Type {
 			case codec.TypeMessageDelta:
-				io.WriteString(text, ev.Delta)
 				reply.WriteString(ev.Delta)
 			case codec.TypeMessage:
 				reply.Reset()
 				reply.WriteString(ev.Content)
-			case codec.TypeReasoningDelta:
-				writeDimmed(text, dim, ev.Reasoning)
 			case codec.TypeToolCall:
 				calls = append(calls, codec.ToolCall{ID: ev.ToolCallID, Name: ev.Name, Arguments: ev.Arguments})
-				writeDimmed(text, dim, "\n> "+ev.Name+": "+ev.Arguments+"\n")
 			case codec.TypeUsage:
 				usage.Input += ev.InputTokens
 				usage.Output += ev.OutputTokens
 			}
+			if emit != nil {
+				emit(ev)
+			}
 		}
 
-		body, err := client.Stream(ctx, res.History, tools.Defs())
+		body, err := client.Stream(ctx, res.History, js.Defs())
 		if err != nil {
 			return res, err
 		}
@@ -99,7 +97,9 @@ func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage,
 			if err != nil {
 				result = "error: " + err.Error()
 			}
-			_ = enc.Write(codec.Event{Type: codec.TypeToolResult, ToolCallID: c.ID, Name: c.Name, Result: result})
+			if emit != nil {
+				emit(codec.Event{Type: codec.TypeToolResult, ToolCallID: c.ID, Name: c.Name, Result: result})
+			}
 			res.History = append(res.History, llm.ToolResult(c.ID, result))
 		}
 	}
@@ -121,15 +121,32 @@ func toLLMCalls(calls []codec.ToolCall) []llm.ToolCall {
 	return out
 }
 
-// newCodec wires up the agent's shared streaming plumbing: an encoder that
-// writes events to jsonl and a decoder that consumes raw SSE lines.
-func newCodec(jsonl io.Writer) (*codec.Decoder, *codec.Encoder) {
-	enc := codec.NewEncoder(jsonl)
-	return codec.NewDecoder(enc), enc
+// EncodeJSON returns a sink that writes each event as a JSONL line to w.
+// Callers that want the raw event stream pass this to RunTurn: the one-shot
+// CLI writes to stdout, and a server relays the stream over HTTP.
+func EncodeJSON(w io.Writer) func(codec.Event) {
+	e := codec.NewEncoder(w)
+	return func(ev codec.Event) { _ = e.Write(ev) }
 }
 
-// isTerminal reports whether w is an interactive character device.
-func isTerminal(w io.Writer) bool {
+// Render returns a sink that prints the human-readable conversation to w. It
+// echoes message deltas and dims reasoning and tool-call lines when w is a
+// terminal. It emits no structured events; JSONL stays with the caller.
+func Render(w io.Writer, dim bool) func(codec.Event) {
+	return func(ev codec.Event) {
+		switch ev.Type {
+		case codec.TypeMessageDelta:
+			io.WriteString(w, ev.Delta)
+		case codec.TypeReasoningDelta:
+			writeDimmed(w, dim, ev.Reasoning)
+		case codec.TypeToolCall:
+			writeDimmed(w, dim, "\n> "+ev.Name+": "+ev.Arguments+"\n")
+		}
+	}
+}
+
+// IsTerminal reports whether w is an interactive character device.
+func IsTerminal(w io.Writer) bool {
 	f, ok := w.(*os.File)
 	if !ok {
 		return false

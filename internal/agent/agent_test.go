@@ -11,6 +11,7 @@ import (
 	"sync"
 	"testing"
 
+	"porter/internal/codec"
 	"porter/internal/config"
 	"porter/internal/llm"
 	"porter/internal/tools"
@@ -67,7 +68,12 @@ func TestRunTurnExecutesToolAndLoops(t *testing.T) {
 	client := llm.NewClient(cfg, nil)
 	var text, jsonl bytes.Buffer
 
-	res, err := RunTurn(context.Background(), client, []llm.ChatMessage{llm.UserMessage("run it")}, tools.NewDispatcher(), &text, &jsonl)
+	emit := func(ev codec.Event) {
+		EncodeJSON(&jsonl)(ev)
+		Render(&text, false)(ev)
+	}
+
+	res, err := RunTurn(context.Background(), client, []llm.ChatMessage{llm.UserMessage("run it")}, tools.NewDispatcher(), emit)
 	if err != nil {
 		t.Fatalf("RunTurn: %v", err)
 	}

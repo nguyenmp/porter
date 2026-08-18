@@ -62,7 +62,7 @@ func run(ctx context.Context, cfg config.Config, prompt string, out io.Writer) e
 	client.Debug = os.Stderr
 
 	start := time.Now()
-	_, err := agent.RunTurn(ctx, client, []llm.ChatMessage{llm.UserMessage(prompt)}, tools.NewDispatcher(), io.Discard, out)
+	_, err := agent.RunTurn(ctx, client, []llm.ChatMessage{llm.UserMessage(prompt)}, tools.NewDispatcher(), agent.EncodeJSON(out))
 	if err != nil {
 		return err
 	}
