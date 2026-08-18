@@ -29,10 +29,10 @@ vet:
 build:
 	docker build -t $(IMAGE) .
 
-## server: run the server (owns LLM + tools) in the dev container
+## server: run the server (owns LLM + tools) in the dev container, attached so Ctrl-C stops it
 server:
 	docker network inspect $(NET) >/dev/null 2>&1 || docker network create $(NET)
-	docker run --rm --name $(SERVER) --network $(NET) \
+	docker run -it --rm --init --name $(SERVER) --network $(NET) \
 		--env-file .env -e PORTER_ADDR=0.0.0.0:8787 \
 		$(MOUNTS) $(GOLANG) sh -c 'go run ./cmd/porter server'
 
