@@ -48,6 +48,7 @@ func Run(ctx context.Context, cfg config.ClientConfig, in io.Reader, out, jsonl 
 	r := bufio.NewReader(in)
 	var history []llm.ChatMessage
 	for {
+		fmt.Fprintln(out)
 		fmt.Fprint(out, "> ")
 		line, err := r.ReadString('\n')
 		if line == "" && errors.Is(err, io.EOF) {
