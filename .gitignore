@@ -6,6 +6,7 @@ porter.log
 
 # Go
 /porter
+/porter-macos
 *.test
 *.out
 

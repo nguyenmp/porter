@@ -11,11 +11,14 @@ MOUNTS   := -v "$(CURDIR):/app" -w /app -v gomod:/go/pkg/mod -v gocache:/root/.c
 DEV      := docker run --rm $(if $(wildcard .env),--env-file .env,) $(MOUNTS) $(GOLANG)
 GO       := $(DEV) go
 
-# Bridge network so the REPL client container can reach the server container.
-NET      := porter-dev
-SERVER   := porter-server
+# Host arch for the native (macOS) binary
+UNAME_M  := $(shell uname -m)
+GOARCH   := $(if $(filter x86_64,$(UNAME_M)),amd64,arm64)
 
-.PHONY: test vet build run server repl shell
+# Go sources; the native binary rebuilds when these change
+SRC      := $(shell find cmd internal -name '*.go' -not -name '*_test.go') go.mod go.sum
+
+.PHONY: test vet build server repl run shell
 
 ## test: run the Go test suite in the pinned dev container
 test:
@@ -31,21 +34,21 @@ build:
 
 ## server: run the server (owns LLM + tools) in the dev container, attached so Ctrl-C stops it
 server:
-	docker network inspect $(NET) >/dev/null 2>&1 || docker network create $(NET)
-	docker run -it --rm --init --name $(SERVER) --network $(NET) \
+	docker run -it --rm --init -p 127.0.0.1:8787:8787 \
 		--env-file .env -e PORTER_ADDR=0.0.0.0:8787 \
 		$(MOUNTS) $(GOLANG) sh -c 'go run ./cmd/porter server'
 
+## porter-macos: native macOS binary built with the pinned Go, run on the host so the shell is the Mac's
+porter-macos: $(SRC)
+	$(DEV) sh -c 'CGO_ENABLED=0 GOOS=darwin GOARCH=$(GOARCH) go build -o porter-macos ./cmd/porter'
+
 ## repl: interactive REPL client against the running server
-repl:
-	docker run -it --rm --network $(NET) --env-file .env \
-		-e PORTER_SERVER_URL=http://$(SERVER):8787 \
-		$(MOUNTS) $(GOLANG) sh -c 'go run ./cmd/porter'
+repl: porter-macos
+	PORTER_SERVER_URL=http://127.0.0.1:8787 PORTER_LOG=porter.log ./porter-macos
 
 ## run: one-shot client against the running server. Usage: make run PROMPT="say hi"
-run: build
-	docker run --rm --network $(NET) --env-file .env \
-		-e PORTER_SERVER_URL=http://$(SERVER):8787 $(IMAGE) $(PROMPT)
+run: porter-macos
+	PORTER_SERVER_URL=http://127.0.0.1:8787 PORTER_LOG=porter.log ./porter-macos "$(PROMPT)"
 
 ## shell: interactive shell in the dev container
 shell: build
