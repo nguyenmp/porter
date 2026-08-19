@@ -10,6 +10,8 @@ import (
 	"log"
 	"net/http"
 
+	"github.com/go-chi/chi/v5"
+
 	"porter/internal/agent"
 	"porter/internal/api"
 	"porter/internal/config"
@@ -39,16 +41,14 @@ func New(cfg config.Config) (*Server, error) {
 
 // ListenAndServe serves the stream endpoint until the process stops.
 func (s *Server) ListenAndServe() error {
-	mux := http.NewServeMux()
-	mux.HandleFunc(api.StreamPath, s.handleStream)
-	return http.ListenAndServe(s.addr, mux)
+	return http.ListenAndServe(s.addr, s.handler())
 }
 
-// handler returns the stream endpoint as an http.Handler for testing.
+// handler returns the HTTP routes as an http.Handler for testing.
 func (s *Server) handler() http.Handler {
-	mux := http.NewServeMux()
-	mux.HandleFunc(api.StreamPath, s.handleStream)
-	return mux
+	r := chi.NewRouter()
+	r.Post(api.StreamPath, s.handleStream)
+	return r
 }
 
 // flushWriter flushes after every Write so streamed events reach the client the
