@@ -38,9 +38,21 @@ type TurnResult struct {
 // caller can keep it for the next turn. Every event the loop produces (message
 // deltas, reasoning, tool calls and results, usage) goes to emit, so the caller
 // can render, persist, or relay it without the loop knowing the destination.
-// The loop does no rendering; presentation is the caller's job.
-func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage, js tools.Provider, emit func(codec.Event)) (TurnResult, error) {
+// Every message the loop finalizes — assistant messages carrying tool calls,
+// each tool result, and the final plain reply — is also handed to onMessage, so
+// a caller that owns conversation state can commit each message as it completes
+// (rather than only receiving the assembled history at the end). The loop does
+// no rendering; presentation is the caller's job.
+func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage, js tools.Provider, emit func(codec.Event), onMessage func(llm.ChatMessage)) (TurnResult, error) {
 	res := TurnResult{History: history}
+	// commit appends a finished message to the turn result and, when set,
+	// streams it out so callers can commit each message the moment it's done.
+	commit := func(m llm.ChatMessage) {
+		res.History = append(res.History, m)
+		if onMessage != nil {
+			onMessage(m)
+		}
+	}
 
 	for {
 		var reply strings.Builder
@@ -90,11 +102,11 @@ func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage,
 
 		if len(calls) == 0 {
 			res.Text = reply.String()
-			res.History = append(res.History, llm.AssistantMessage(res.Text, nil))
+			commit(llm.AssistantMessage(res.Text, nil))
 			return res, nil
 		}
 
-		res.History = append(res.History, llm.AssistantMessage(reply.String(), toLLMCalls(calls)))
+		commit(llm.AssistantMessage(reply.String(), toLLMCalls(calls)))
 		for _, c := range calls {
 			result, err := js.Run(c.Name, []byte(c.Arguments))
 			if err != nil {
@@ -103,7 +115,7 @@ func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage,
 			if emit != nil {
 				emit(codec.Event{Type: codec.TypeToolResult, ToolCallID: c.ID, Name: c.Name, Result: result})
 			}
-			res.History = append(res.History, llm.ToolResult(c.ID, result))
+			commit(llm.ToolResult(c.ID, result))
 		}
 	}
 }

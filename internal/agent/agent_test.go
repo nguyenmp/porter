@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -73,7 +74,7 @@ func TestRunTurnExecutesToolAndLoops(t *testing.T) {
 		Render(&text, false)(ev)
 	}
 
-	res, err := RunTurn(context.Background(), client, []llm.ChatMessage{llm.UserMessage("run it")}, tools.NewDispatcher(), emit)
+	res, err := RunTurn(context.Background(), client, []llm.ChatMessage{llm.UserMessage("run it")}, tools.NewDispatcher(), emit, nil)
 	if err != nil {
 		t.Fatalf("RunTurn: %v", err)
 	}
@@ -117,5 +118,53 @@ func TestRunTurnExecutesToolAndLoops(t *testing.T) {
 	}
 	if !strings.Contains(jsonl.String(), `"type":"tool_call"`) || !strings.Contains(jsonl.String(), `"type":"tool_result"`) {
 		t.Errorf("jsonl missing tool events; got:\n%s", jsonl.String())
+	}
+}
+
+// TestRunTurnOnMessage commits each finalized message (assistant-with-calls,
+// tool result, final reply) as it completes, in order.
+func TestRunTurnOnMessage(t *testing.T) {
+	srv, _ := toolServer(t)
+	defer srv.Close()
+
+	cfg := config.Config{BaseURL: srv.URL + "/v1", Model: "test", APIKey: "k"}
+	client := llm.NewClient(cfg, nil)
+
+	var got []llm.ChatMessage
+	res, err := RunTurn(context.Background(), client, []llm.ChatMessage{llm.UserMessage("run it")}, tools.NewDispatcher(), nil, func(m llm.ChatMessage) {
+		got = append(got, m)
+	})
+	if err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+
+	var roles []string
+	for _, m := range got {
+		roles = append(roles, m.Role)
+	}
+	want := []string{"assistant", "tool", "assistant"}
+	if len(roles) != len(want) {
+		t.Fatalf("onMessage calls = %v, want %v", roles, want)
+	}
+	for i, w := range want {
+		if roles[i] != w {
+			t.Errorf("message[%d] role = %q, want %q", i, roles[i], w)
+		}
+	}
+	// The first committed message carries the tool call the model requested.
+	if len(got[0].ToolCalls) != 1 || got[0].ToolCalls[0].ID != "call_1" {
+		t.Errorf("first committed message missing tool call; got %+v", got[0])
+	}
+	// The tool result is keyed to that call.
+	if got[1].Role != "tool" || got[1].ToolCallID != "call_1" {
+		t.Errorf("tool result = %+v, want tool_call_id call_1", got[1])
+	}
+	// The final message is the plain answer.
+	if got[2].Content != "done" || len(got[2].ToolCalls) != 0 {
+		t.Errorf("final message = %+v, want content done", got[2])
+	}
+	// onMessage output must match the assembled turn result.
+	if !reflect.DeepEqual(got, res.History[1:]) {
+		t.Errorf("onMessage order does not match turn history\ncommitted: %+v\nhistory:   %+v", got, res.History[1:])
 	}
 }

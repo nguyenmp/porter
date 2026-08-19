@@ -83,7 +83,7 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/x-ndjson")
 	w.WriteHeader(http.StatusOK)
 
-	res, err := agent.RunTurn(r.Context(), s.client, req.History, s.provider, agent.EncodeJSON(flushWriter{w}))
+	res, err := agent.RunTurn(r.Context(), s.client, req.History, s.provider, agent.EncodeJSON(flushWriter{w}), nil)
 	if err != nil {
 		// Send a completion so the client stops cleanly; it reports the error
 		// from the empty result.
