@@ -60,6 +60,9 @@ func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage,
 			case codec.TypeUsage:
 				usage.Input += ev.InputTokens
 				usage.Output += ev.OutputTokens
+			case codec.TypeReasoningDelta, codec.TypeToolResult:
+			default:
+				panic("unhandled event type: " + string(ev.Type))
 			}
 			if emit != nil {
 				emit(ev)

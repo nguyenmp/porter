@@ -5,15 +5,18 @@ import (
 	"io"
 )
 
+// EventType identifies the kind of an Event.
+type EventType string
+
 // Event types emitted on stdout as JSONL.
 const (
-	TypeMessageDelta   = "message_delta"
-	TypeReasoningDelta = "reasoning_delta"
-	TypeMessage        = "message"
-	TypeUsage          = "usage"
-	TypeToolCall       = "tool_call"
-	TypeToolResult     = "tool_result"
-	TypeError          = "error"
+	TypeMessageDelta   EventType = "message_delta"
+	TypeReasoningDelta EventType = "reasoning_delta"
+	TypeMessage        EventType = "message"
+	TypeUsage          EventType = "usage"
+	TypeToolCall       EventType = "tool_call"
+	TypeToolResult     EventType = "tool_result"
+	TypeError          EventType = "error"
 )
 
 // Event is a single JSONL line written to stdout. Reasoning is kept separate
@@ -21,7 +24,7 @@ const (
 // resubmitted assistant context. Tool calls and results are emitted separately
 // so what the agent ran is visible and auditable.
 type Event struct {
-	Type         string `json:"type"`
+	Type         EventType `json:"type"`
 	Role         string `json:"role,omitempty"`
 	Delta        string `json:"delta,omitempty"`
 	Content      string `json:"content,omitempty"`
