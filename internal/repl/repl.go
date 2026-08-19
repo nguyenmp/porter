@@ -1,8 +1,9 @@
 // Package repl is the interactive terminal shell. When stdin is a TTY, porter
-// runs a REPL here instead of the one-shot JSONL path. Stdout shows the
-// conversation, and the structured JSONL event stream goes to stderr. The REPL
-// is a thin client: it keeps the conversation history for the next turn, sends
-// the full history to the server, and relays events back.
+// runs a REPL here instead of the one-shot path. Stdout shows the conversation,
+// and the structured JSONL event stream goes to stderr. The REPL is a stateless
+// client: it creates a session, renders history from a poll, appends user
+// messages, and subscribes to the event bus to stream the reply live. The
+// server owns all conversation state.
 package repl
 
 import (
@@ -15,7 +16,7 @@ import (
 	"strings"
 
 	"porter/internal/agent"
-	"porter/internal/codec"
+	"porter/internal/api"
 	"porter/internal/client"
 	"porter/internal/config"
 	"porter/internal/llm"
@@ -37,16 +38,38 @@ func Run(ctx context.Context, cfg config.ClientConfig, in io.Reader, out, jsonl 
 	}
 
 	c := client.New(cfg.ServerURL)
+	info, err := c.Create(ctx)
+	if err != nil {
+		return fmt.Errorf("create session: %w", err)
+	}
 
-	// One sink sends every event to both the JSONL stream and the
-	// human-readable view.
-	emit := func(ev codec.Event) {
+	// One sink tracks the latest committed seq so the next subscribe resumes
+	// exactly where the last one left off, and relays live llm events to both
+	// the JSONL stream and the human-readable view.
+	seq := info.Seq
+	emit := func(env api.Envelope) {
+		if env.Seq > seq {
+			seq = env.Seq
+		}
+		if env.Kind == api.KindTurnDone {
+			if env.Input > 0 || env.Output > 0 {
+				fmt.Fprintf(out, "(%d in, %d out tokens)\n", env.Input, env.Output)
+			}
+		}
+		if env.Kind != api.KindLLM || env.Event == nil {
+			return
+		}
+		ev := *env.Event
 		agent.EncodeJSON(jsonl)(ev)
 		agent.Render(out, agent.IsTerminal(out))(ev)
 	}
+	untilTurnDone := func(env api.Envelope) bool { return env.Kind == api.KindTurnDone }
+
+	for _, m := range info.History {
+		renderMessage(out, m)
+	}
 
 	r := bufio.NewReader(in)
-	var history []llm.ChatMessage
 	for {
 		fmt.Fprintln(out)
 		fmt.Fprint(out, "> ")
@@ -67,14 +90,39 @@ func Run(ctx context.Context, cfg config.ClientConfig, in io.Reader, out, jsonl 
 			return nil
 		}
 
-		history = append(history, llm.UserMessage(text))
-		comp, err := c.Stream(ctx, history, emit)
-		if err != nil {
-			return err
+		if err := c.Append(ctx, info.ID, text); err != nil {
+			return fmt.Errorf("append: %w", err)
 		}
-		history = comp.History
-		if comp.Input > 0 || comp.Output > 0 {
-			fmt.Fprintf(out, "(%d in, %d out tokens)\n", comp.Input, comp.Output)
+		for {
+			err := c.Subscribe(ctx, info.ID, seq, emit, untilTurnDone)
+			if errors.Is(err, client.ErrResync) {
+				h, herr := c.History(ctx, info.ID)
+				if herr != nil {
+					return herr
+				}
+				for _, m := range h.History {
+					renderMessage(out, m)
+				}
+				seq = h.Seq
+				continue
+			}
+			if err != nil {
+				return err
+			}
+			break
 		}
+		if fl, ok := out.(interface{ Flush() }); ok {
+			fl.Flush()
+		}
+	}
+}
+
+// renderMessage prints one committed conversation message to w.
+func renderMessage(w io.Writer, m llm.ChatMessage) {
+	switch m.Role {
+	case "user":
+		fmt.Fprintf(w, "\n> %s\n", m.Content)
+	case "assistant":
+		fmt.Fprintln(w, m.Content)
 	}
 }

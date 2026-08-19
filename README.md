@@ -104,12 +104,13 @@ Build order:
 - [x] 1. One-shot CLI (JSONL output)
 - [x] 2. TTY REPL
 - [x] 3. Tool-call shell (file edits + network calls)
-- [ ] 4. Web UI
-- [ ] 5. SQLite-backed history
-- [ ] 6. Handoff / async execution
-- [ ] 7. Metrics & performance (tokens/sec, tool timing, worktree cache)
-- [ ] 8. Token cost management (`tool_output` trimming, `read_output`, budget before send)
-- [ ] 9. Dynamic MCP
+- [x] 4. Server-owned conversation state (stateless clients poll history and subscribe to an event bus; commands instead of full-history resubmission)
+- [ ] Web UI (render from history poll + event bus, send commands)
+- [ ] SQLite-backed history (persist the server-owned session state)
+- [ ] Handoff / async execution
+- [ ] Metrics & performance (tokens/sec, tool timing, worktree cache)
+- [ ] Token cost management (`tool_output` trimming, `read_output`, budget before send)
+- [ ] Dynamic MCP
 
 **As-needed (ad hoc, when the need arises):**
 

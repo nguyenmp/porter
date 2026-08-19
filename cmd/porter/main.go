@@ -7,10 +7,10 @@ import (
 	"os"
 	"time"
 
-	"porter/internal/agent"
+	"porter/internal/api"
 	"porter/internal/client"
+	"porter/internal/codec"
 	"porter/internal/config"
-	"porter/internal/llm"
 	"porter/internal/repl"
 	"porter/internal/server"
 )
@@ -59,12 +59,24 @@ func runCLI(args []string, stdout io.Writer, stdin io.Reader) error {
 	return run(context.Background(), cfg, prompt, stdout)
 }
 
-// run sends a one-shot prompt to the server and streams the response to out as
-// structured JSONL events. Connect/upload/timing progress goes to stderr.
+// run sends a one-shot prompt to the server and streams the model's events to
+// out as structured JSONL. Connect/timing progress goes to stderr.
 func run(ctx context.Context, cfg config.ClientConfig, prompt string, out io.Writer) error {
 	c := client.New(cfg.ServerURL)
+	info, err := c.Create(ctx)
+	if err != nil {
+		return err
+	}
 	start := time.Now()
-_, err := c.Stream(ctx, []llm.ChatMessage{llm.UserMessage(prompt)}, agent.EncodeJSON(out))
+	if err := c.Append(ctx, info.ID, prompt); err != nil {
+		return err
+	}
+	enc := codec.NewEncoder(out)
+	err = c.Subscribe(ctx, info.ID, info.Seq, func(env api.Envelope) {
+		if env.Kind == api.KindLLM && env.Event != nil {
+			_ = enc.Write(*env.Event)
+		}
+	}, func(env api.Envelope) bool { return env.Kind == api.KindTurnDone })
 	if err != nil {
 		return err
 	}
