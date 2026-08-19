@@ -12,7 +12,7 @@ import (
 	"sync"
 	"testing"
 
-	"porter/internal/codec"
+	"porter/internal/api"
 	"porter/internal/config"
 	"porter/internal/llm"
 	"porter/internal/tools"
@@ -69,9 +69,19 @@ func TestRunTurnExecutesToolAndLoops(t *testing.T) {
 	client := llm.NewClient(cfg, nil)
 	var text, jsonl bytes.Buffer
 
-	emit := func(ev codec.Event) {
-		EncodeJSON(&jsonl)(ev)
-		Render(&text, false)(ev)
+	emit := func(env api.Envelope) {
+		switch env.Kind {
+		case api.KindLLM:
+			if env.Event == nil {
+				return
+			}
+			ev := *env.Event
+			EncodeJSON(&jsonl)(ev)
+			Render(&text, false)(ev)
+		case api.KindToolResult:
+			data, _ := json.Marshal(env)
+			jsonl.Write(append(data, '\n'))
+		}
 	}
 
 	res, err := RunTurn(context.Background(), client, []llm.ChatMessage{llm.UserMessage("run it")}, tools.NewDispatcher(), emit, nil)
@@ -116,7 +126,7 @@ func TestRunTurnExecutesToolAndLoops(t *testing.T) {
 	if !strings.Contains(text.String(), "shell") {
 		t.Errorf("text view missing tool indicator; got:\n%s", text.String())
 	}
-	if !strings.Contains(jsonl.String(), `"type":"tool_call"`) || !strings.Contains(jsonl.String(), `"type":"tool_result"`) {
+	if !strings.Contains(jsonl.String(), `"type":"tool_call"`) || !strings.Contains(jsonl.String(), `"kind":"tool_result"`) {
 		t.Errorf("jsonl missing tool events; got:\n%s", jsonl.String())
 	}
 }

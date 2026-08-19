@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -73,8 +74,14 @@ func run(ctx context.Context, cfg config.ClientConfig, prompt string, out io.Wri
 	}
 	enc := codec.NewEncoder(out)
 	err = c.Subscribe(ctx, info.ID, info.Seq, func(env api.Envelope) {
-		if env.Kind == api.KindLLM && env.Event != nil {
-			_ = enc.Write(*env.Event)
+		switch env.Kind {
+		case api.KindLLM:
+			if env.Event != nil {
+				_ = enc.Write(*env.Event)
+			}
+		case api.KindToolResult:
+			data, _ := json.Marshal(env)
+			_, _ = out.Write(append(data, '\n'))
 		}
 	}, func(env api.Envelope) bool { return env.Kind == api.KindTurnDone })
 	if err != nil {

@@ -44,10 +44,16 @@ type SessionHistory struct {
 	Seq     uint64            `json:"seq"`
 }
 
-// Envelope kinds carried on a session's event bus.
+// Envelope kinds carried on a session's event bus. An Envelope is the union of
+// everything a subscriber can receive: a live LLM Event, a system-side fact
+// (tool results, and later subagent or execution notices), or a session
+// lifecycle marker.
 const (
 	// KindLLM wraps a codec.Event from the running turn, for real-time rendering.
 	KindLLM = "llm"
+	// KindToolResult reports that the agent ran a tool and got this result. It
+	// comes from our system, not the model.
+	KindToolResult = "tool_result"
 	// KindMessage marks a message the server just committed to history, stamped
 	// with its seq. This is what reconciles a subscriber with history.
 	KindMessage = "message_committed"
@@ -56,19 +62,20 @@ const (
 	// KindResync tells a subscriber its `since` is too old to bridge to live;
 	// it must refetch history and resubscribe. No further lines follow.
 	KindResync = "resync"
-	// KindError reports a turn-level error.
-	KindError = "error"
 )
 
-// Envelope is a single NDJSON line on a session's event bus. kind selects which
+// Envelope is a single NDJSON line on a session's event bus. Kind selects which
 // fields are meaningful.
 type Envelope struct {
 	Kind    string           `json:"kind"`
-	Seq     uint64           `json:"seq,omitempty"`     // KindMessage
-	Event   *codec.Event     `json:"event,omitempty"`   // KindLLM
-	Message *llm.ChatMessage `json:"message,omitempty"` // KindMessage
-	TurnID  int64            `json:"turn_id,omitempty"` // KindTurnDone
-	Input   int              `json:"input,omitempty"`   // KindTurnDone
-	Output  int              `json:"output,omitempty"`  // KindTurnDone
-	Error   string           `json:"error,omitempty"`   // KindTurnDone/KindError
+	Seq     uint64           `json:"seq,omitempty"`      // KindMessage
+	Event   *codec.Event     `json:"event,omitempty"`    // KindLLM
+	Message *llm.ChatMessage `json:"message,omitempty"`  // KindMessage
+	ToolCallID string        `json:"tool_call_id,omitempty"` // KindToolResult
+	Name    string           `json:"name,omitempty"`     // KindToolResult
+	Result  string           `json:"result,omitempty"`   // KindToolResult
+	TurnID  int64            `json:"turn_id,omitempty"`  // KindTurnDone
+	Input   int              `json:"input,omitempty"`    // KindTurnDone
+	Output  int              `json:"output,omitempty"`   // KindTurnDone
+	Error   string           `json:"error,omitempty"`    // KindTurnDone
 }

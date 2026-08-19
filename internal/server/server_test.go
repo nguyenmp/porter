@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -124,6 +125,52 @@ func TestSessionsAreIndependent(t *testing.T) {
 	}
 	if len(h2.History) < 2 {
 		t.Errorf("session 2 history len = %d, want >= 2", len(h2.History))
+	}
+}
+
+// toolThenReplyLLM asks for a shell tool call on the first request, then replies
+// plainly on the second.
+func toolThenReplyLLM() http.HandlerFunc {
+	var mu sync.Mutex
+	n := 0
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		mu.Lock()
+		n++
+		call := n
+		mu.Unlock()
+		if call == 1 {
+			fmt.Fprint(w,
+				`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","type":"function","function":{"name":"shell","arguments":"{\"command\":\"echo hi\"}"}}]},"finish_reason":"tool_calls"}]}`+"\n\n"+
+					`data: [DONE]`+"\n")
+			return
+		}
+		fmt.Fprint(w,
+			`data: {"choices":[{"delta":{"content":"done"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`+"\n\n"+
+				`data: [DONE]`+"\n")
+	}
+}
+
+// TestToolResultEnvelope ensures a tool result — a system-side fact, not LLM
+// output — is delivered as its own envelope kind on the bus.
+func TestToolResultEnvelope(t *testing.T) {
+	srv := newTestServer(t, toolThenReplyLLM())
+	got, _ := runOneTurn(t, srv.URL, "run it")
+
+	var sawToolResult bool
+	for _, env := range got {
+		if env.Kind == api.KindToolResult {
+			sawToolResult = true
+			if env.Name != "shell" {
+				t.Errorf("tool result name = %q, want shell", env.Name)
+			}
+			if !strings.Contains(env.Result, "exit code: 0") || !strings.Contains(env.Result, "hi") {
+				t.Errorf("tool result = %q, want exit code 0 with echo output", env.Result)
+			}
+		}
+	}
+	if !sawToolResult {
+		t.Errorf("bus missing a tool_result envelope; got %+v", got)
 	}
 }
 

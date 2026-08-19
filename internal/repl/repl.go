@@ -9,6 +9,7 @@ package repl
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -44,24 +45,29 @@ func Run(ctx context.Context, cfg config.ClientConfig, in io.Reader, out, jsonl 
 	}
 
 	// One sink tracks the latest committed seq so the next subscribe resumes
-	// exactly where the last one left off, and relays live llm events to both
-	// the JSONL stream and the human-readable view.
+	// exactly where the last one left off, relays live LLM events to both the
+	// JSONL stream and the human-readable view, and records system-side facts
+	// (tool results) on the JSONL stream.
 	seq := info.Seq
 	emit := func(env api.Envelope) {
 		if env.Seq > seq {
 			seq = env.Seq
 		}
-		if env.Kind == api.KindTurnDone {
+		switch env.Kind {
+		case api.KindTurnDone:
 			if env.Input > 0 || env.Output > 0 {
 				fmt.Fprintf(out, "(%d in, %d out tokens)\n", env.Input, env.Output)
 			}
+		case api.KindToolResult:
+			writeJSONL(jsonl, env)
+		case api.KindLLM:
+			if env.Event == nil {
+				return
+			}
+			ev := *env.Event
+			agent.EncodeJSON(jsonl)(ev)
+			agent.Render(out, agent.IsTerminal(out))(ev)
 		}
-		if env.Kind != api.KindLLM || env.Event == nil {
-			return
-		}
-		ev := *env.Event
-		agent.EncodeJSON(jsonl)(ev)
-		agent.Render(out, agent.IsTerminal(out))(ev)
 	}
 	untilTurnDone := func(env api.Envelope) bool { return env.Kind == api.KindTurnDone }
 
@@ -125,4 +131,13 @@ func renderMessage(w io.Writer, m llm.ChatMessage) {
 	case "assistant":
 		fmt.Fprintln(w, m.Content)
 	}
+}
+
+// writeJSONL writes v as a single NDJSON line to w.
+func writeJSONL(w io.Writer, v any) {
+	data, err := json.Marshal(v)
+	if err != nil {
+		return
+	}
+	_, _ = w.Write(append(data, '\n'))
 }

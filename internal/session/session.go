@@ -14,7 +14,6 @@ import (
 
 	"porter/internal/agent"
 	"porter/internal/api"
-	"porter/internal/codec"
 	"porter/internal/llm"
 	"porter/internal/tools"
 )
@@ -111,11 +110,8 @@ func (s *Session) runTurn(ctx context.Context, content string) {
 	turnID := s.nextTurn()
 	s.commit(llm.UserMessage(content))
 
-	emit := func(ev codec.Event) {
-		s.publishLLM(api.Envelope{Kind: api.KindLLM, Event: &ev})
-	}
 	done := api.Envelope{Kind: api.KindTurnDone, TurnID: turnID}
-	res, err := agent.RunTurn(ctx, s.client, s.snapshot(), s.js, emit, func(m llm.ChatMessage) {
+	res, err := agent.RunTurn(ctx, s.client, s.snapshot(), s.js, s.publish, func(m llm.ChatMessage) {
 		s.commit(m)
 	})
 	if err != nil {
@@ -174,9 +170,10 @@ func (s *Session) endTurn(env api.Envelope) {
 	s.sendTo(subs, env)
 }
 
-// publishLLM broadcasts a live rendering event (a codec.Event) without logging
-// it: it is real-time only and not replayed to late subscribers.
-func (s *Session) publishLLM(env api.Envelope) {
+// publish broadcasts a live envelope (an LLM event or a system-side fact like a
+// tool result) to every subscriber without logging it: it is real-time only and
+// not replayed to late subscribers.
+func (s *Session) publish(env api.Envelope) {
 	s.mu.Lock()
 	subs := s.subs
 	s.mu.Unlock()
