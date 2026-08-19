@@ -94,6 +94,42 @@ General pain points:
 - **Permissions:** YOLO for now.
 - **Auth:** only when needed; single-user.
 
+## Glossary
+
+Terms used throughout this README, grouped by the part of the system they belong to.
+
+### The model (what the LLM produces and sees)
+
+- **Event** — purely what the LLM produced: streamed text, reasoning, a finished message, token usage, and the tool calls it requests. Real-time and ephemeral.
+- **Delta** — a streamed chunk of message or reasoning text (`message_delta` / `reasoning_delta`).
+- **View** — *(planned)* the projection of History a consumer is given. The model's view can be trimmed or summarized (with recall tools to expand back); the user's view is the human-readable form. Today the model receives History directly.
+
+### The conversation (shared vocabulary)
+
+- **Conversation / Session** — one chat, the top-level unit of state (`session_id`). Owns the history and the pacing; the server is its single writer.
+- **Message** — one entry in a conversation: what you said, what the assistant said, a tool call, or a tool's result. The building block of history.
+
+### The agent loop (the turn engine)
+
+- **Turn** — from one thing you say to the model's final answer; can span several LLM round-trips (asking for a tool, seeing the result). Bounded by a `turn_completed` marker.
+- **Turn id** — identifies a turn; the future fork/rewind target (`turn_id`/`turn_uuid`).
+- **Tool result** — a system-side fact: the agent ran a tool and got this outcome. Not from the model.
+
+### The server (state + bus)
+
+- **History** — the raw, append-only, full-fidelity record of everything committed in a session. Ground truth; never rewritten in place. *(Planned: persisted to SQLite.)*
+- **Queue** — the server's per-session to-do list of user messages; worked through one turn at a time, in order.
+- **Bus / event log** — the ordered stream a subscriber watches. Committed messages and turn markers are logged for replay in the same order History is built; live Events and tool results stream on top, real-time only.
+- **Envelope** — one line on the bus; the union of everything a subscriber can receive: an Event, a tool result, a committed message, a turn completion, or a resync signal.
+- **Position (seq)** — the counter on the bus; a client says "I've seen up to here" and resumes exactly there.
+- **Commit** — the server appending a message to History (and the bus) the moment it's produced.
+
+### Clients (rendering + commands)
+
+- **Command** — what a client sends instead of its own copy of history: create a session, append a user message. *(Planned: stop, fork.)*
+- **Poll / Subscribe** — poll = fetch History; subscribe = watch the bus for new lines.
+- **Resync** — the bus telling a client its position is too old; refetch History and resubscribe.
+
 ## Roadmap
 
 **Where I start:** a minimal self-coding agent, used to improve itself
