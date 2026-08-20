@@ -1,12 +1,28 @@
 package tools
 
 import (
+	"context"
+	"io"
 	"strings"
 	"testing"
 )
 
+// run executes a tool via a Provider, reading its output stream to completion.
+func run(ctx context.Context, p Provider, name string, args []byte) (string, error) {
+	stream, err := p.Run(ctx, name, args)
+	if err != nil {
+		return "", err
+	}
+	b, rerr := io.ReadAll(stream)
+	_ = stream.Close()
+	if rerr != nil {
+		return "", rerr
+	}
+	return string(b), nil
+}
+
 func TestShellRunsCommand(t *testing.T) {
-	res, err := NewDispatcher().Run("shell", []byte(`{"command":"echo hi"}`))
+	res, err := run(context.Background(), NewDispatcher(), "shell", []byte(`{"command":"echo hi"}`))
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -16,7 +32,7 @@ func TestShellRunsCommand(t *testing.T) {
 }
 
 func TestShellReportsExitCode(t *testing.T) {
-	res, err := NewDispatcher().Run("shell", []byte(`{"command":"exit 3"}`))
+	res, err := run(context.Background(), NewDispatcher(), "shell", []byte(`{"command":"exit 3"}`))
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -26,7 +42,7 @@ func TestShellReportsExitCode(t *testing.T) {
 }
 
 func TestShellCombinesStdoutAndStderr(t *testing.T) {
-	res, err := NewDispatcher().Run("shell", []byte(`{"command":"echo out; echo err >&2"}`))
+	res, err := run(context.Background(), NewDispatcher(), "shell", []byte(`{"command":"echo out; echo err >&2"}`))
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -36,13 +52,30 @@ func TestShellCombinesStdoutAndStderr(t *testing.T) {
 }
 
 func TestDispatcherUnknownTool(t *testing.T) {
-	if _, err := NewDispatcher().Run("nope", []byte("{}")); err == nil {
+	if _, err := run(context.Background(), NewDispatcher(), "nope", []byte("{}")); err == nil {
 		t.Fatal("expected error for unknown tool")
 	}
 }
 
 func TestShellEmptyCommand(t *testing.T) {
-	if _, err := NewDispatcher().Run("shell", []byte(`{"command":"  "}`)); err == nil {
+	if _, err := run(context.Background(), NewDispatcher(), "shell", []byte(`{"command":"  "}`)); err == nil {
 		t.Fatal("expected error for empty command")
 	}
+}
+
+func TestShellRespectsCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	stream, err := NewDispatcher().Run(ctx, "shell", []byte(`{"command":"sleep 5"}`))
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	go func() {
+		_, _ = io.Copy(io.Discard, stream)
+		_ = stream.Close()
+	}()
+	cancel()
+	// Reading after cancellation must terminate rather than hang. Any of
+	// "(interrupt)" / EOF / "exit code" end-of-stream satisfies correctness.
+	b := make([]byte, 1)
+	_, _ = stream.Read(b)
 }

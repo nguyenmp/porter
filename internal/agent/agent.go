@@ -110,9 +110,18 @@ func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage,
 
 		commit(llm.AssistantMessage(reply.String(), toLLMCalls(calls)))
 		for _, c := range calls {
-			result, err := js.Run(c.Name, []byte(c.Arguments))
+			result := ""
+			stream, err := js.Run(ctx, c.Name, []byte(c.Arguments))
 			if err != nil {
 				result = "error: " + err.Error()
+			} else {
+				b, rerr := io.ReadAll(stream)
+				_ = stream.Close()
+				if rerr != nil {
+					result = "error: " + rerr.Error()
+				} else {
+					result = string(b)
+				}
 			}
 			if emit != nil {
 				emit(api.Envelope{Kind: api.KindToolResult, ToolCallID: c.ID, Name: c.Name, Result: result})
