@@ -76,7 +76,13 @@ func (f flushWriter) Write(p []byte) (int, error) {
 
 // handleCreate makes a new session and returns its id, history, and resume seq.
 func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
-	_ = json.NewEncoder(w).Encode(api.SessionInfo{ID: s.store.Create(s.client).ID()})
+	ses := s.store.Create(s.client)
+	snap := ses.Snapshot()
+	_ = json.NewEncoder(w).Encode(api.SessionInfo{
+		ID:      ses.ID(),
+		History: snap.History,
+		Seq:     snap.Seq,
+	})
 }
 
 // handleAppend queues a user message for the session's scheduler.

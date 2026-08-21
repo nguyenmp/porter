@@ -288,3 +288,25 @@ func TestEmptyAppendRejected(t *testing.T) {
 		}
 	}
 }
+func TestCreateReturnsAllFields(t *testing.T) {
+	srv := newTestServer(t, plainLLM())
+	c := client.New(srv.URL)
+	ctx := context.Background()
+
+	info, err := c.Create(ctx)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if info.ID == "" {
+		t.Error("ID is empty")
+	}
+	if info.History == nil {
+		t.Error("History is nil; want non-nil (empty slice for new session)")
+	}
+	if len(info.History) != 0 {
+		t.Errorf("History len = %d, want 0 for new session", len(info.History))
+	}
+	if info.Seq != 0 {
+		t.Errorf("Seq = %d, want 0 for new session", info.Seq)
+	}
+}
