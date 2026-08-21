@@ -48,11 +48,11 @@ func NewStore(ctxs ...context.Context) *Store {
 }
 
 // Create makes a new session and starts its turn scheduler.
-func (st *Store) Create(client *llm.Client, js tools.Provider) *Session {
+func (st *Store) Create(client *llm.Client) *Session {
 	st.mu.Lock()
 	st.next++
 	id := fmt.Sprintf("sess-%d", st.next)
-	s := newSession(id, client, js)
+	s := newSession(id, client, nil)
 	st.sessions[id] = s
 	st.mu.Unlock()
 	go s.loop(st.ctx)
@@ -72,9 +72,9 @@ func (st *Store) Get(id string) (*Session, bool) {
 type Session struct {
 	id     string
 	client *llm.Client
-	js     tools.Provider
 
 	mu      sync.Mutex
+	js      tools.Provider
 	logSeq  uint64
 	turn    int64
 	history []llm.ChatMessage
@@ -85,12 +85,35 @@ type Session struct {
 }
 
 func newSession(id string, client *llm.Client, js tools.Provider) *Session {
+	if js == nil {
+		js = tools.NewDispatcher()
+	}
 	return &Session{
 		id:     id,
 		client: client,
 		js:     js,
 		queue:  make(chan string, 16),
 	}
+}
+
+// SetProvider sets the execution provider this session runs tools with. It is
+// guarded by mu so a connected client can take over execution mid-session
+// without racing a running turn.
+func (s *Session) SetProvider(js tools.Provider) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.js = js
+}
+
+// provider returns the current execution provider, defaulting to local
+// execution when none has been registered.
+func (s *Session) provider() tools.Provider {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.js == nil {
+		s.js = tools.NewDispatcher()
+	}
+	return s.js
 }
 
 // loop is the turn scheduler. It consumes queued user messages one at a time,
@@ -111,7 +134,7 @@ func (s *Session) runTurn(ctx context.Context, content string) {
 	s.commit(llm.UserMessage(content))
 
 	done := api.Envelope{Kind: api.KindTurnDone, TurnID: turnID}
-	res, err := agent.RunTurn(ctx, s.client, s.snapshot(), s.js, s.publish, func(m llm.ChatMessage) {
+	res, err := agent.RunTurn(ctx, s.client, s.snapshot(), s.provider(), s.publish, func(m llm.ChatMessage) {
 		s.commit(m)
 	})
 	if err != nil {

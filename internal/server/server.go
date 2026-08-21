@@ -18,19 +18,18 @@ import (
 	"porter/internal/config"
 	"porter/internal/llm"
 	"porter/internal/session"
-	"porter/internal/tools"
 )
 
-// Server owns the LLM client, the tool provider, and all sessions.
+// Server owns the LLM client and all sessions.
 type Server struct {
 	addr   string
 	client *llm.Client
-	js     tools.Provider
 	store  *session.Store
 }
 
-// New validates cfg and builds a Server with its own LLM client, local tool
-// provider, and session store.
+// New validates cfg and builds a Server with its own LLM client and session
+// store. Each session resolves its own execution provider at runtime,
+// defaulting to local execution.
 func New(cfg config.Config) (*Server, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
@@ -38,7 +37,6 @@ func New(cfg config.Config) (*Server, error) {
 	return &Server{
 		addr:   cfg.Addr,
 		client: llm.NewClient(cfg, nil),
-		js:     tools.NewDispatcher(),
 		store:  session.NewStore(),
 	}, nil
 }
@@ -76,7 +74,7 @@ func (f flushWriter) Write(p []byte) (int, error) {
 
 // handleCreate makes a new session and returns its id, history, and resume seq.
 func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
-	_ = json.NewEncoder(w).Encode(api.SessionInfo{ID: s.store.Create(s.client, s.js).ID()})
+	_ = json.NewEncoder(w).Encode(api.SessionInfo{ID: s.store.Create(s.client).ID()})
 }
 
 // handleAppend queues a user message for the session's scheduler.

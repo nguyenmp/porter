@@ -176,7 +176,7 @@ func TestEnqueueRunsTurn(t *testing.T) {
 	defer cancel()
 
 	st := NewStore(nctx)
-	s := st.Create(client, tools.NewDispatcher())
+	s := st.Create(client)
 	s.Enqueue("hello")
 
 	deadline := time.After(5 * time.Second)
@@ -194,6 +194,24 @@ func TestEnqueueRunsTurn(t *testing.T) {
 	}
 	if snap.History[0].Content != "hello" || snap.History[1].Content != "done" {
 		t.Errorf("history = %+v, want user 'hello' then assistant 'done'", snap.History)
+	}
+}
+
+// TestSetProviderDefaultsToLocal verifies a fresh session resolves to a local
+// provider and can swap to a registered one without racing.
+func TestSetProviderDefaultsToLocal(t *testing.T) {
+	st := NewStore()
+	s := st.Create(nil)
+
+	p := s.provider()
+	if _, ok := p.(*tools.Dispatcher); !ok {
+		t.Errorf("default provider = %T, want *tools.Dispatcher", p)
+	}
+
+	registered := &tools.Dispatcher{}
+	s.SetProvider(registered)
+	if got := s.provider(); got != registered {
+		t.Errorf("provider after SetProvider = %T, want registered", got)
 	}
 }
 
