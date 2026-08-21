@@ -81,6 +81,11 @@ type Session struct {
 	log     []api.Envelope
 	subs    []chan api.Envelope
 
+	// Execution provider connection state.
+	execCh    chan api.ExecRequest
+	execCalls map[string]*execCall
+	execSeq   int
+
 	queue chan string
 }
 

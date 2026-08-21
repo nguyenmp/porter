@@ -15,12 +15,14 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"porter/internal/agent"
 	"porter/internal/api"
 	"porter/internal/client"
 	"porter/internal/config"
 	"porter/internal/llm"
+	"porter/internal/tools"
 )
 
 // Run drives a multi-turn conversation. in supplies the user's lines, out shows
@@ -29,6 +31,11 @@ import (
 // stream and progress lines go to that file instead, so an interactive
 // container stays quiet.
 func Run(ctx context.Context, cfg config.ClientConfig, in io.Reader, out, jsonl io.Writer) error {
+	// Tie the long-lived execution-provider connection to this Run so it closes
+	// when we return; otherwise a held /exec connection blocks server shutdown.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	if cfg.LogFile != "" {
 		f, err := os.OpenFile(cfg.LogFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 		if err != nil {
@@ -43,6 +50,26 @@ func Run(ctx context.Context, cfg config.ClientConfig, in io.Reader, out, jsonl 
 	if err != nil {
 		return fmt.Errorf("create session: %w", err)
 	}
+
+	// Act as the session's execution provider: hold the exec connection open and
+	// run any shell tool calls the agent sends on this host, streaming the
+	// output back. Re-register on reconnect until the session ends.
+	dispatcher := tools.NewDispatcher()
+	go func() {
+		for {
+			if err := c.ServeExec(ctx, info.ID, dispatcher.Run); err != nil {
+				if ctx.Err() != nil {
+					return
+				}
+				// connection dropped; retry registration
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(time.Second):
+			}
+		}
+	}()
 
 	// One sink tracks the latest committed seq so the next subscribe resumes
 	// exactly where the last one left off, relays live LLM events to both the

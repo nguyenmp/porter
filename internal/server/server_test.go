@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"porter/internal/api"
 	"porter/internal/client"
 	"porter/internal/config"
+	"porter/internal/tools"
 )
 
 // plainLLM serves an SSE reply "hi" with usage 1/2 for every request.
@@ -171,6 +173,74 @@ func TestToolResultEnvelope(t *testing.T) {
 	}
 	if !sawToolResult {
 		t.Errorf("bus missing a tool_result envelope; got %+v", got)
+	}
+}
+
+// TestServerRunsToolViaExecProvider verifies that a client registered as the
+// session's execution provider (via ServeExec) runs the agent's tool calls and
+// streams results back into History, instead of the server running them.
+func TestServerRunsToolViaExecProvider(t *testing.T) {
+	srv := newTestServer(t, toolThenReplyLLM())
+	c := client.New(srv.URL)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel() // close the exec connection before server cleanup
+
+	info, err := c.Create(ctx)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// Register as the session's execution provider, running tools in-process
+	// and recording that we did.
+	var mu sync.Mutex
+	ranOnClient := false
+	dispatch := func(ctx context.Context, name string, args []byte) (io.ReadCloser, error) {
+		mu.Lock()
+		ranOnClient = true
+		mu.Unlock()
+		return tools.NewDispatcher().Run(ctx, name, args)
+	}
+	go func() { _ = c.ServeExec(ctx, info.ID, dispatch) }()
+	// Give the registration round-trip a moment to land before the turn runs.
+	time.Sleep(100 * time.Millisecond)
+
+	if err := c.Append(ctx, info.ID, "run it"); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	var h api.SessionHistory
+	done := false
+	err = c.Subscribe(ctx, info.ID, info.Seq, nil, func(env api.Envelope) bool {
+		if env.Kind == api.KindTurnDone {
+			done = true
+			return true
+		}
+		return false
+	})
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	if !done {
+		t.Fatal("no turn_completed observed")
+	}
+	h, err = c.History(ctx, info.ID)
+	if err != nil {
+		t.Fatalf("History: %v", err)
+	}
+
+	mu.Lock()
+	ran := ranOnClient
+	mu.Unlock()
+	if !ran {
+		t.Errorf("tool call did not run through the registered client")
+	}
+	var found bool
+	for _, m := range h.History {
+		if m.Role == "tool" && strings.Contains(m.Content, "hi") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected a committed tool result; history = %+v", h.History)
 	}
 }
 

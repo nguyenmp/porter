@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -104,6 +105,64 @@ func (c *Client) Subscribe(ctx context.Context, id string, since uint64, onEvent
 	return nil
 }
 
+// ServeExec registers this client as the session's execution provider and
+// blocks, reading exec requests from the server and running each via dispatch.
+// It streams the output back to the server. It returns when the connection
+// ends (or ctx is cancelled); callers should retry to re-register.
+func (c *Client) ServeExec(ctx context.Context, id string, dispatch func(ctx context.Context, name string, args []byte) (io.ReadCloser, error)) error {
+	u := c.path(api.SessionExecPath, id)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return fmt.Errorf("build exec: %w", err)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("exec: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return c.statusError(resp)
+	}
+
+	sc := bufio.NewScanner(resp.Body)
+	for sc.Scan() {
+		var er api.ExecRequest
+		if err := json.Unmarshal(sc.Bytes(), &er); err != nil {
+			return fmt.Errorf("decode exec request: %w", err)
+		}
+		stream, err := dispatch(ctx, er.Name, []byte(er.Arguments))
+		if err != nil {
+			// Can't start the tool; report it as the result so the agent sees
+			// an error rather than hanging.
+			_ = c.postExecResult(ctx, id, er.CallID, strings.NewReader("error: "+err.Error()))
+			continue
+		}
+		_ = c.postExecResult(ctx, id, er.CallID, stream)
+		_ = stream.Close()
+	}
+	if err := sc.Err(); err != nil {
+		return err
+	}
+	return nil
+}
+
+// postExecResult streams a tool's output back to the server for a call id.
+func (c *Client) postExecResult(ctx context.Context, id, callID string, body io.Reader) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.path(api.SessionExecResultPath, id, callID), body)
+	if err != nil {
+		return err
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return c.statusError(resp)
+	}
+	return nil
+}
+
 // doJSON performs a request, decoding a JSON response body into out when out is
 // non-nil.
 func (c *Client) doJSON(ctx context.Context, method, url string, body []byte, out any) error {
@@ -130,10 +189,13 @@ func (c *Client) doJSON(ctx context.Context, method, url string, body []byte, ou
 	return nil
 }
 
-// path substitutes the session id into an api route spec.
-func (c *Client) path(spec, id string) string {
+// path substitutes the {id} and {call_id} params into an api route spec.
+func (c *Client) path(spec, id string, callID ...string) string {
 	if id != "" {
 		spec = strings.Replace(spec, "{id}", url.PathEscape(id), 1)
+	}
+	if len(callID) > 0 && callID[0] != "" {
+		spec = strings.Replace(spec, "{call_id}", url.PathEscape(callID[0]), 1)
 	}
 	return c.base + spec
 }

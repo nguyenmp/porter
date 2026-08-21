@@ -53,6 +53,8 @@ func (s *Server) Handler() http.Handler {
 	r.Post(api.SessionMessagesPath, s.handleAppend)
 	r.Get(api.SessionHistoryPath, s.handleHistory)
 	r.Get(api.SessionEventsPath, s.handleEvents)
+	r.Get(api.SessionExecPath, s.handleExec)
+	r.Post(api.SessionExecResultPath, s.handleExecResult)
 	return r
 }
 
@@ -137,4 +139,46 @@ func Serve(cfg config.Config) error {
 	}
 	log.Printf("porter server listening on %s", cfg.Addr)
 	return s.ListenAndServe()
+}
+
+// handleExec registers a client as the session's execution provider and holds
+// the connection open, pushing each tool call the agent makes down it as NDJSON.
+func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
+	ses, ok := s.store.Get(chi.URLParam(r, "id"))
+	if !ok {
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+	ch := make(chan api.ExecRequest, 8)
+	ses.RegisterExec(ch)
+	defer ses.UnregisterExec()
+
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	w.WriteHeader(http.StatusOK)
+
+	enc := json.NewEncoder(flushWriter{w})
+	for {
+		select {
+		case req := <-ch:
+			if err := enc.Encode(req); err != nil {
+				return
+			}
+		case <-r.Context().Done():
+			return
+		}
+	}
+}
+
+// handleExecResult streams a client's tool output back to the in-flight call.
+func (s *Server) handleExecResult(w http.ResponseWriter, r *http.Request) {
+	ses, ok := s.store.Get(chi.URLParam(r, "id"))
+	if !ok {
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+	if err := ses.ExecResult(chi.URLParam(r, "call_id"), r.Body); err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
 }

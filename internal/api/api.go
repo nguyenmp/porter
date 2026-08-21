@@ -20,7 +20,21 @@ const (
 	SessionMessagesPath = "/api/sessions/{id}/messages"
 	// SessionEventsPath subscribes to a session's event bus: GET (NDJSON).
 	SessionEventsPath = "/api/sessions/{id}/events"
+	// SessionExecPath registers a client as the session's execution provider
+	// and holds the connection open for exec requests: GET (NDJSON requests).
+	SessionExecPath = "/api/sessions/{id}/exec"
+	// SessionExecResultPath streams a tool call's output back to the server,
+	// after the client runs it: POST (streaming body).
+	SessionExecResultPath = "/api/sessions/{id}/exec/{call_id}"
 )
+
+// ExecRequest is one tool call the server pushes to a session's execution
+// provider.
+type ExecRequest struct {
+	CallID    string `json:"call_id"`
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
+}
 
 // SessionInfo is returned by POST /api/sessions. It carries the new session's
 // id, its (empty) history, and the seq to resume the bus from.
