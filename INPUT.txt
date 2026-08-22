@@ -7,24 +7,13 @@ As such, let's reflect on this roadmap for this repo.
 
 Web UI — Task Breakdown
 
-### Step 1: Functional — Read-only conversation view (polling)
-
-First visible web page. It can't send messages yet, but it proves the rendering path:
-
-- **`GET /`** renders a minimal HTML page with an HTMX script tag (from a CDN or vendored), a text input (non-functional for now), and a session selector.
-- **`GET /api/sessions/{id}/view`** (new route, HTML response) renders the session's committed history as HTML — user messages as `<div>`s, assistant messages as `<div>`s, tool calls and results in collapsible `<details>` blocks. No markdown yet, just escaped plaintext with line breaks.
-- The page creates a session (or takes a `?session=` param), then uses HTMX (`hx-get` + `hx-trigger="every 1s"`) to poll the view endpoint into a `<div id="chat">`. This is the simplest possible live-update mechanism — no SSE, no JS, just polling. Ugly but functional.
-- Token usage from `KindTurnDone` can render at the bottom of each assistant message.
-
-**Why polling first:** it requires zero new server infrastructure, zero JS, and gives you a working chat viewer in an afternoon. You can see the conversation update after each turn completes. The latency (up to 1s) is fine for a first pass.
-
-### Step 2: Functional — Send messages
+### Step 1: Functional — Send messages
 
 - Add a `<form>` with `hx-post` to `POST /api/sessions/{id}/messages`. The server's `handleAppend` already accepts JSON; either make the form submit JSON (a tiny `onsubmit` JS shim) or add a second handler that accepts form-encoded input. The latter is more HTMX-idiomatic.
 - After the POST returns 202, trigger a history poll refresh (HTMX `hx-swap` + `hx-trigger` from the response, or just let the existing 1s poll catch it).
 - The page now does the full loop: type a message → server queues a turn → poll picks up the reply. You have a working (if laggy) chat UI.
 
-### Step 3: Functional — Live streaming via SSE
+### Step 2: Functional — Live streaming via SSE
 
 Replace polling with real-time streaming. This is where the UX gets good:
 
@@ -32,14 +21,7 @@ Replace polling with real-time streaming. This is where the UX gets good:
 - The HTML page uses HTMX's SSE extension (`hx-ext="sse"` with `sse-connect`, `sse-swap`) to stream events into the DOM. Message deltas append to a growing `<div>`, tool calls show up as they happen, reasoning streams in dimmed.
 - Keep the `GET /api/sessions/{id}/view` endpoint for the initial page load (full history render), then SSE takes over for live updates. The `since` parameter (already on the bus) ensures no gap between initial render and live stream.
 
-### Step 4: Refactor — Markdown rendering
-
-- Add a server-side markdown renderer. `goldmark` is the standard Go choice; it's one dependency, pure Go, and handles CommonMark + tables + code blocks. Render assistant message content through it before inserting into the template.
-- Code blocks get `<pre><code>` with optional syntax highlighting (can defer highlighting to a later step — start with just monospaced blocks).
-- User messages stay plain text (escaped, with line breaks) — no need to render user input as markdown.
-- This is a change to the template rendering layer only; no API or bus changes.
-
-### Step 5: Refactor — Execution provider from the browser
+### Step 3: Refactor — Execution provider from the browser
 
 The REPL currently acts as the exec provider (runs shell commands locally). The web UI needs the same: either the server runs tools locally by default (it already can — `Dispatcher` exists), or the browser registers as exec provider (which doesn't make sense for shell). So:
 
@@ -64,10 +46,8 @@ The REPL currently acts as the exec provider (runs shell commands locally). The 
 
 | Step | Type | What you get |
 |------|------|-------------|
-| 1 | Functional | Read-only chat viewer via polling |
-| 2 | Functional | Send messages, full chat loop works |
-| 3 | Functional | Live streaming via SSE, feels real-time |
-| 4 | Refactor | Markdown rendering for assistant messages |
-| 5 | Refactor | Server-local execution provider for the browser |
+| 1 | Functional | Send messages, full chat loop works |
+| 2 | Functional | Live streaming via SSE, feels real-time |
+| 3 | Refactor | Server-local execution provider for the browser |
 
-Steps 1–2 are each small enough to be one sitting. Step 3 is the biggest one (SSE endpoint + HTMX SSE wiring). Step 4 is a quick win once the rendering pipeline exists. After that, you're adding features on top of a working UI.
+Steps 1–2 are each small enough to be one sitting. Step 2 is the biggest one (SSE endpoint + HTMX SSE wiring). After that, you're adding features on top of a working UI.
