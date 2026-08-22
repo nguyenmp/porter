@@ -7,13 +7,7 @@ As such, let's reflect on this roadmap for this repo.
 
 Web UI — Task Breakdown
 
-### Step 1: Functional — Send messages
-
-- Add a `<form>` with `hx-post` to `POST /api/sessions/{id}/messages`. The server's `handleAppend` already accepts JSON; either make the form submit JSON (a tiny `onsubmit` JS shim) or add a second handler that accepts form-encoded input. The latter is more HTMX-idiomatic.
-- After the POST returns 202, trigger a history poll refresh (HTMX `hx-swap` + `hx-trigger` from the response, or just let the existing 1s poll catch it).
-- The page now does the full loop: type a message → server queues a turn → poll picks up the reply. You have a working (if laggy) chat UI.
-
-### Step 2: Functional — Live streaming via SSE
+### Step 1: Functional — Live streaming via SSE
 
 Replace polling with real-time streaming. This is where the UX gets good:
 
@@ -21,7 +15,7 @@ Replace polling with real-time streaming. This is where the UX gets good:
 - The HTML page uses HTMX's SSE extension (`hx-ext="sse"` with `sse-connect`, `sse-swap`) to stream events into the DOM. Message deltas append to a growing `<div>`, tool calls show up as they happen, reasoning streams in dimmed.
 - Keep the `GET /api/sessions/{id}/view` endpoint for the initial page load (full history render), then SSE takes over for live updates. The `since` parameter (already on the bus) ensures no gap between initial render and live stream.
 
-### Step 3: Refactor — Execution provider from the browser
+### Step 2: Refactor — Execution provider from the browser
 
 The REPL currently acts as the exec provider (runs shell commands locally). The web UI needs the same: either the server runs tools locally by default (it already can — `Dispatcher` exists), or the browser registers as exec provider (which doesn't make sense for shell). So:
 
@@ -46,8 +40,7 @@ The REPL currently acts as the exec provider (runs shell commands locally). The 
 
 | Step | Type | What you get |
 |------|------|-------------|
-| 1 | Functional | Send messages, full chat loop works |
-| 2 | Functional | Live streaming via SSE, feels real-time |
-| 3 | Refactor | Server-local execution provider for the browser |
+| 1 | Functional | Live streaming via SSE, feels real-time |
+| 2 | Refactor | Server-local execution provider for the browser |
 
-Steps 1–2 are each small enough to be one sitting. Step 2 is the biggest one (SSE endpoint + HTMX SSE wiring). After that, you're adding features on top of a working UI.
+Steps 1–2 are each small enough to be one sitting. Step 1 is the biggest one (SSE endpoint + HTMX SSE wiring). After that, you're adding features on top of a working UI.
