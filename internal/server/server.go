@@ -6,6 +6,7 @@
 package server
 
 import (
+	"bytes"
 	"embed"
 	"encoding/json"
 	"html/template"
@@ -15,6 +16,8 @@ import (
 	"strings"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/yuin/goldmark"
+	"github.com/yuin/goldmark/extension"
 
 	"porter/internal/api"
 	"porter/internal/config"
@@ -26,15 +29,29 @@ import (
 var webFS embed.FS
 
 // nl2br converts newlines to <br> tags after HTML-escaping. Used in the view
-// template to render plaintext with line breaks without a full markdown renderer.
-func nl2br(s string) string {
+// template to render plaintext (user messages) with line breaks. Returns
+// template.HTML so the template engine does not double-escape the output.
+func nl2br(s string) template.HTML {
 	s = template.HTMLEscapeString(s)
-	return strings.ReplaceAll(s, "\n", "<br>")
+	return template.HTML(strings.ReplaceAll(s, "\n", "<br>"))
+}
+
+// renderMarkdown converts markdown text to HTML using goldmark with the GFM
+// table extension. goldmark handles its own HTML escaping, so the output is
+// safe to return as template.HTML (the template engine will not re-escape it).
+func renderMarkdown(s string) template.HTML {
+	var buf bytes.Buffer
+	if err := goldmark.New(goldmark.WithExtensions(extension.GFM)).Convert([]byte(s), &buf); err != nil {
+		// On error, fall back to escaped plaintext with line breaks.
+		return nl2br(s)
+	}
+	return template.HTML(buf.String())
 }
 
 // templates are parsed once at startup from the embedded web directory.
 var templates = template.Must(template.New("").Funcs(template.FuncMap{
-	"nl2br": nl2br,
+	"nl2br":          nl2br,
+	"renderMarkdown": renderMarkdown,
 }).ParseFS(webFS, "web/*.tmpl"))
 
 // pageData is the data passed to every page template.

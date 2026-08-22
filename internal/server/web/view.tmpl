@@ -8,7 +8,7 @@
 		<div class="msg msg-assistant">
 			<span class="msg-role">assistant</span>
 			{{if .Content}}
-				<div class="msg-content">{{nl2br .Content}}</div>
+				<div class="msg-content">{{renderMarkdown .Content}}</div>
 			{{end}}
 			{{range .ToolCalls}}
 				<details class="tool-call">
