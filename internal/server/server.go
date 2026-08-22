@@ -247,11 +247,18 @@ func (s *Server) handleView(w http.ResponseWriter, r *http.Request) {
 	render(w, "view.tmpl", viewData{Messages: snap.History})
 }
 
-// handleIndex serves the chat page. A ?session= query param, if present, is
-// passed into the template so the page can bootstrap the correct session.
+// handleIndex serves the chat page. When no ?session= param is present, it
+// creates a new session and redirects to /?session=<id> so the page always has
+// something to poll. When the param is present, it renders the page directly.
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
+	sessID := r.URL.Query().Get("session")
+	if sessID == "" {
+		ses := s.store.Create(s.client)
+		http.Redirect(w, r, "/?session="+ses.ID(), http.StatusFound)
+		return
+	}
 	render(w, "layout.tmpl", pageData{
 		Title:   "porter",
-		Session: r.URL.Query().Get("session"),
+		Session: sessID,
 	})
 }
