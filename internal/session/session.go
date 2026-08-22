@@ -26,6 +26,16 @@ const logEventsMax = 256
 // turn's envelopes as an HTTP handler drains it.
 const subBuffer = 64
 
+// TurnMeta is the committed metadata for one completed turn: its token usage
+// and any error. It is stored alongside history so the view endpoint can render
+// usage without reading the bus log.
+type TurnMeta struct {
+	TurnID int64
+	Input  int
+	Output int
+	Error  string
+}
+
 // Store owns the live set of sessions. It serializes id allocation and lookup,
 // but each session serializes its own history writes. Sessions' schedules run on
 // the store's context, which should outlive any single request (the session
@@ -78,6 +88,7 @@ type Session struct {
 	logSeq  uint64
 	turn    int64
 	history []llm.ChatMessage
+	turns   []TurnMeta
 	log     []api.Envelope
 	subs    []chan api.Envelope
 
@@ -171,6 +182,14 @@ func (s *Session) Snapshot() api.SessionHistory {
 	}
 }
 
+// Turns returns metadata for all completed turns (usage and errors). The slice
+// is a defensive copy.
+func (s *Session) Turns() []TurnMeta {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]TurnMeta{}, s.turns...)
+}
+
 // commit appends m to the authoritative history, stamps it on the bus log with
 // the next position, and publishes it to every subscriber.
 func (s *Session) commit(m llm.ChatMessage) uint64 {
@@ -187,11 +206,19 @@ func (s *Session) commit(m llm.ChatMessage) uint64 {
 }
 
 // endTurn logs and broadcasts a turn-completion marker so late subscribers see
-// it even if the turn finished before they connected.
+// it even if the turn finished before they connected. It also records the
+// turn's metadata (usage, error) so the view endpoint can render it without
+// reading the bus log.
 func (s *Session) endTurn(env api.Envelope) {
 	s.mu.Lock()
 	s.logSeq++
 	env.Seq = s.logSeq
+	s.turns = append(s.turns, TurnMeta{
+		TurnID: env.TurnID,
+		Input:  env.Input,
+		Output: env.Output,
+		Error:  env.Error,
+	})
 	s.bufferLocked(env)
 	subs := s.subs
 	s.mu.Unlock()

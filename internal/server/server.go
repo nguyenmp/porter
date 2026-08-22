@@ -44,9 +44,11 @@ type pageData struct {
 }
 
 // viewData is passed to the view fragment template. Messages is the session's
-// committed history.
+// committed history; Turns carries per-turn metadata (token usage, errors) for
+// rendering at the bottom of the view.
 type viewData struct {
 	Messages []llm.ChatMessage
+	Turns    []session.TurnMeta
 }
 
 // Server owns the LLM client and all sessions.
@@ -243,8 +245,10 @@ func (s *Server) handleView(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "session not found", http.StatusNotFound)
 		return
 	}
-	snap := ses.Snapshot()
-	render(w, "view.tmpl", viewData{Messages: snap.History})
+	render(w, "view.tmpl", viewData{
+		Messages: ses.Snapshot().History,
+		Turns:    ses.Turns(),
+	})
 }
 
 // handleIndex serves the chat page. When no ?session= param is present, it
