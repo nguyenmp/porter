@@ -78,6 +78,7 @@ func (f flushWriter) Write(p []byte) (int, error) {
 func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 	ses := s.store.Create(s.client)
 	snap := ses.Snapshot()
+	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(api.SessionInfo{
 		ID:      ses.ID(),
 		History: snap.History,
@@ -112,6 +113,7 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "session not found", http.StatusNotFound)
 		return
 	}
+	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(ses.Snapshot())
 }
 

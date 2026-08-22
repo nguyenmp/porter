@@ -310,3 +310,35 @@ func TestCreateReturnsAllFields(t *testing.T) {
 		t.Errorf("Seq = %d, want 0 for new session", info.Seq)
 	}
 }
+
+func TestJSONContentType(t *testing.T) {
+	srv := newTestServer(t, plainLLM())
+	c := client.New(srv.URL)
+	ctx := context.Background()
+
+	// POST /api/sessions should return application/json.
+	info, err := c.Create(ctx)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// Verify Create response Content-Type by making a raw request.
+	createResp, err := http.Post(srv.URL+api.SessionsPath, "application/json", nil)
+	if err != nil {
+		t.Fatalf("POST sessions: %v", err)
+	}
+	defer createResp.Body.Close()
+	if ct := createResp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		t.Errorf("Create Content-Type = %q, want application/json", ct)
+	}
+
+	// GET /api/sessions/{id} should return application/json.
+	histResp, err := http.Get(srv.URL + "/api/sessions/" + info.ID)
+	if err != nil {
+		t.Fatalf("GET history: %v", err)
+	}
+	defer histResp.Body.Close()
+	if ct := histResp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		t.Errorf("History Content-Type = %q, want application/json", ct)
+	}
+}
