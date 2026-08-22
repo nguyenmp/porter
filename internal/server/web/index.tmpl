@@ -2,8 +2,17 @@
 	<div id="chat"
 		{{if .Session}}
 		hx-get="/api/sessions/{{.Session}}/view"
-		hx-trigger="every 1s"
+		hx-trigger="every 1s, refresh from:body"
 		hx-swap="innerHTML"
 		{{end}}>
 	</div>
+	{{if .Session}}
+	<form hx-post="/api/sessions/{{.Session}}/messages"
+		hx-target="#chat"
+		hx-swap="none"
+		class="msg-form">
+		<input type="text" name="content" placeholder="Type a message…" autocomplete="off" autofocus>
+		<button type="submit">Send</button>
+	</form>
+	{{end}}
 {{end}}

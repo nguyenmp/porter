@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"embed"
 	"encoding/json"
+	"fmt"
 	"html/template"
 	"log"
 	"net/http"
@@ -136,24 +137,47 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleAppend queues a user message for the session's scheduler.
+// handleAppend queues a user message for the session's scheduler. It accepts
+// both JSON (api.AppendRequest) and form-encoded ("content" field) bodies so
+// HTMX forms can post directly without a JS shim. On success it sets the
+// HX-Trigger response header to "refresh" so the chat div polls immediately
+// instead of waiting for the next 1s interval.
 func (s *Server) handleAppend(w http.ResponseWriter, r *http.Request) {
 	ses, ok := s.store.Get(chi.URLParam(r, "id"))
 	if !ok {
 		http.Error(w, "session not found", http.StatusNotFound)
 		return
 	}
-	var req api.AppendRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid request: "+err.Error(), http.StatusBadRequest)
+	content, err := readAppendContent(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if strings.TrimSpace(req.Content) == "" {
+	if strings.TrimSpace(content) == "" {
 		http.Error(w, "empty message", http.StatusBadRequest)
 		return
 	}
-	ses.Enqueue(req.Content)
+	ses.Enqueue(content)
+	w.Header().Set("HX-Trigger", "refresh")
 	w.WriteHeader(http.StatusAccepted)
+}
+
+// readAppendContent extracts the user's message from either a JSON body
+// (api.AppendRequest) or a form-encoded body ("content" field), depending on
+// the request's Content-Type.
+func readAppendContent(r *http.Request) (string, error) {
+	ct := r.Header.Get("Content-Type")
+	if strings.HasPrefix(ct, "application/x-www-form-urlencoded") {
+		if err := r.ParseForm(); err != nil {
+			return "", fmt.Errorf("invalid form: %w", err)
+		}
+		return r.PostForm.Get("content"), nil
+	}
+	var req api.AppendRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		return "", fmt.Errorf("invalid request: %w", err)
+	}
+	return req.Content, nil
 }
 
 // handleHistory returns the session's authoritative history and seq.

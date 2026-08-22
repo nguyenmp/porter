@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -496,8 +497,152 @@ func TestIndexPollsWhenSessionSet(t *testing.T) {
 	if !strings.Contains(s, `hx-get="/api/sessions/sess-42/view"`) {
 		t.Errorf("index does not contain hx-get for session view")
 	}
-	if !strings.Contains(s, `hx-trigger="every 1s"`) {
-		t.Errorf("index does not contain hx-trigger for polling")
+	if !strings.Contains(s, `hx-trigger="every 1s, refresh from:body"`) {
+		t.Errorf("index does not contain hx-trigger for polling + refresh; got: %s", s)
+	}
+}
+
+func TestIndexContainsMessageForm(t *testing.T) {
+	srv := newTestServer(t, plainLLM())
+	resp, err := http.Get(srv.URL + "/?session=sess-42")
+	if err != nil {
+		t.Fatalf("GET /: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	s := string(body)
+	if !strings.Contains(s, `hx-post="/api/sessions/sess-42/messages"`) {
+		t.Errorf("index does not contain hx-post for message form")
+	}
+	if !strings.Contains(s, `name="content"`) {
+		t.Errorf("index does not contain content input field")
+	}
+	if !strings.Contains(s, `class="msg-form"`) {
+		t.Errorf("index does not contain msg-form class")
+	}
+}
+
+func TestIndexFormAfterRedirect(t *testing.T) {
+	srv := newTestServer(t, plainLLM())
+	// GET / with no session param redirects to /?session=<id>.
+	// Follow the redirect to get the page with a session.
+	resp, err := http.Get(srv.URL + "/")
+	if err != nil {
+		t.Fatalf("GET /: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	s := string(body)
+	if !strings.Contains(s, "msg-form") {
+		t.Errorf("index with session should contain msg-form")
+	}
+}
+
+func TestFormEncodedAppend(t *testing.T) {
+	srv := newTestServer(t, plainLLM())
+	c := client.New(srv.URL)
+	ctx := context.Background()
+	info, err := c.Create(ctx)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	// Submit as form-encoded, the way HTMX would.
+	form := url.Values{"content": {"hello from form"}}
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, srv.URL+"/api/sessions/"+info.ID+"/messages", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST form: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusAccepted {
+		t.Errorf("form append status = %d, want 202", resp.StatusCode)
+	}
+	// Verify the message was queued by checking history after the turn completes.
+	done := false
+	err = c.Subscribe(ctx, info.ID, info.Seq, nil, func(env api.Envelope) bool {
+		if env.Kind == api.KindTurnDone {
+			done = true
+			return true
+		}
+		return false
+	})
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	if !done {
+		t.Fatal("no turn_completed observed")
+	}
+	h, err := c.History(ctx, info.ID)
+	if err != nil {
+		t.Fatalf("History: %v", err)
+	}
+	if len(h.History) < 1 || h.History[0].Role != "user" || h.History[0].Content != "hello from form" {
+		t.Errorf("history[0] = %+v, want user 'hello from form'", h.History[0])
+	}
+}
+
+func TestFormEncodedAppendEmptyRejected(t *testing.T) {
+	srv := newTestServer(t, plainLLM())
+	c := client.New(srv.URL)
+	ctx := context.Background()
+	info, err := c.Create(ctx)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	form := url.Values{"content": {"  "}}
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, srv.URL+"/api/sessions/"+info.ID+"/messages", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST form: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("empty form append status = %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestAppendSetsHXTrigger(t *testing.T) {
+	srv := newTestServer(t, plainLLM())
+	c := client.New(srv.URL)
+	ctx := context.Background()
+	info, err := c.Create(ctx)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	// JSON append (existing clients still work).
+	body, _ := json.Marshal(api.AppendRequest{Content: "hi"})
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, srv.URL+"/api/sessions/"+info.ID+"/messages", strings.NewReader(string(body)))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST json: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.Header.Get("HX-Trigger") != "refresh" {
+		t.Errorf("JSON append HX-Trigger = %q, want %q", resp.Header.Get("HX-Trigger"), "refresh")
+	}
+}
+
+func TestFormEncodedAppendSetsHXTrigger(t *testing.T) {
+	srv := newTestServer(t, plainLLM())
+	c := client.New(srv.URL)
+	ctx := context.Background()
+	info, err := c.Create(ctx)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	form := url.Values{"content": {"hi"}}
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, srv.URL+"/api/sessions/"+info.ID+"/messages", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST form: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.Header.Get("HX-Trigger") != "refresh" {
+		t.Errorf("form append HX-Trigger = %q, want %q", resp.Header.Get("HX-Trigger"), "refresh")
 	}
 }
 
