@@ -23,6 +23,8 @@ const (
 	SessionMessagesPath = "/api/sessions/{id}/messages"
 	// SessionEventsPath subscribes to a session's event bus: GET (NDJSON).
 	SessionEventsPath = "/api/sessions/{id}/events"
+	// SessionStreamPath streams a session's event bus as Server-Sent Events.
+	SessionStreamPath = "/api/sessions/{id}/stream"
 	// SessionExecPath registers a client as the session's execution provider
 	// and holds the connection open for exec requests: GET (NDJSON requests).
 	SessionExecPath = "/api/sessions/{id}/exec"
@@ -84,15 +86,15 @@ const (
 // Envelope is a single NDJSON line on a session's event bus. Kind selects which
 // fields are meaningful.
 type Envelope struct {
-	Kind    string           `json:"kind"`
-	Seq     uint64           `json:"seq,omitempty"`      // KindMessage
-	Event   *codec.Event     `json:"event,omitempty"`    // KindLLM
-	Message *llm.ChatMessage `json:"message,omitempty"`  // KindMessage
-	ToolCallID string        `json:"tool_call_id,omitempty"` // KindToolResult
-	Name    string           `json:"name,omitempty"`     // KindToolResult
-	Result  string           `json:"result,omitempty"`   // KindToolResult
-	TurnID  int64            `json:"turn_id,omitempty"`  // KindTurnDone
-	Input   int              `json:"input,omitempty"`    // KindTurnDone
-	Output  int              `json:"output,omitempty"`   // KindTurnDone
-	Error   string           `json:"error,omitempty"`    // KindTurnDone
+	Kind       string           `json:"kind"`
+	Seq        uint64           `json:"seq,omitempty"`          // KindMessage
+	Event      *codec.Event     `json:"event,omitempty"`        // KindLLM
+	Message    *llm.ChatMessage `json:"message,omitempty"`      // KindMessage
+	ToolCallID string           `json:"tool_call_id,omitempty"` // KindToolResult
+	Name       string           `json:"name,omitempty"`         // KindToolResult
+	Result     string           `json:"result,omitempty"`       // KindToolResult
+	TurnID     int64            `json:"turn_id,omitempty"`      // KindTurnDone
+	Input      int              `json:"input,omitempty"`        // KindTurnDone
+	Output     int              `json:"output,omitempty"`       // KindTurnDone
+	Error      string           `json:"error,omitempty"`        // KindTurnDone
 }

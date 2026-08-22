@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -393,15 +395,23 @@ func TestIndexAutoCreatesSession(t *testing.T) {
 
 func TestIndexPassesSessionParam(t *testing.T) {
 	srv := newTestServer(t, plainLLM())
-	resp, err := http.Get(srv.URL + "/?session=sess-42")
+	c := client.New(srv.URL)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	info, err := c.Create(ctx)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	resp, err := http.Get(srv.URL + "/?session=" + info.ID)
 	if err != nil {
 		t.Fatalf("GET /: %v", err)
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 	s := string(body)
-	if !strings.Contains(s, "sess-42") {
-		t.Errorf("response does not contain session id 'sess-42'")
+	if !strings.Contains(s, info.ID) {
+		t.Errorf("response does not contain session id %q", info.ID)
 	}
 }
 
@@ -485,33 +495,56 @@ func TestViewNotFound(t *testing.T) {
 	}
 }
 
-func TestIndexPollsWhenSessionSet(t *testing.T) {
+func TestIndexConnectsSSEWhenSessionSet(t *testing.T) {
 	srv := newTestServer(t, plainLLM())
-	resp, err := http.Get(srv.URL + "/?session=sess-42")
+	c := client.New(srv.URL)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	info, err := c.Create(ctx)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	resp, err := http.Get(srv.URL + "/?session=" + info.ID)
 	if err != nil {
 		t.Fatalf("GET /: %v", err)
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 	s := string(body)
-	if !strings.Contains(s, `hx-get="/api/sessions/sess-42/view"`) {
-		t.Errorf("index does not contain hx-get for session view")
+	wantConnect := fmt.Sprintf(`sse-connect="/api/sessions/%s/stream?since=`, info.ID)
+	if !strings.Contains(s, wantConnect) {
+		t.Errorf("index does not contain sse-connect for session stream; got: %s", s)
 	}
-	if !strings.Contains(s, `hx-trigger="every 1s, refresh from:body"`) {
-		t.Errorf("index does not contain hx-trigger for polling + refresh; got: %s", s)
+	if !strings.Contains(s, `hx-get="/api/sessions/`+info.ID+`/view"`) {
+		t.Errorf("index does not contain hx-get for initial session view")
+	}
+	// The SSE handler must be wired via the htmx 2.0.6 attribute form
+	// (kebab-case event name). The old combined `hx-on="evt: fn"` syntax and
+	// the camelCase `hx-on:htmx:sseMessage` form are both no-ops in htmx 2.x.
+	if !strings.Contains(s, `hx-on:htmx:sse-message="sseMessage(event)"`) {
+		t.Errorf("index does not contain hx-on:htmx:sse-message handler")
 	}
 }
 
 func TestIndexContainsMessageForm(t *testing.T) {
 	srv := newTestServer(t, plainLLM())
-	resp, err := http.Get(srv.URL + "/?session=sess-42")
+	c := client.New(srv.URL)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	info, err := c.Create(ctx)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	resp, err := http.Get(srv.URL + "/?session=" + info.ID)
 	if err != nil {
 		t.Fatalf("GET /: %v", err)
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 	s := string(body)
-	if !strings.Contains(s, `hx-post="/api/sessions/sess-42/messages"`) {
+	if !strings.Contains(s, `hx-post="/api/sessions/`+info.ID+`/messages"`) {
 		t.Errorf("index does not contain hx-post for message form")
 	}
 	if !strings.Contains(s, `name="content"`) {
@@ -603,7 +636,10 @@ func TestFormEncodedAppendEmptyRejected(t *testing.T) {
 	}
 }
 
-func TestAppendSetsHXTrigger(t *testing.T) {
+func TestJSONAppendNoHXTrigger(t *testing.T) {
+	// JSON append is the existing client path; it should accept the message
+	// without setting the stale HX-Trigger header from the old polling UI
+	// (live updates now arrive over SSE).
 	srv := newTestServer(t, plainLLM())
 	c := client.New(srv.URL)
 	ctx := context.Background()
@@ -611,7 +647,6 @@ func TestAppendSetsHXTrigger(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	// JSON append (existing clients still work).
 	body, _ := json.Marshal(api.AppendRequest{Content: "hi"})
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, srv.URL+"/api/sessions/"+info.ID+"/messages", strings.NewReader(string(body)))
 	req.Header.Set("Content-Type", "application/json")
@@ -620,29 +655,11 @@ func TestAppendSetsHXTrigger(t *testing.T) {
 		t.Fatalf("POST json: %v", err)
 	}
 	defer resp.Body.Close()
-	if resp.Header.Get("HX-Trigger") != "refresh" {
-		t.Errorf("JSON append HX-Trigger = %q, want %q", resp.Header.Get("HX-Trigger"), "refresh")
+	if resp.StatusCode != http.StatusAccepted {
+		t.Errorf("JSON append status = %d, want 202", resp.StatusCode)
 	}
-}
-
-func TestFormEncodedAppendSetsHXTrigger(t *testing.T) {
-	srv := newTestServer(t, plainLLM())
-	c := client.New(srv.URL)
-	ctx := context.Background()
-	info, err := c.Create(ctx)
-	if err != nil {
-		t.Fatalf("Create: %v", err)
-	}
-	form := url.Values{"content": {"hi"}}
-	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, srv.URL+"/api/sessions/"+info.ID+"/messages", strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("POST form: %v", err)
-	}
-	defer resp.Body.Close()
-	if resp.Header.Get("HX-Trigger") != "refresh" {
-		t.Errorf("form append HX-Trigger = %q, want %q", resp.Header.Get("HX-Trigger"), "refresh")
+	if resp.Header.Get("HX-Trigger") != "" {
+		t.Errorf("JSON append set stale HX-Trigger = %q, want empty", resp.Header.Get("HX-Trigger"))
 	}
 }
 
@@ -695,5 +712,147 @@ func TestViewShowsTokenUsage(t *testing.T) {
 	}
 	if !strings.Contains(s, "1 in / 2 out") {
 		t.Errorf("view does not show token usage '1 in / 2 out'; got: %s", s)
+	}
+}
+
+// readSSE reads Server-Sent Events from r, stopping once a turn_completed
+// envelope is assembled. It returns the parsed envelopes in order.
+func readSSE(t *testing.T, r io.Reader) []api.Envelope {
+	t.Helper()
+	var out []api.Envelope
+	sc := bufio.NewScanner(r)
+	var pending *api.Envelope
+	for sc.Scan() {
+		line := sc.Text()
+		if line == "" {
+			if pending != nil {
+				out = append(out, *pending)
+				done := pending.Kind == api.KindTurnDone
+				pending = nil
+				if done {
+					return out
+				}
+			}
+			continue
+		}
+		if strings.HasPrefix(line, "event: ") {
+			if pending == nil {
+				pending = &api.Envelope{}
+			}
+			pending.Kind = strings.TrimPrefix(line, "event: ")
+			continue
+		}
+		if strings.HasPrefix(line, "data: ") {
+			payload := strings.TrimPrefix(line, "data: ")
+			if pending == nil {
+				pending = &api.Envelope{}
+			}
+			if err := json.Unmarshal([]byte(payload), pending); err != nil {
+				t.Fatalf("unmarshal sse data: %v", err)
+			}
+			continue
+		}
+	}
+	if err := sc.Err(); err != nil {
+		t.Fatalf("scan sse: %v", err)
+	}
+	if pending != nil {
+		out = append(out, *pending)
+	}
+	return out
+}
+
+func TestStreamSSEEvents(t *testing.T) {
+	srv := newTestServer(t, plainLLM())
+	c := client.New(srv.URL)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	info, err := c.Create(ctx)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := c.Append(ctx, info.ID, "hello"); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+
+	resp, err := http.Get(srv.URL + "/api/sessions/" + info.ID + "/stream?since=0")
+	if err != nil {
+		t.Fatalf("GET stream: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "text/event-stream" {
+		t.Errorf("Content-Type = %q, want text/event-stream", ct)
+	}
+
+	got := readSSE(t, resp.Body)
+	var userCommit, turnDone bool
+	for _, env := range got {
+		if env.Kind == "" {
+			t.Errorf("envelope missing kind: %+v", env)
+		}
+		if env.Kind == api.KindMessage && env.Message != nil && env.Message.Role == "user" {
+			userCommit = true
+		}
+		if env.Kind == api.KindTurnDone {
+			turnDone = true
+		}
+	}
+	if !userCommit {
+		t.Errorf("stream missing committed user message; got %+v", got)
+	}
+	if !turnDone {
+		t.Errorf("stream missing turn_completed")
+	}
+}
+
+func TestStreamUnknownSession(t *testing.T) {
+	srv := newTestServer(t, plainLLM())
+	resp, err := http.Get(srv.URL + "/api/sessions/nope/stream")
+	if err != nil {
+		t.Fatalf("GET stream: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", resp.StatusCode)
+	}
+}
+
+func TestStreamReplaysFromSince(t *testing.T) {
+	srv := newTestServer(t, plainLLM())
+	c := client.New(srv.URL)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	info, err := c.Create(ctx)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := c.Append(ctx, info.ID, "hello"); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+
+	// Wait for the turn to complete so we know the seq.
+	h, err := c.History(ctx, info.ID)
+	if err != nil {
+		t.Fatalf("History: %v", err)
+	}
+
+	// Stream from the final seq; we should still see the turn_completed marker.
+	resp, err := http.Get(srv.URL + "/api/sessions/" + info.ID + "/stream?since=" + strconv.FormatUint(h.Seq, 10))
+	if err != nil {
+		t.Fatalf("GET stream: %v", err)
+	}
+	defer resp.Body.Close()
+
+	got := readSSE(t, resp.Body)
+	if len(got) == 0 {
+		t.Fatalf("expected at least one event; got none")
+	}
+	if got[len(got)-1].Kind != api.KindTurnDone {
+		t.Errorf("last event = %q, want %q", got[len(got)-1].Kind, api.KindTurnDone)
 	}
 }

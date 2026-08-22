@@ -59,6 +59,7 @@ var templates = template.Must(template.New("").Funcs(template.FuncMap{
 type pageData struct {
 	Title   string
 	Session string
+	Seq     uint64
 }
 
 // viewData is passed to the view fragment template. Messages is the session's
@@ -104,6 +105,7 @@ func (s *Server) Handler() http.Handler {
 	r.Get(api.SessionHistoryPath, s.handleHistory)
 	r.Get(api.SessionViewPath, s.handleView)
 	r.Get(api.SessionEventsPath, s.handleEvents)
+	r.Get(api.SessionStreamPath, s.handleStream)
 	r.Get(api.SessionExecPath, s.handleExec)
 	r.Post(api.SessionExecResultPath, s.handleExecResult)
 	return r
@@ -139,9 +141,9 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 
 // handleAppend queues a user message for the session's scheduler. It accepts
 // both JSON (api.AppendRequest) and form-encoded ("content" field) bodies so
-// HTMX forms can post directly without a JS shim. On success it sets the
-// HX-Trigger response header to "refresh" so the chat div polls immediately
-// instead of waiting for the next 1s interval.
+// HTMX forms can post directly without a JS shim. Live updates reach the page
+// over the SSE stream, so nothing else is needed here beyond accepting the
+// message.
 func (s *Server) handleAppend(w http.ResponseWriter, r *http.Request) {
 	ses, ok := s.store.Get(chi.URLParam(r, "id"))
 	if !ok {
@@ -158,7 +160,6 @@ func (s *Server) handleAppend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ses.Enqueue(content)
-	w.Header().Set("HX-Trigger", "refresh")
 	w.WriteHeader(http.StatusAccepted)
 }
 
@@ -189,6 +190,38 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(ses.Snapshot())
+}
+
+// sseEventLine formats one envelope as an SSE event line.
+func sseEventLine(env api.Envelope) []byte {
+	data, _ := json.Marshal(env)
+	return []byte(fmt.Sprintf("event: %s\ndata: %s\n\n", env.Kind, data))
+}
+
+// handleStream subscribes a client to the session's event bus, replaying from
+// the caller's `since` then streaming live as Server-Sent Events. Each
+// envelope is sent as an SSE event whose event name is the envelope kind and
+// whose data is the JSON-encoded envelope.
+func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
+	ses, ok := s.store.Get(chi.URLParam(r, "id"))
+	if !ok {
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+	since, _ := strconv.ParseUint(r.URL.Query().Get("since"), 10, 64)
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.WriteHeader(http.StatusOK)
+
+	fw := flushWriter{w}
+	for env := range ses.From(r.Context(), since) {
+		_, _ = fw.Write(sseEventLine(env))
+		if env.Kind == api.KindResync {
+			return
+		}
+	}
 }
 
 // handleEvents subscribes a client to the session's event bus, replaying from
@@ -294,7 +327,8 @@ func (s *Server) handleView(w http.ResponseWriter, r *http.Request) {
 
 // handleIndex serves the chat page. When no ?session= param is present, it
 // creates a new session and redirects to /?session=<id> so the page always has
-// something to poll. When the param is present, it renders the page directly.
+// something to poll. When the param is present, it renders the page directly
+// and passes the current seq so the SSE stream can resume without a gap.
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	sessID := r.URL.Query().Get("session")
 	if sessID == "" {
@@ -302,8 +336,14 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/?session="+ses.ID(), http.StatusFound)
 		return
 	}
+	ses, ok := s.store.Get(sessID)
+	if !ok {
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
 	render(w, "layout.tmpl", pageData{
 		Title:   "porter",
 		Session: sessID,
+		Seq:     ses.Snapshot().Seq,
 	})
 }

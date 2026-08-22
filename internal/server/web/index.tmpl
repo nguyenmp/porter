@@ -1,18 +1,181 @@
 {{define "content"}}
-	<div id="chat"
-		{{if .Session}}
-		hx-get="/api/sessions/{{.Session}}/view"
-		hx-trigger="every 1s, refresh from:body"
-		hx-swap="innerHTML"
-		{{end}}>
-	</div>
-	{{if .Session}}
-	<form hx-post="/api/sessions/{{.Session}}/messages"
-		hx-target="#chat"
-		hx-swap="none"
-		class="msg-form">
-		<input type="text" name="content" placeholder="Type a message…" autocomplete="off" autofocus>
-		<button type="submit">Send</button>
-	</form>
-	{{end}}
+<div id="chat"
+  {{if .Session}}
+  hx-get="/api/sessions/{{.Session}}/view"
+  hx-trigger="load"
+  hx-swap="innerHTML"
+  {{end}}>
+</div>
+{{if .Session}}
+<div id="sse-processor"
+     hx-ext="sse"
+     sse-connect="/api/sessions/{{.Session}}/stream?since={{.Seq}}"
+     sse-swap="message_committed,llm,tool_result,turn_completed"
+     hx-swap="none"
+     hx-on:htmx:sse-message="sseMessage(event)">
+</div>
+<form hx-post="/api/sessions/{{.Session}}/messages"
+      hx-target="#chat"
+      hx-swap="none"
+      class="msg-form">
+	<input type="text" name="content" placeholder="Type a message…" autocomplete="off" autofocus>
+	<button type="submit">Send</button>
+</form>
+<script>
+(function() {
+  const chat = document.getElementById('chat');
+  const form = document.querySelector('.msg-form');
+  const input = form.querySelector('input[name="content"]');
+
+  // Track the currently streaming assistant message and reasoning block so
+  // deltas can append in place instead of creating new elements each time.
+  let currentAssistant = null;
+  let currentReasoning = null;
+
+  // A tool result is broadcast twice per run: once live as tool_result, then
+  // again as a committed role-"tool" message (the copy that replays after a
+  // reconnect). Remember which calls we've already shown live so the committed
+  // copy only renders when there was no live one (i.e. on replay).
+  const renderedToolResults = new Set();
+
+  function escapeHTML(s) {
+    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
+  function appendMessage(role, html) {
+    const div = document.createElement('div');
+    div.className = 'msg msg-' + role;
+    div.innerHTML = '<span class="msg-role">' + role + '</span><div class="msg-content">' + html + '</div>';
+    chat.appendChild(div);
+    return div;
+  }
+
+  function ensureAssistant() {
+    if (!currentAssistant) {
+      currentAssistant = appendMessage('assistant', '');
+      currentReasoning = null;
+    }
+    return currentAssistant.querySelector('.msg-content');
+  }
+
+  function ensureReasoning() {
+    if (!currentReasoning) {
+      currentReasoning = document.createElement('div');
+      currentReasoning.className = 'reasoning';
+      ensureAssistant().before(currentReasoning);
+    }
+    return currentReasoning;
+  }
+
+  function renderToolCalls(calls) {
+    if (!calls || calls.length === 0) return '';
+    let html = '';
+    for (const call of calls) {
+      html += '<details class="tool-call"><summary>' + escapeHTML(call.function.name) + '</summary>' +
+              '<pre><code>' + escapeHTML(call.function.arguments) + '</code></pre></details>';
+    }
+    return html;
+  }
+
+  function finalizeAssistant(m) {
+    // If we were streaming this assistant message, replace the live text with
+    // the committed version (so newlines render correctly) and ensure tool calls
+    // are present. Otherwise create a fresh message element for replay/history.
+    let div;
+    if (currentAssistant) {
+      div = currentAssistant;
+      currentAssistant.querySelector('.msg-content').innerHTML = m.content ? escapeHTML(m.content).replace(/\n/g, '<br>') : '';
+      // Remove any stale tool-call details so we can re-render from the commit.
+      div.querySelectorAll('.tool-call').forEach(el => el.remove());
+    } else {
+      div = appendMessage('assistant', '');
+    }
+    if (m.tool_calls) {
+      div.insertAdjacentHTML('beforeend', renderToolCalls(m.tool_calls));
+    }
+    currentAssistant = null;
+    currentReasoning = null;
+  }
+
+  window.sseMessage = function(evt) {
+    const env = JSON.parse(evt.detail.data);
+    switch (env.kind) {
+      case 'message_committed':
+        const m = env.message;
+        if (m.role === 'user') {
+          currentAssistant = null;
+          currentReasoning = null;
+          appendMessage('user', escapeHTML(m.content).replace(/\n/g, '<br>'));
+        } else if (m.role === 'assistant') {
+          finalizeAssistant(m);
+        } else if (m.role === 'tool') {
+          currentAssistant = null;
+          currentReasoning = null;
+          // The live tool_result already rendered this run; only render the
+          // committed copy when it arrives alone (replay), which carries no
+          // tool name.
+          if (renderedToolResults.has(m.tool_call_id)) {
+            break;
+          }
+          const details = document.createElement('details');
+          details.className = 'tool-result';
+          details.innerHTML = '<summary>tool result</summary><pre><code>' + escapeHTML(m.content).replace(/\n/g, '<br>') + '</code></pre>';
+          chat.appendChild(details);
+        }
+        break;
+      case 'llm':
+        const ev = env.event;
+        if (!ev) break;
+        if (ev.type === 'message_delta') {
+          ensureAssistant().insertAdjacentText('beforeend', ev.delta);
+        } else if (ev.type === 'reasoning_delta') {
+          ensureReasoning().insertAdjacentText('beforeend', ev.reasoning);
+        } else if (ev.type === 'tool_call') {
+          // Streamed tool calls are rendered live; finalizeAssistant will
+          // reconcile them against the committed message when it arrives.
+          ensureAssistant().insertAdjacentHTML('beforeend',
+            '<details class="tool-call"><summary>' + escapeHTML(ev.name) + '</summary>' +
+            '<pre><code>' + escapeHTML(ev.arguments) + '</code></pre></details>');
+        }
+        break;
+      case 'tool_result':
+        currentAssistant = null;
+        currentReasoning = null;
+        if (env.tool_call_id) {
+          renderedToolResults.add(env.tool_call_id);
+        }
+        const details = document.createElement('details');
+        details.className = 'tool-result';
+        details.innerHTML = '<summary>tool result: ' + escapeHTML(env.name) + '</summary>' +
+                            '<pre><code>' + escapeHTML(env.result) + '</code></pre>';
+        chat.appendChild(details);
+        break;
+      case 'resync':
+        // The server closed the stream because we fell too far behind its
+        // replay buffer. Reload so the page reconnects with a fresh seq
+        // instead of looping forever on the stale `since`.
+        location.reload();
+        return;
+      case 'turn_completed':
+        const meta = document.createElement('div');
+        meta.className = 'turn-usage';
+        meta.innerHTML = '<span class="turn-meta">turn ' + env.turn_id + ': ' + env.input + ' in / ' + env.output + ' out' +
+                         (env.error ? ' — error: ' + escapeHTML(env.error) : '') + '</span>';
+        chat.appendChild(meta);
+        currentAssistant = null;
+        currentReasoning = null;
+        break;
+    }
+    // Auto-scroll to the bottom as new content streams in.
+    chat.scrollTop = chat.scrollHeight;
+  };
+
+  // After sending a message, clear the input and keep focus.
+  form.addEventListener('htmx:afterRequest', function() {
+    input.value = '';
+    input.focus();
+  });
+})();
+</script>
+{{end}}
 {{end}}

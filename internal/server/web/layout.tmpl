@@ -5,6 +5,7 @@
 	<meta name="viewport" content="width=device-width, initial-scale=1">
 	<title>{{.Title}}</title>
 	<script src="https://unpkg.com/htmx.org@2.0.6"></script>
+	<script src="https://unpkg.com/htmx-ext-sse@2.2.2/sse.js"></script>
 	<style>
 		body { font-family: sans-serif; max-width: 800px; margin: 1rem auto; }
 		.msg { margin-bottom: 0.75rem; padding: 0.5rem; border-radius: 4px; }
@@ -36,6 +37,8 @@
 		.msg-form input[type="text"] { flex: 1; padding: 0.5rem; border: 1px solid #ccc; border-radius: 4px; font-size: 1rem; }
 		.msg-form button { padding: 0.5rem 1rem; border: none; border-radius: 4px; background: #007bff; color: #fff; font-size: 1rem; cursor: pointer; }
 		.msg-form button:hover { background: #0056b3; }
+		.reasoning { color: #888; font-style: italic; margin: 0.25rem 0; padding: 0.25rem 0.5rem; border-left: 2px solid #ccc; }
+		#chat { max-height: 70vh; overflow-y: auto; }
 	</style>
 </head>
 <body>
