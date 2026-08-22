@@ -342,3 +342,29 @@ func TestJSONContentType(t *testing.T) {
 		t.Errorf("History Content-Type = %q, want application/json", ct)
 	}
 }
+
+func TestIndexServesHTML(t *testing.T) {
+	srv := newTestServer(t, plainLLM())
+	resp, err := http.Get(srv.URL + "/")
+	if err != nil {
+		t.Fatalf("GET /: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want 200", resp.StatusCode)
+	}
+	ct := resp.Header.Get("Content-Type")
+	if !strings.HasPrefix(ct, "text/html") {
+		t.Errorf("Content-Type = %q, want text/html", ct)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), "<html") {
+		t.Errorf("response does not contain <html")
+	}
+	if !strings.Contains(string(body), "porter") {
+		t.Errorf("response does not contain title 'porter'")
+	}
+	if !strings.Contains(string(body), `id="chat"`) {
+		t.Errorf("response does not contain #chat div")
+	}
+}

@@ -6,6 +6,7 @@
 package server
 
 import (
+	"embed"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -19,6 +20,9 @@ import (
 	"porter/internal/llm"
 	"porter/internal/session"
 )
+
+//go:embed web
+var webFS embed.FS
 
 // Server owns the LLM client and all sessions.
 type Server struct {
@@ -49,6 +53,7 @@ func (s *Server) ListenAndServe() error {
 // Handler returns the HTTP routes as an http.Handler.
 func (s *Server) Handler() http.Handler {
 	r := chi.NewRouter()
+	r.Get("/", s.handleIndex)
 	r.Post(api.SessionsPath, s.handleCreate)
 	r.Post(api.SessionMessagesPath, s.handleAppend)
 	r.Get(api.SessionHistoryPath, s.handleHistory)
@@ -189,4 +194,15 @@ func (s *Server) handleExecResult(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusOK)
+}
+
+// handleIndex serves the embedded chat page.
+func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
+	data, err := webFS.ReadFile("web/index.html")
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = w.Write(data)
 }
