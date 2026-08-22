@@ -51,6 +51,7 @@ func Run(ctx context.Context, cfg config.ClientConfig, in io.Reader, out, jsonl 
 		return fmt.Errorf("create session: %w", err)
 	}
 
+	fmt.Fprintf(out, "session %s\n", info.ID)
 	// Act as the session's execution provider: hold the exec connection open and
 	// run any shell tool calls the agent sends on this host, streaming the
 	// output back. Re-register on reconnect until the session ends.

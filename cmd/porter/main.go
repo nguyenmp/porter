@@ -68,6 +68,7 @@ func run(ctx context.Context, cfg config.ClientConfig, prompt string, out io.Wri
 	if err != nil {
 		return err
 	}
+	fmt.Fprintf(os.Stderr, "porter: session %s\n", info.ID)
 	start := time.Now()
 	if err := c.Append(ctx, info.ID, prompt); err != nil {
 		return err
