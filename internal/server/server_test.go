@@ -358,13 +358,32 @@ func TestIndexServesHTML(t *testing.T) {
 		t.Errorf("Content-Type = %q, want text/html", ct)
 	}
 	body, _ := io.ReadAll(resp.Body)
-	if !strings.Contains(string(body), "<html") {
+	s := string(body)
+	if !strings.Contains(s, "<html") {
 		t.Errorf("response does not contain <html")
 	}
-	if !strings.Contains(string(body), "porter") {
-		t.Errorf("response does not contain title 'porter'")
+	if !strings.Contains(s, "<title>porter</title>") {
+		t.Errorf("response does not contain <title>porter</title>")
 	}
-	if !strings.Contains(string(body), `id="chat"`) {
+	if !strings.Contains(s, `id="chat"`) {
 		t.Errorf("response does not contain #chat div")
+	}
+	// No session param means the template value should be empty.
+	if strings.Contains(s, "data-session") {
+		t.Errorf("response should not contain data-session when no ?session= given")
+	}
+}
+
+func TestIndexPassesSessionParam(t *testing.T) {
+	srv := newTestServer(t, plainLLM())
+	resp, err := http.Get(srv.URL + "/?session=sess-42")
+	if err != nil {
+		t.Fatalf("GET /: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	s := string(body)
+	if !strings.Contains(s, "sess-42") {
+		t.Errorf("response does not contain session id 'sess-42'")
 	}
 }

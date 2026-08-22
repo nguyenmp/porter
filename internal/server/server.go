@@ -8,6 +8,7 @@ package server
 import (
 	"embed"
 	"encoding/json"
+	"html/template"
 	"log"
 	"net/http"
 	"strconv"
@@ -23,6 +24,15 @@ import (
 
 //go:embed web
 var webFS embed.FS
+
+// templates are parsed once at startup from the embedded web directory.
+var templates = template.Must(template.ParseFS(webFS, "web/*.tmpl"))
+
+// pageData is the data passed to every page template.
+type pageData struct {
+	Title   string
+	Session string
+}
 
 // Server owns the LLM client and all sessions.
 type Server struct {
@@ -196,13 +206,23 @@ func (s *Server) handleExecResult(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-// handleIndex serves the embedded chat page.
-func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
-	data, err := webFS.ReadFile("web/index.html")
-	if err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
+// render executes the named template with the given data and writes the result
+// to w as text/html. It is the single entry point for page rendering; handlers
+// pass template name and data, nothing else.
+func render(w http.ResponseWriter, name string, data pageData) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = w.Write(data)
+	if err := templates.ExecuteTemplate(w, name, data); err != nil {
+		// The response has likely already started streaming; log the error
+		// rather than overwriting a partial write with http.Error.
+		log.Printf("render %q: %v", name, err)
+	}
+}
+
+// handleIndex serves the chat page. A ?session= query param, if present, is
+// passed into the template so the page can bootstrap the correct session.
+func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
+	render(w, "layout.tmpl", pageData{
+		Title:   "porter",
+		Session: r.URL.Query().Get("session"),
+	})
 }
