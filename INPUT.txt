@@ -1,0 +1,73 @@
+A commit chain should each be functional and a value add.
+1. Generally, I do cleanups and fixes first.
+2. Then I do neutral refactors that set me up for success later (reorganizing code, renaming files, moving things around).
+3. Then I do functional work.  Usually I aim for MVP, then parity, then feature add.
+
+As such, let's reflect on this roadmap for this repo.
+
+Web UI — Task Breakdown
+
+### Step 1: Functional — Read-only conversation view (polling)
+
+First visible web page. It can't send messages yet, but it proves the rendering path:
+
+- **`GET /`** renders a minimal HTML page with an HTMX script tag (from a CDN or vendored), a text input (non-functional for now), and a session selector.
+- **`GET /api/sessions/{id}/view`** (new route, HTML response) renders the session's committed history as HTML — user messages as `<div>`s, assistant messages as `<div>`s, tool calls and results in collapsible `<details>` blocks. No markdown yet, just escaped plaintext with line breaks.
+- The page creates a session (or takes a `?session=` param), then uses HTMX (`hx-get` + `hx-trigger="every 1s"`) to poll the view endpoint into a `<div id="chat">`. This is the simplest possible live-update mechanism — no SSE, no JS, just polling. Ugly but functional.
+- Token usage from `KindTurnDone` can render at the bottom of each assistant message.
+
+**Why polling first:** it requires zero new server infrastructure, zero JS, and gives you a working chat viewer in an afternoon. You can see the conversation update after each turn completes. The latency (up to 1s) is fine for a first pass.
+
+### Step 2: Functional — Send messages
+
+- Add a `<form>` with `hx-post` to `POST /api/sessions/{id}/messages`. The server's `handleAppend` already accepts JSON; either make the form submit JSON (a tiny `onsubmit` JS shim) or add a second handler that accepts form-encoded input. The latter is more HTMX-idiomatic.
+- After the POST returns 202, trigger a history poll refresh (HTMX `hx-swap` + `hx-trigger` from the response, or just let the existing 1s poll catch it).
+- The page now does the full loop: type a message → server queues a turn → poll picks up the reply. You have a working (if laggy) chat UI.
+
+### Step 3: Functional — Live streaming via SSE
+
+Replace polling with real-time streaming. This is where the UX gets good:
+
+- **Add an SSE endpoint** `GET /api/sessions/{id}/stream` (new route) that wraps the existing session bus but emits `text/event-stream` instead of NDJSON. The session's `From()` method already returns a `<-chan api.Envelope`; this handler just reformats each envelope as an SSE event (`event: <kind>\ndata: <json>\n\n`). Reuses all existing bus logic — no session changes needed.
+- The HTML page uses HTMX's SSE extension (`hx-ext="sse"` with `sse-connect`, `sse-swap`) to stream events into the DOM. Message deltas append to a growing `<div>`, tool calls show up as they happen, reasoning streams in dimmed.
+- Keep the `GET /api/sessions/{id}/view` endpoint for the initial page load (full history render), then SSE takes over for live updates. The `since` parameter (already on the bus) ensures no gap between initial render and live stream.
+
+### Step 4: Refactor — Markdown rendering
+
+- Add a server-side markdown renderer. `goldmark` is the standard Go choice; it's one dependency, pure Go, and handles CommonMark + tables + code blocks. Render assistant message content through it before inserting into the template.
+- Code blocks get `<pre><code>` with optional syntax highlighting (can defer highlighting to a later step — start with just monospaced blocks).
+- User messages stay plain text (escaped, with line breaks) — no need to render user input as markdown.
+- This is a change to the template rendering layer only; no API or bus changes.
+
+### Step 5: Refactor — Execution provider from the browser
+
+The REPL currently acts as the exec provider (runs shell commands locally). The web UI needs the same: either the server runs tools locally by default (it already can — `Dispatcher` exists), or the browser registers as exec provider (which doesn't make sense for shell). So:
+
+- Make the server default to local execution when no exec provider is registered. The session's `provider()` method already does this. Verify it works without a connected exec client.
+- The web UI just doesn't register as exec provider; the server runs tools itself. The tool results still stream through the bus and render in the browser.
+
+### Later steps (abstract)
+
+- **Session list/switcher** — sidebar listing active sessions, create new ones, switch between them. Requires a `GET /api/sessions` list endpoint.
+- **Tool call/result display** — collapsible, syntax-highlighted, with timing and exit codes. Stream tool output live as it runs.
+- **Reasoning display** — collapsible reasoning blocks, dimmed by default, expandable.
+- **Cost/token display** — per-message, per-turn, per-session totals. Data is already on the bus (`KindTurnDone`); just needs rendering.
+- **Fork/tree visualization** — conversation tree view, click to fork or rewind. Requires turn IDs in the history response and a tree rendering.
+- **Connection status indicators** — show whether the SSE stream is connected, whether a turn is running, queue depth.
+- **Mobile-responsive layout** — the README emphasizes "chat from any device." Fluid layout, touch-friendly input.
+- **Auth** — single-user token, gate the whole UI behind it. Defer until the UI is useful.
+- **Persistent sessions** — tie into the SQLite-backed history roadmap item so sessions survive server restarts.
+
+---
+
+**Summary of the steps:**
+
+| Step | Type | What you get |
+|------|------|-------------|
+| 1 | Functional | Read-only chat viewer via polling |
+| 2 | Functional | Send messages, full chat loop works |
+| 3 | Functional | Live streaming via SSE, feels real-time |
+| 4 | Refactor | Markdown rendering for assistant messages |
+| 5 | Refactor | Server-local execution provider for the browser |
+
+Steps 1–2 are each small enough to be one sitting. Step 3 is the biggest one (SSE endpoint + HTMX SSE wiring). Step 4 is a quick win once the rendering pipeline exists. After that, you're adding features on top of a working UI.
