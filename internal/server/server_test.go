@@ -387,3 +387,114 @@ func TestIndexPassesSessionParam(t *testing.T) {
 		t.Errorf("response does not contain session id 'sess-42'")
 	}
 }
+
+// runOneTurnID is like runOneTurn but also returns the session id.
+func runOneTurnID(t *testing.T, base, prompt string) (string, []api.Envelope, api.SessionHistory) {
+	t.Helper()
+	c := client.New(base)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	info, err := c.Create(ctx)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := c.Append(ctx, info.ID, prompt); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+
+	var got []api.Envelope
+	done := false
+	err = c.Subscribe(ctx, info.ID, info.Seq, func(env api.Envelope) { got = append(got, env) },
+		func(env api.Envelope) bool {
+			if env.Kind == api.KindTurnDone {
+				done = true
+				return true
+			}
+			return false
+		})
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	if !done {
+		t.Fatalf("no turn_completed observed; got %d envelopes", len(got))
+	}
+	h, err := c.History(ctx, info.ID)
+	if err != nil {
+		t.Fatalf("History: %v", err)
+	}
+	return info.ID, got, h
+}
+
+func TestViewRendersHistory(t *testing.T) {
+	srv := newTestServer(t, plainLLM())
+	id, _, h := runOneTurnID(t, srv.URL, "hello")
+	_ = h
+
+	// Fetch the view fragment for the session.
+	resp, err := http.Get(srv.URL + "/api/sessions/" + id + "/view")
+	if err != nil {
+		t.Fatalf("GET view: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	s := string(body)
+	if !strings.Contains(s, `class="msg msg-user"`) {
+		t.Errorf("view does not contain user message div")
+	}
+	if !strings.Contains(s, `class="msg msg-assistant"`) {
+		t.Errorf("view does not contain assistant message div")
+	}
+	if !strings.Contains(s, "hello") {
+		t.Errorf("view does not contain 'hello'")
+	}
+	if !strings.Contains(s, "hi") {
+		t.Errorf("view does not contain 'hi'")
+	}
+}
+
+func TestViewNotFound(t *testing.T) {
+	srv := newTestServer(t, plainLLM())
+	resp, err := http.Get(srv.URL + "/api/sessions/nope/view")
+	if err != nil {
+		t.Fatalf("GET view: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", resp.StatusCode)
+	}
+}
+
+func TestIndexPollsWhenSessionSet(t *testing.T) {
+	srv := newTestServer(t, plainLLM())
+	resp, err := http.Get(srv.URL + "/?session=sess-42")
+	if err != nil {
+		t.Fatalf("GET /: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	s := string(body)
+	if !strings.Contains(s, `hx-get="/api/sessions/sess-42/view"`) {
+		t.Errorf("index does not contain hx-get for session view")
+	}
+	if !strings.Contains(s, `hx-trigger="every 1s"`) {
+		t.Errorf("index does not contain hx-trigger for polling")
+	}
+}
+
+func TestIndexNoPollWhenNoSession(t *testing.T) {
+	srv := newTestServer(t, plainLLM())
+	resp, err := http.Get(srv.URL + "/")
+	if err != nil {
+		t.Fatalf("GET /: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	s := string(body)
+	if strings.Contains(s, "hx-get") {
+		t.Errorf("index should not contain hx-get when no session param")
+	}
+}

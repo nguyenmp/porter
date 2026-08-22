@@ -16,6 +16,9 @@ const (
 	SessionsPath = "/api/sessions"
 	// SessionHistoryPath returns a session's authoritative history and seq: GET.
 	SessionHistoryPath = "/api/sessions/{id}"
+	// SessionViewPath renders a session's committed history as an HTML
+	// fragment for the chat page. GET.
+	SessionViewPath = "/api/sessions/{id}/view"
 	// SessionMessagesPath appends a user message and queues a turn: POST.
 	SessionMessagesPath = "/api/sessions/{id}/messages"
 	// SessionEventsPath subscribes to a session's event bus: GET (NDJSON).

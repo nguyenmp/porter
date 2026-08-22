@@ -5,6 +5,18 @@
 	<meta name="viewport" content="width=device-width, initial-scale=1">
 	<title>{{.Title}}</title>
 	<script src="https://unpkg.com/htmx.org@2.0.6"></script>
+	<style>
+		body { font-family: sans-serif; max-width: 800px; margin: 1rem auto; }
+		.msg { margin-bottom: 0.75rem; padding: 0.5rem; border-radius: 4px; }
+		.msg-user { background: #e8f4fd; }
+		.msg-assistant { background: #f5f5f5; }
+		.msg-role { font-size: 0.8em; font-weight: bold; color: #666; display: block; margin-bottom: 0.25rem; }
+		.msg-content { white-space: normal; }
+		.tool-call, .tool-result { margin-top: 0.5rem; }
+		.tool-call summary, .tool-result summary { cursor: pointer; font-size: 0.85em; color: #555; }
+		.tool-call pre, .tool-result pre { background: #1e1e1e; color: #d4d4d4; padding: 0.5rem; border-radius: 4px; overflow-x: auto; }
+		.tool-result pre { white-space: pre-wrap; }
+	</style>
 </head>
 <body>
 	{{block "content" .}}{{end}}

@@ -25,13 +25,28 @@ import (
 //go:embed web
 var webFS embed.FS
 
+// nl2br converts newlines to <br> tags after HTML-escaping. Used in the view
+// template to render plaintext with line breaks without a full markdown renderer.
+func nl2br(s string) string {
+	s = template.HTMLEscapeString(s)
+	return strings.ReplaceAll(s, "\n", "<br>")
+}
+
 // templates are parsed once at startup from the embedded web directory.
-var templates = template.Must(template.ParseFS(webFS, "web/*.tmpl"))
+var templates = template.Must(template.New("").Funcs(template.FuncMap{
+	"nl2br": nl2br,
+}).ParseFS(webFS, "web/*.tmpl"))
 
 // pageData is the data passed to every page template.
 type pageData struct {
 	Title   string
 	Session string
+}
+
+// viewData is passed to the view fragment template. Messages is the session's
+// committed history.
+type viewData struct {
+	Messages []llm.ChatMessage
 }
 
 // Server owns the LLM client and all sessions.
@@ -67,6 +82,7 @@ func (s *Server) Handler() http.Handler {
 	r.Post(api.SessionsPath, s.handleCreate)
 	r.Post(api.SessionMessagesPath, s.handleAppend)
 	r.Get(api.SessionHistoryPath, s.handleHistory)
+	r.Get(api.SessionViewPath, s.handleView)
 	r.Get(api.SessionEventsPath, s.handleEvents)
 	r.Get(api.SessionExecPath, s.handleExec)
 	r.Post(api.SessionExecResultPath, s.handleExecResult)
@@ -209,13 +225,26 @@ func (s *Server) handleExecResult(w http.ResponseWriter, r *http.Request) {
 // render executes the named template with the given data and writes the result
 // to w as text/html. It is the single entry point for page rendering; handlers
 // pass template name and data, nothing else.
-func render(w http.ResponseWriter, name string, data pageData) {
+func render(w http.ResponseWriter, name string, data any) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := templates.ExecuteTemplate(w, name, data); err != nil {
 		// The response has likely already started streaming; log the error
 		// rather than overwriting a partial write with http.Error.
 		log.Printf("render %q: %v", name, err)
 	}
+}
+
+// handleView renders a session's committed history as an HTML fragment. This is
+// the target of the page's HTMX polling: every second the chat div issues
+// hx-get to this endpoint and swaps the returned innerHTML.
+func (s *Server) handleView(w http.ResponseWriter, r *http.Request) {
+	ses, ok := s.store.Get(chi.URLParam(r, "id"))
+	if !ok {
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+	snap := ses.Snapshot()
+	render(w, "view.tmpl", viewData{Messages: snap.History})
 }
 
 // handleIndex serves the chat page. A ?session= query param, if present, is

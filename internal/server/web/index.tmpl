@@ -1,3 +1,9 @@
 {{define "content"}}
-	<div id="chat"{{if .Session}} data-session="{{.Session}}"{{end}}></div>
+	<div id="chat"
+		{{if .Session}}
+		hx-get="/api/sessions/{{.Session}}/view"
+		hx-trigger="every 1s"
+		hx-swap="innerHTML"
+		{{end}}>
+	</div>
 {{end}}
