@@ -11,22 +11,8 @@ Web UI — Task Breakdown
 
 - **Step 1: Functional — Live streaming via SSE.** `GET /api/sessions/{id}/stream` emits the session bus as Server-Sent Events; the chat page connects with HTMX's SSE extension (`sse-connect`/`sse-swap`) and streams message deltas, tool calls, and reasoning live. `/view` still serves the initial full-history render; `since` bridges the gap.
 - **Step 2: Refactor — Server-local execution provider.** The server runs tools locally by default (`provider()` → `Dispatcher`) when no exec client is connected, and the web UI never registers as an exec provider. Verified by `TestSetProviderDefaultsToLocal` and a full no-client turn in `TestToolResultEnvelope`.
-
-### Step 3: Functional — New chat button, no auto-create
-
-UI-first: make creating a conversation explicit instead of implicit. No new API — `POST /api/sessions` already exists.
-
-- **Remove auto-create in `handleIndex`.** Bare `GET /` currently creates a fresh session and 302s to `/?session=<id>`. Change it to render an empty state ("no session selected") — the page no longer manufactures a throwaway conversation you didn't ask for.
-- **Add a New chat button** in the page header: a form `hx-post="/api/sessions"`; on success read the new session id from the JSON response and navigate to `/?session=<id>`. All client-side, no server change.
-- What you get: an explicit way to start a chat, and the hook the sidebar (Step 4) points at.
-
-### Step 4: Functional (UI) — Sidebar of sessions
-
-Deliberately skip the `GET /api/sessions` list endpoint for now — the browser keeps its own registry.
-
-- **Client-side session list.** The page records every session it creates or visits in `localStorage` (`porter.sessions`) and renders them as links to `/?session=<id>`, newest first, active one highlighted.
-- **Layout** gets a left `<nav>` sidebar: New chat button on top, session list below, main chat area to the right. Still fine on mobile (sidebar collapses / stays minimal) since Step "mobile-responsive layout" is a later pass.
-- **Why skip the API:** sessions are in-memory on the server anyway, so a client list is no worse than a server list until SQLite persists them. When the server grows a list endpoint (or persistent sessions land), swap the sidebar to server-rendered data with no UI change.
+- **Step 3: Functional — New chat button, no auto-create.** Bare `GET /` renders an empty state instead of manufacturing a session; the New chat button POSTs to `/api/sessions` and navigates to the new session client-side (`onNewChat`). Chat, SSE, and the message form only render when a session is selected.
+- **Step 4: Functional (UI) — Sidebar of sessions.** Left sidebar with New chat on top and a session list below. With no server list endpoint yet, the browser keeps its own registry in `localStorage` (`porter.sessions`), rendering links to `/?session=<id>` newest-first with the active one highlighted. UI-only placeholder until a server list endpoint or SQLite persistence lands.
 
 ### Later steps (abstract)
 
