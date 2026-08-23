@@ -7,20 +7,10 @@ As such, let's reflect on this roadmap for this repo.
 
 Web UI — Task Breakdown
 
-### Step 1: Functional — Live streaming via SSE
+**Done:**
 
-Replace polling with real-time streaming. This is where the UX gets good:
-
-- **Add an SSE endpoint** `GET /api/sessions/{id}/stream` (new route) that wraps the existing session bus but emits `text/event-stream` instead of NDJSON. The session's `From()` method already returns a `<-chan api.Envelope`; this handler just reformats each envelope as an SSE event (`event: <kind>\ndata: <json>\n\n`). Reuses all existing bus logic — no session changes needed.
-- The HTML page uses HTMX's SSE extension (`hx-ext="sse"` with `sse-connect`, `sse-swap`) to stream events into the DOM. Message deltas append to a growing `<div>`, tool calls show up as they happen, reasoning streams in dimmed.
-- Keep the `GET /api/sessions/{id}/view` endpoint for the initial page load (full history render), then SSE takes over for live updates. The `since` parameter (already on the bus) ensures no gap between initial render and live stream.
-
-### Step 2: Refactor — Execution provider from the browser
-
-The REPL currently acts as the exec provider (runs shell commands locally). The web UI needs the same: either the server runs tools locally by default (it already can — `Dispatcher` exists), or the browser registers as exec provider (which doesn't make sense for shell). So:
-
-- Make the server default to local execution when no exec provider is registered. The session's `provider()` method already does this. Verify it works without a connected exec client.
-- The web UI just doesn't register as exec provider; the server runs tools itself. The tool results still stream through the bus and render in the browser.
+- **Step 1: Functional — Live streaming via SSE.** `GET /api/sessions/{id}/stream` emits the session bus as Server-Sent Events; the chat page connects with HTMX's SSE extension (`sse-connect`/`sse-swap`) and streams message deltas, tool calls, and reasoning live. `/view` still serves the initial full-history render; `since` bridges the gap.
+- **Step 2: Refactor — Server-local execution provider.** The server runs tools locally by default (`provider()` → `Dispatcher`) when no exec client is connected, and the web UI never registers as an exec provider. Verified by `TestSetProviderDefaultsToLocal` and a full no-client turn in `TestToolResultEnvelope`.
 
 ### Later steps (abstract)
 
@@ -33,14 +23,3 @@ The REPL currently acts as the exec provider (runs shell commands locally). The 
 - **Mobile-responsive layout** — the README emphasizes "chat from any device." Fluid layout, touch-friendly input.
 - **Auth** — single-user token, gate the whole UI behind it. Defer until the UI is useful.
 - **Persistent sessions** — tie into the SQLite-backed history roadmap item so sessions survive server restarts.
-
----
-
-**Summary of the steps:**
-
-| Step | Type | What you get |
-|------|------|-------------|
-| 1 | Functional | Live streaming via SSE, feels real-time |
-| 2 | Refactor | Server-local execution provider for the browser |
-
-Steps 1–2 are each small enough to be one sitting. Step 1 is the biggest one (SSE endpoint + HTMX SSE wiring). After that, you're adding features on top of a working UI.
