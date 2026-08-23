@@ -346,50 +346,37 @@ func TestJSONContentType(t *testing.T) {
 	}
 }
 
-func TestIndexAutoCreatesSession(t *testing.T) {
+func TestIndexNoSessionRendersEmptyState(t *testing.T) {
 	srv := newTestServer(t, plainLLM())
 
-	// GET / with no session param should redirect (302) to /?session=<id>.
-	// Don't follow redirects so we can inspect the Location.
-	client := &http.Client{CheckRedirect: func(req *http.Request, via []*http.Request) error {
-		return http.ErrUseLastResponse
-	}}
-	resp, err := client.Get(srv.URL + "/")
+	// GET / with no session param should render the empty state rather than
+	// auto-creating a throwaway session: no redirect, no chat div, but a
+	// New chat button to create one explicitly.
+	resp, err := http.Get(srv.URL + "/")
 	if err != nil {
 		t.Fatalf("GET /: %v", err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusFound {
-		t.Fatalf("status = %d, want 302", resp.StatusCode)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
 	}
-	loc := resp.Header.Get("Location")
-	if !strings.HasPrefix(loc, "/?session=sess-") {
-		t.Errorf("Location = %q, want /?session=sess-<id>", loc)
-	}
-
-	// Following the redirect should serve the full HTML page.
-	resp2, err := http.Get(srv.URL + "/")
-	if err != nil {
-		t.Fatalf("GET / (follow): %v", err)
-	}
-	defer resp2.Body.Close()
-	if resp2.StatusCode != http.StatusOK {
-		t.Errorf("status = %d, want 200 after redirect", resp2.StatusCode)
-	}
-	ct := resp2.Header.Get("Content-Type")
+	ct := resp.Header.Get("Content-Type")
 	if !strings.HasPrefix(ct, "text/html") {
 		t.Errorf("Content-Type = %q, want text/html", ct)
 	}
-	body, _ := io.ReadAll(resp2.Body)
+	body, _ := io.ReadAll(resp.Body)
 	s := string(body)
-	if !strings.Contains(s, "<html") {
-		t.Errorf("response does not contain <html")
-	}
 	if !strings.Contains(s, "<title>porter</title>") {
 		t.Errorf("response does not contain <title>porter</title>")
 	}
-	if !strings.Contains(s, `id="chat"`) {
-		t.Errorf("response does not contain #chat div")
+	if strings.Contains(s, `id="chat"`) {
+		t.Errorf("empty state should not contain #chat div")
+	}
+	if !strings.Contains(s, "New chat") {
+		t.Errorf("empty state should offer a New chat button")
+	}
+	if !strings.Contains(s, `hx-post="/api/sessions"`) {
+		t.Errorf("empty state should include the New chat form posting to /api/sessions")
 	}
 }
 
@@ -555,22 +542,6 @@ func TestIndexContainsMessageForm(t *testing.T) {
 	}
 }
 
-func TestIndexFormAfterRedirect(t *testing.T) {
-	srv := newTestServer(t, plainLLM())
-	// GET / with no session param redirects to /?session=<id>.
-	// Follow the redirect to get the page with a session.
-	resp, err := http.Get(srv.URL + "/")
-	if err != nil {
-		t.Fatalf("GET /: %v", err)
-	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-	s := string(body)
-	if !strings.Contains(s, "msg-form") {
-		t.Errorf("index with session should contain msg-form")
-	}
-}
-
 func TestFormEncodedAppend(t *testing.T) {
 	srv := newTestServer(t, plainLLM())
 	c := client.New(srv.URL)
@@ -660,39 +631,6 @@ func TestJSONAppendNoHXTrigger(t *testing.T) {
 	}
 	if resp.Header.Get("HX-Trigger") != "" {
 		t.Errorf("JSON append set stale HX-Trigger = %q, want empty", resp.Header.Get("HX-Trigger"))
-	}
-}
-
-func TestIndexRedirectCreatesValidSession(t *testing.T) {
-	srv := newTestServer(t, plainLLM())
-
-	// The redirect should point at a session that actually exists in the store.
-	// Don't follow redirects so we can inspect the Location.
-	client := &http.Client{CheckRedirect: func(req *http.Request, via []*http.Request) error {
-		return http.ErrUseLastResponse
-	}}
-	resp, err := client.Get(srv.URL + "/")
-	if err != nil {
-		t.Fatalf("GET /: %v", err)
-	}
-	defer resp.Body.Close()
-	loc := resp.Header.Get("Location")
-	if loc == "" {
-		t.Fatalf("no Location header in redirect")
-	}
-	// Extract the session id from the Location header.
-	sessionID := strings.TrimPrefix(loc, "/?session=")
-	if sessionID == loc {
-		t.Fatalf("could not extract session id from Location %q", loc)
-	}
-	// Verify the session is real by fetching its history.
-	histResp, err := http.Get(srv.URL + "/api/sessions/" + sessionID)
-	if err != nil {
-		t.Fatalf("GET history: %v", err)
-	}
-	defer histResp.Body.Close()
-	if histResp.StatusCode != http.StatusOK {
-		t.Errorf("history for redirected session: status = %d, want 200", histResp.StatusCode)
 	}
 }
 

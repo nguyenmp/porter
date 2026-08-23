@@ -1,12 +1,16 @@
 {{define "content"}}
-<div id="chat"
-  {{if .Session}}
-  hx-get="/api/sessions/{{.Session}}/view"
-  hx-trigger="load"
-  hx-swap="innerHTML"
-  {{end}}>
+<div class="topbar">
+	<span class="brand">porter</span>
+	<form class="new-chat" hx-post="/api/sessions" hx-swap="none" hx-on::after-request="onNewChat(event)">
+		<button type="submit">New chat</button>
+	</form>
 </div>
 {{if .Session}}
+<div id="chat"
+  hx-get="/api/sessions/{{.Session}}/view"
+  hx-trigger="load"
+  hx-swap="innerHTML">
+</div>
 <div id="sse-processor"
      hx-ext="sse"
      sse-connect="/api/sessions/{{.Session}}/stream?since={{.Seq}}"
@@ -21,11 +25,27 @@
 	<input type="text" name="content" placeholder="Type a message…" autocomplete="off" autofocus>
 	<button type="submit">Send</button>
 </form>
+{{else}}
+<div class="empty-state">
+	<p>No session selected.</p>
+	<p>Start a new chat to begin.</p>
+</div>
+{{end}}
 <script>
 (function() {
+  // New chat button: POST /api/sessions, then follow the freshly created
+  // session id to its chat page. All client-side; no server change needed.
+  window.onNewChat = function(evt) {
+    if (evt.detail.xhr.status < 200 || evt.detail.xhr.status >= 300) return;
+    try {
+      const id = JSON.parse(evt.detail.xhr.responseText).id;
+      if (id) window.location = '/?session=' + encodeURIComponent(id);
+    } catch (e) {}
+  };
+
   const chat = document.getElementById('chat');
   const form = document.querySelector('.msg-form');
-  const input = form.querySelector('input[name="content"]');
+  const input = form ? form.querySelector('input[name="content"]') : null;
 
   // Track the currently streaming assistant message and reasoning block so
   // deltas can append in place instead of creating new elements each time.
@@ -170,12 +190,14 @@
     chat.scrollTop = chat.scrollHeight;
   };
 
-  // After sending a message, clear the input and keep focus.
-  form.addEventListener('htmx:afterRequest', function() {
-    input.value = '';
-    input.focus();
-  });
+  // After sending a message, clear the input and keep focus. The form only
+  // exists when a session is selected (the empty state has none).
+  if (form) {
+    form.addEventListener('htmx:afterRequest', function() {
+      input.value = '';
+      input.focus();
+    });
+  }
 })();
 </script>
-{{end}}
 {{end}}

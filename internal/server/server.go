@@ -325,15 +325,15 @@ func (s *Server) handleView(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleIndex serves the chat page. When no ?session= param is present, it
-// creates a new session and redirects to /?session=<id> so the page always has
-// something to poll. When the param is present, it renders the page directly
-// and passes the current seq so the SSE stream can resume without a gap.
+// handleIndex serves the chat page. When no ?session= param is present it
+// renders the empty state; creating a chat is now an explicit action (the New
+// chat button posts to /api/sessions), not a side effect of visiting the page.
+// When the param is present it renders the page directly and passes the current
+// seq so the SSE stream can resume without a gap.
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	sessID := r.URL.Query().Get("session")
 	if sessID == "" {
-		ses := s.store.Create(s.client)
-		http.Redirect(w, r, "/?session="+ses.ID(), http.StatusFound)
+		render(w, "layout.tmpl", pageData{Title: "porter"})
 		return
 	}
 	ses, ok := s.store.Get(sessID)
