@@ -173,6 +173,12 @@
     // source of truth = goldmark on the server. The fallback only fires when
     // no rendered copy is supplied (e.g. an older server or empty content).
     const contentHTML = html || (m.content ? escapeHTML(m.content).replace(/\n/g, '<br>') : '');
+    // Reasoning was already rendered live, chunk by chunk, when it streamed
+    // (currentReasoning is set until here). A committed copy that arrives with
+    // no live stream (SSE replay after a reconnect, or a reload) carries
+    // reasoning on the message itself — render it now so history and the live
+    // view never differ.
+    const hadLiveReasoning = currentReasoning !== null;
     let div;
     if (currentAssistant) {
       div = currentAssistant;
@@ -183,6 +189,12 @@
       // No live copy (replay/history): render a fresh element with the full
       // committed content rather than an empty bubble.
       div = appendMessage('assistant', contentHTML);
+    }
+    if (m.reasoning && !hadLiveReasoning) {
+      const r = document.createElement('div');
+      r.className = 'reasoning';
+      r.innerHTML = escapeHTML(m.reasoning).replace(/\n/g, '<br>');
+      div.before(r);
     }
     if (m.tool_calls) {
       div.insertAdjacentHTML('beforeend', renderToolCalls(m.tool_calls));
@@ -231,7 +243,7 @@
         if (ev.type === 'message_delta') {
           ensureAssistant().insertAdjacentText('beforeend', ev.delta);
         } else if (ev.type === 'reasoning_delta') {
-          ensureReasoning().insertAdjacentText('beforeend', ev.reasoning);
+          ensureReasoning().insertAdjacentHTML('beforeend', escapeHTML(ev.reasoning).replace(/\n/g, '<br>'));
         } else if (ev.type === 'tool_call') {
           // Streamed tool calls are rendered live; finalizeAssistant will
           // reconcile them against the committed message when it arrives.

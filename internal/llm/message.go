@@ -6,8 +6,14 @@ package llm
 // result (role "tool"). Empty fields are omitted so only the relevant payload
 // is serialized.
 type ChatMessage struct {
-	Role       string     `json:"role"`
-	Content    string     `json:"content,omitempty"`
+	Role    string `json:"role"`
+	Content string `json:"content,omitempty"`
+	// Reasoning is the model's private chain-of-thought, streamed separately
+	// from Content by reasoning-capable providers. It is persisted on the
+	// committed assistant message so it survives a reload (server-side /view
+	// render and SSE replay), and is never folded back into Content when the
+	// message is resubmitted to the model.
+	Reasoning  string     `json:"reasoning,omitempty"`
 	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string     `json:"tool_call_id,omitempty"`
 }
@@ -42,9 +48,9 @@ type Function struct {
 }
 
 // AssistantMessage builds an assistant message that may carry the content the
-// model produced alongside any tool calls it requested.
-func AssistantMessage(content string, calls []ToolCall) ChatMessage {
-	return ChatMessage{Role: "assistant", Content: content, ToolCalls: calls}
+// model produced, its (separate) reasoning, and any tool calls it requested.
+func AssistantMessage(content, reasoning string, calls []ToolCall) ChatMessage {
+	return ChatMessage{Role: "assistant", Content: content, Reasoning: reasoning, ToolCalls: calls}
 }
 
 // ToolResult builds a role-"tool" message reporting the outcome of a tool run,

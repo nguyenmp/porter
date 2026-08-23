@@ -5,6 +5,9 @@
 			<div class="msg-content">{{nl2br .Content}}</div>
 		</div>
 	{{else if eq .Role "assistant"}}
+		{{if .Reasoning}}
+			<div class="reasoning">{{nl2br .Reasoning}}</div>
+		{{end}}
 		<div class="msg msg-assistant">
 			<span class="msg-role">assistant</span>
 			{{if .Content}}

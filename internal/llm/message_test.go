@@ -7,7 +7,7 @@ import (
 )
 
 func TestMessageSerialization(t *testing.T) {
-	msg := AssistantMessage("thinking out loud", []ToolCall{
+	msg := AssistantMessage("thinking out loud", "", []ToolCall{
 		{ID: "call_1", Type: "function", Function: ToolFunction{Name: "shell", Arguments: `{"command":"ls"}`}},
 	})
 	data, err := json.Marshal(msg)
@@ -22,6 +22,39 @@ func TestMessageSerialization(t *testing.T) {
 		if !strings.Contains(string(data), want) {
 			t.Errorf("missing %q; got: %s", want, data)
 		}
+	}
+}
+
+// TestReasoningSerializationSeparate ensures reasoning round-trips as its own
+// field on the committed assistant message (so it survives a reload) and is
+// never folded into content.
+func TestReasoningSerializationSeparate(t *testing.T) {
+	msg := AssistantMessage("visible answer", "hidden chain of thought", nil)
+	data, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	got := string(data)
+	for _, want := range []string{
+		`"content":"visible answer"`,
+		`"reasoning":"hidden chain of thought"`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q; got: %s", want, got)
+		}
+	}
+	// Reasoning must stay out of content, not be concatenated into it.
+	if strings.Contains(got, `"content":"visible answerhidden chain of thought"`) {
+		t.Errorf("reasoning leaked into content: %s", got)
+	}
+
+	// An empty reasoning value is omitted entirely from the wire.
+	plain, err := json.Marshal(AssistantMessage("plain", "", nil))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(plain), "reasoning") {
+		t.Errorf("empty reasoning should be omitted; got: %s", plain)
 	}
 }
 

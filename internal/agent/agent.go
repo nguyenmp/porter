@@ -58,6 +58,7 @@ func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage,
 
 	for {
 		var reply strings.Builder
+		var reasoning string
 		var calls []codec.ToolCall
 		var usage Usage
 
@@ -69,6 +70,7 @@ func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage,
 			case codec.TypeMessage:
 				reply.Reset()
 				reply.WriteString(ev.Content)
+				reasoning = ev.Reasoning
 			case codec.TypeToolCall:
 				calls = append(calls, codec.ToolCall{ID: ev.ToolCallID, Name: ev.Name, Arguments: ev.Arguments})
 			case codec.TypeUsage:
@@ -104,11 +106,11 @@ func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage,
 
 		if len(calls) == 0 {
 			res.Text = reply.String()
-			commit(llm.AssistantMessage(res.Text, nil))
+			commit(llm.AssistantMessage(res.Text, reasoning, nil))
 			return res, nil
 		}
 
-		commit(llm.AssistantMessage(reply.String(), toLLMCalls(calls)))
+		commit(llm.AssistantMessage(reply.String(), reasoning, toLLMCalls(calls)))
 		for _, c := range calls {
 			result := ""
 			stream, err := js.Run(ctx, c.Name, []byte(c.Arguments))

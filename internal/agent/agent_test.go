@@ -42,15 +42,17 @@ func toolServer(t *testing.T) (*httptest.Server, func() ([][]json.RawMessage, []
 		w.Header().Set("Content-Type", "text/event-stream")
 		n := len(hadTools)
 		if n == 1 {
-			// First turn: ask for a tool call (arguments stream in pieces).
+			// First turn: ask for a tool call (arguments stream in pieces), with reasoning.
 			fmt.Fprintf(w,
-				`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"shell","arguments":"{\"command\":\""}}]},"finish_reason":null}]}`+"\n\n"+
+				`data: {"choices":[{"delta":{"reasoning_content":"deciding to call the shell"},"finish_reason":null}]}`+"\n\n"+
+					`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"shell","arguments":"{\"command\":\""}}]},"finish_reason":null}]}`+"\n\n"+
 					`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"echo hi\"}"}}]},"finish_reason":"tool_calls"}]}`+"\n\n"+
 					`data: [DONE]`+"\n")
 		} else {
-			// Second turn: reply plainly, with usage.
+			// Second turn: reply plainly (with reasoning), with usage.
 			fmt.Fprintf(w,
-				`data: {"choices":[{"delta":{"content":"done"},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":3}}`+"\n\n"+
+				`data: {"choices":[{"delta":{"reasoning_content":"wrapping up"},"finish_reason":null}]}`+"\n\n"+
+					`data: {"choices":[{"delta":{"content":"done"},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":3}}`+"\n\n"+
 					`data: [DONE]`+"\n")
 		}
 	}))
@@ -161,17 +163,24 @@ func TestRunTurnOnMessage(t *testing.T) {
 			t.Errorf("message[%d] role = %q, want %q", i, roles[i], w)
 		}
 	}
-	// The first committed message carries the tool call the model requested.
+	// The first committed message carries the tool call AND the reasoning the
+	// model streamed for that round (so a reload can render it).
 	if len(got[0].ToolCalls) != 1 || got[0].ToolCalls[0].ID != "call_1" {
 		t.Errorf("first committed message missing tool call; got %+v", got[0])
+	}
+	if !strings.Contains(got[0].Reasoning, "deciding to call the shell") {
+		t.Errorf("first committed message missing streamed reasoning; got %+v", got[0])
 	}
 	// The tool result is keyed to that call.
 	if got[1].Role != "tool" || got[1].ToolCallID != "call_1" {
 		t.Errorf("tool result = %+v, want tool_call_id call_1", got[1])
 	}
-	// The final message is the plain answer.
+	// The final message is the plain answer, carrying its own reasoning.
 	if got[2].Content != "done" || len(got[2].ToolCalls) != 0 {
 		t.Errorf("final message = %+v, want content done", got[2])
+	}
+	if !strings.Contains(got[2].Reasoning, "wrapping up") {
+		t.Errorf("final message missing reasoning; got %+v", got[2])
 	}
 	// onMessage output must match the assembled turn result.
 	if !reflect.DeepEqual(got, res.History[1:]) {

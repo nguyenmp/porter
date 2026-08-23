@@ -17,6 +17,7 @@ import (
 
 	"porter/internal/api"
 	"porter/internal/client"
+	"porter/internal/codec"
 	"porter/internal/config"
 	"porter/internal/tools"
 )
@@ -961,5 +962,84 @@ func TestStreamSSECarriesMessageHTML(t *testing.T) {
 	}
 	if !saw {
 		t.Fatalf("SSE stream missing committed assistant message; got %d envelopes", len(got))
+	}
+}
+
+// reasoningLLM streams a reply split between reasoning_content and content, the
+// shape a reasoning-capable provider emits, so a test can verify reasoning is
+// persisted and rendered on reload exactly as it streamed live.
+func reasoningLLM() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w,
+			`data: {"choices":[{"delta":{"reasoning_content":"let me think\nstep one"},"finish_reason":null}]}`+"\n\n"+
+				`data: {"choices":[{"delta":{"reasoning_content":"\nstep two"},"finish_reason":null}]}`+"\n\n"+
+				`data: {"choices":[{"delta":{"content":"The answer"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":2}}`+"\n\n"+
+				`data: [DONE]`+"\n")
+	}
+}
+
+// TestReasoningPersistsAcrossReload locks in the parity guarantee for reasoning
+// blocks: they stream live as reasoning_delta events AND are committed onto the
+// assistant message, so a hard refresh that re-renders from history (/view)
+// shows the same reasoning block instead of losing it.
+func TestReasoningPersistsAcrossReload(t *testing.T) {
+	srv := newTestServer(t, reasoningLLM())
+	id, got, h := runOneTurnID(t, srv.URL, "think it through")
+
+	// The committed history must carry the streamed reasoning, separate from content.
+	if len(h.History) < 2 || h.History[1].Role != "assistant" {
+		t.Fatalf("history = %+v, want an assistant reply", h.History)
+	}
+	asst := h.History[1]
+	if !strings.Contains(asst.Content, "The answer") {
+		t.Errorf("assistant content = %q, want 'The answer'", asst.Content)
+	}
+	if !strings.Contains(asst.Reasoning, "step one") || !strings.Contains(asst.Reasoning, "step two") {
+		t.Errorf("assistant reasoning = %q, want streamed 'step one'/'step two'", asst.Reasoning)
+	}
+	if strings.Contains(asst.Content, "step one") {
+		t.Errorf("reasoning leaked into content: %q", asst.Content)
+	}
+
+	// The live bus delivered reasoning_delta events (the streaming path).
+	var sawDelta bool
+	for _, env := range got {
+		if env.Kind == api.KindLLM && env.Event != nil && env.Event.Type == codec.TypeReasoningDelta {
+			sawDelta = true
+		}
+	}
+	if !sawDelta {
+		t.Errorf("bus missing reasoning_delta events; got %+v", got)
+	}
+
+	// The committed message envelope carries reasoning, so an SSE replay that
+	// has no live deltas can still render it.
+	var commitReasoning string
+	for _, env := range got {
+		if env.Kind == api.KindMessage && env.Message != nil && env.Message.Role == "assistant" {
+			commitReasoning = env.Message.Reasoning
+		}
+	}
+	if !strings.Contains(commitReasoning, "step one") {
+		t.Errorf("committed assistant envelope reasoning = %q, want step one", commitReasoning)
+	}
+
+	// The /view render (what a hard refresh fetches) shows the reasoning block.
+	resp, err := http.Get(srv.URL + "/api/sessions/" + id + "/view")
+	if err != nil {
+		t.Fatalf("GET view: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	s := string(body)
+	if !strings.Contains(s, `class="reasoning"`) {
+		t.Errorf("/view does not render a reasoning block:\n%s", s)
+	}
+	if !strings.Contains(s, "step one") || !strings.Contains(s, "step two") {
+		t.Errorf("/view reasoning missing streamed text:\n%s", s)
+	}
+	if !strings.Contains(s, "The answer") {
+		t.Errorf("/view missing the answer content:\n%s", s)
 	}
 }

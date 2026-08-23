@@ -120,7 +120,7 @@ func TestResyncWhenBehindBuffer(t *testing.T) {
 func TestLateSubscriberSeesTurnDone(t *testing.T) {
 	s := newSession("s", nil, nil)
 	s.commit(llm.UserMessage("hi"))
-	s.commit(llm.AssistantMessage("done", nil))
+	s.commit(llm.AssistantMessage("done", "", nil))
 	s.endTurn(api.Envelope{Kind: api.KindTurnDone, TurnID: 1})
 
 	ctx, cancel := context.WithCancel(context.Background())
