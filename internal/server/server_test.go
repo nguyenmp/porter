@@ -402,6 +402,58 @@ func TestIndexPassesSessionParam(t *testing.T) {
 	}
 }
 
+func TestIndexContainsSidebar(t *testing.T) {
+	srv := newTestServer(t, plainLLM())
+	c := client.New(srv.URL)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	info, err := c.Create(ctx)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	resp, err := http.Get(srv.URL + "/?session=" + info.ID)
+	if err != nil {
+		t.Fatalf("GET /: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	s := string(body)
+	if !strings.Contains(s, `id="app" data-session="`+info.ID+`"`) {
+		t.Errorf("index does not carry the active session on #app")
+	}
+	if !strings.Contains(s, `class="sidebar"`) {
+		t.Errorf("index does not contain a sidebar nav")
+	}
+	if !strings.Contains(s, `id="session-list"`) {
+		t.Errorf("index does not contain the sidebar session list")
+	}
+	if !strings.Contains(s, "porter.sessions") {
+		t.Errorf("index script does not reference the localStorage session registry")
+	}
+	if !strings.Contains(s, "+ New chat") {
+		t.Errorf("sidebar does not contain the New chat button")
+	}
+}
+
+func TestIndexEmptyStateHasNoActiveSession(t *testing.T) {
+	srv := newTestServer(t, plainLLM())
+
+	resp, err := http.Get(srv.URL + "/")
+	if err != nil {
+		t.Fatalf("GET /: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	s := string(body)
+	if !strings.Contains(s, `id="app" data-session=""`) {
+		t.Errorf("empty state should carry an empty data-session on #app")
+	}
+	if !strings.Contains(s, `id="session-list"`) {
+		t.Errorf("empty state should still render the sidebar session list")
+	}
+}
+
 // runOneTurnID is like runOneTurn but also returns the session id.
 func runOneTurnID(t *testing.T, base, prompt string) (string, []api.Envelope, api.SessionHistory) {
 	t.Helper()

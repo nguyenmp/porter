@@ -7,7 +7,18 @@
 	<script src="https://unpkg.com/htmx.org@2.0.6"></script>
 	<script src="https://unpkg.com/htmx-ext-sse@2.2.2/sse.js"></script>
 	<style>
-		body { font-family: sans-serif; max-width: 800px; margin: 1rem auto; }
+		body { font-family: sans-serif; max-width: 1000px; margin: 1rem auto; }
+		#app { display: flex; gap: 1.5rem; align-items: flex-start; }
+		.sidebar { width: 220px; flex-shrink: 0; }
+		.sidebar .brand { display: block; margin-bottom: 0.75rem; font-weight: bold; font-size: 1.1em; }
+		.new-chat { margin-bottom: 0.75rem; }
+		.new-chat button { width: 100%; padding: 0.4rem 0.75rem; border: 1px solid #ccc; border-radius: 4px; background: #fff; color: #333; cursor: pointer; }
+		.new-chat button:hover { background: #f0f0f0; }
+		#session-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.25rem; }
+		#session-list a { display: block; padding: 0.35rem 0.5rem; border-radius: 4px; color: #333; text-decoration: none; font-size: 0.9em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+		#session-list a:hover { background: #f0f0f0; }
+		#session-list a.active { background: #e0e0e0; font-weight: bold; }
+		.main { flex: 1; min-width: 0; }
 		.msg { margin-bottom: 0.75rem; padding: 0.5rem; border-radius: 4px; }
 		.msg-user { background: #e8f4fd; }
 		.msg-assistant { background: #f5f5f5; }
@@ -39,11 +50,6 @@
 		.msg-form button:hover { background: #0056b3; }
 		.reasoning { color: #888; font-style: italic; margin: 0.25rem 0; padding: 0.25rem 0.5rem; border-left: 2px solid #ccc; }
 		#chat { max-height: 70vh; overflow-y: auto; }
-		/* Top bar */
-		.topbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 1rem; }
-		.brand { font-weight: bold; font-size: 1.1em; }
-		.new-chat button { padding: 0.35rem 0.75rem; border: 1px solid #ccc; border-radius: 4px; background: #fff; color: #333; cursor: pointer; }
-		.new-chat button:hover { background: #f0f0f0; }
 		.empty-state { text-align: center; color: #666; margin-top: 4rem; }
 	</style>
 </head>

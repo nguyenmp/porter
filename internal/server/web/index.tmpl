@@ -1,36 +1,41 @@
 {{define "content"}}
-<div class="topbar">
-	<span class="brand">porter</span>
-	<form class="new-chat" hx-post="/api/sessions" hx-swap="none" hx-on::after-request="onNewChat(event)">
-		<button type="submit">New chat</button>
-	</form>
+<div id="app" data-session="{{.Session}}">
+	<nav class="sidebar">
+		<span class="brand">porter</span>
+		<form class="new-chat" hx-post="/api/sessions" hx-swap="none" hx-on::after-request="onNewChat(event)">
+			<button type="submit">+ New chat</button>
+		</form>
+		<ul id="session-list" hidden></ul>
+	</nav>
+	<main class="main">
+		{{if .Session}}
+		<div id="chat"
+		  hx-get="/api/sessions/{{.Session}}/view"
+		  hx-trigger="load"
+		  hx-swap="innerHTML">
+		</div>
+		<div id="sse-processor"
+		     hx-ext="sse"
+		     sse-connect="/api/sessions/{{.Session}}/stream?since={{.Seq}}"
+		     sse-swap="message_committed,llm,tool_result,turn_completed"
+		     hx-swap="none"
+		     hx-on:htmx:sse-message="sseMessage(event)">
+		</div>
+		<form hx-post="/api/sessions/{{.Session}}/messages"
+		      hx-target="#chat"
+		      hx-swap="none"
+		      class="msg-form">
+			<input type="text" name="content" placeholder="Type a message…" autocomplete="off" autofocus>
+			<button type="submit">Send</button>
+		</form>
+		{{else}}
+		<div class="empty-state">
+			<p>No session selected.</p>
+			<p>Start a new chat to begin.</p>
+		</div>
+		{{end}}
+	</main>
 </div>
-{{if .Session}}
-<div id="chat"
-  hx-get="/api/sessions/{{.Session}}/view"
-  hx-trigger="load"
-  hx-swap="innerHTML">
-</div>
-<div id="sse-processor"
-     hx-ext="sse"
-     sse-connect="/api/sessions/{{.Session}}/stream?since={{.Seq}}"
-     sse-swap="message_committed,llm,tool_result,turn_completed"
-     hx-swap="none"
-     hx-on:htmx:sse-message="sseMessage(event)">
-</div>
-<form hx-post="/api/sessions/{{.Session}}/messages"
-      hx-target="#chat"
-      hx-swap="none"
-      class="msg-form">
-	<input type="text" name="content" placeholder="Type a message…" autocomplete="off" autofocus>
-	<button type="submit">Send</button>
-</form>
-{{else}}
-<div class="empty-state">
-	<p>No session selected.</p>
-	<p>Start a new chat to begin.</p>
-</div>
-{{end}}
 <script>
 (function() {
   // New chat button: POST /api/sessions, then follow the freshly created
@@ -42,6 +47,56 @@
       if (id) window.location = '/?session=' + encodeURIComponent(id);
     } catch (e) {}
   };
+
+  // --- Client-side session registry (Step 4) ---
+  // No server list endpoint yet; the browser remembers the sessions it has
+  // created or visited in localStorage and renders them in the sidebar. This is
+  // a placeholder until the server grows a list endpoint / SQLite persistence.
+  const SESSIONS_KEY = 'porter.sessions';
+
+  function loadSessionIds() {
+    try {
+      const raw = localStorage.getItem(SESSIONS_KEY);
+      const arr = raw ? JSON.parse(raw) : [];
+      return Array.isArray(arr) ? arr : [];
+    } catch (e) { return []; }
+  }
+
+  function saveSessionIds(ids) {
+    try { localStorage.setItem(SESSIONS_KEY, JSON.stringify(ids)); } catch (e) {}
+  }
+
+  function recordSession(id) {
+    const ids = loadSessionIds().filter(x => x !== id);
+    ids.unshift(id);
+    saveSessionIds(ids);
+    renderSidebar(id);
+  }
+
+  function renderSidebar(activeId) {
+    const listEl = document.getElementById('session-list');
+    if (!listEl) return;
+    const ids = loadSessionIds();
+    listEl.innerHTML = '';
+    for (const id of ids) {
+      const a = document.createElement('a');
+      a.href = '/?session=' + encodeURIComponent(id);
+      a.textContent = id;
+      a.className = 'session-link' + (id === activeId ? ' active' : '');
+      listEl.appendChild(a);
+    }
+    listEl.hidden = ids.length === 0;
+  }
+
+  // Register the active session (if any) on load so a fresh visit shows up in
+  // the sidebar, and render the list (empty state has no active session).
+  const app = document.getElementById('app');
+  const activeSession = app ? app.dataset.session || '' : '';
+  if (activeSession) {
+    recordSession(activeSession);
+  } else {
+    renderSidebar(null);
+  }
 
   const chat = document.getElementById('chat');
   const form = document.querySelector('.msg-form');
