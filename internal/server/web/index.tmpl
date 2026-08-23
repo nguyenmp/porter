@@ -122,6 +122,14 @@
     return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   }
 
+  // Returns true if the chat is scrolled to (or within `threshold` px of) the
+  // bottom. Used to decide whether to auto-follow new content: if the user has
+  // scrolled up to read earlier messages, don't yank the view back down.
+  function isNearBottom(el, threshold) {
+    const t = threshold || 40;
+    return el.scrollHeight - el.scrollTop - el.clientHeight <= t;
+  }
+
   function appendMessage(role, html) {
     const div = document.createElement('div');
     div.className = 'msg msg-' + role;
@@ -185,6 +193,10 @@
 
   window.sseMessage = function(evt) {
     const env = JSON.parse(evt.detail.data);
+    // Remember whether the user was already pinned to the bottom before this
+    // update touches the DOM. If they've scrolled up to read something, we
+    // should not yank them back down as new content arrives.
+    const wasAtBottom = isNearBottom(chat);
     switch (env.kind) {
       case 'message_committed':
         const m = env.message;
@@ -256,8 +268,11 @@
         currentReasoning = null;
         break;
     }
-    // Auto-scroll to the bottom as new content streams in.
-    chat.scrollTop = chat.scrollHeight;
+    // Auto-scroll to the bottom only when the user was already at the bottom;
+    // otherwise respect their scroll position while they read earlier content.
+    if (wasAtBottom) {
+      chat.scrollTop = chat.scrollHeight;
+    }
   };
 
   // After sending a message, clear the input and keep focus. The form only
