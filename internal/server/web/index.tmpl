@@ -112,6 +112,11 @@
   // reconnect). Remember which calls we've already shown live so the committed
   // copy only renders when there was no live one (i.e. on replay).
   const renderedToolResults = new Set();
+  // Committed messages are replayed by the server whenever the SSE stream
+  // reconnects from its original `since` (the url is fixed at page load).
+  // Remember which commit seqs we've rendered so a replay doesn't duplicate
+  // messages that are already in the DOM.
+  const renderedCommits = new Set();
 
   function escapeHTML(s) {
     return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -152,18 +157,24 @@
     return html;
   }
 
-  function finalizeAssistant(m) {
-    // If we were streaming this assistant message, replace the live text with
-    // the committed version (so newlines render correctly) and ensure tool calls
-    // are present. Otherwise create a fresh message element for replay/history.
+  function finalizeAssistant(m, html) {
+    // Replace the live text with the committed version (server-rendered
+    // markdown when supplied, escaped plaintext otherwise) and ensure tool
+    // calls are present. html is carried on the message_committed envelope so
+    // the committed copy matches exactly what /view renders on reload — single
+    // source of truth = goldmark on the server. The fallback only fires when
+    // no rendered copy is supplied (e.g. an older server or empty content).
+    const contentHTML = html || (m.content ? escapeHTML(m.content).replace(/\n/g, '<br>') : '');
     let div;
     if (currentAssistant) {
       div = currentAssistant;
-      currentAssistant.querySelector('.msg-content').innerHTML = m.content ? escapeHTML(m.content).replace(/\n/g, '<br>') : '';
+      currentAssistant.querySelector('.msg-content').innerHTML = contentHTML;
       // Remove any stale tool-call details so we can re-render from the commit.
       div.querySelectorAll('.tool-call').forEach(el => el.remove());
     } else {
-      div = appendMessage('assistant', '');
+      // No live copy (replay/history): render a fresh element with the full
+      // committed content rather than an empty bubble.
+      div = appendMessage('assistant', contentHTML);
     }
     if (m.tool_calls) {
       div.insertAdjacentHTML('beforeend', renderToolCalls(m.tool_calls));
@@ -177,12 +188,16 @@
     switch (env.kind) {
       case 'message_committed':
         const m = env.message;
+        // Skip a replayed commit we've already rendered (SSE reconnect replays
+        // from the original `since`).
+        if (env.seq && renderedCommits.has(env.seq)) break;
+        if (env.seq) renderedCommits.add(env.seq);
         if (m.role === 'user') {
           currentAssistant = null;
           currentReasoning = null;
           appendMessage('user', escapeHTML(m.content).replace(/\n/g, '<br>'));
         } else if (m.role === 'assistant') {
-          finalizeAssistant(m);
+          finalizeAssistant(m, env.message_html);
         } else if (m.role === 'tool') {
           currentAssistant = null;
           currentReasoning = null;

@@ -86,15 +86,22 @@ const (
 // Envelope is a single NDJSON line on a session's event bus. Kind selects which
 // fields are meaningful.
 type Envelope struct {
-	Kind       string           `json:"kind"`
-	Seq        uint64           `json:"seq,omitempty"`          // KindMessage
-	Event      *codec.Event     `json:"event,omitempty"`        // KindLLM
-	Message    *llm.ChatMessage `json:"message,omitempty"`      // KindMessage
-	ToolCallID string           `json:"tool_call_id,omitempty"` // KindToolResult
-	Name       string           `json:"name,omitempty"`         // KindToolResult
-	Result     string           `json:"result,omitempty"`       // KindToolResult
-	TurnID     int64            `json:"turn_id,omitempty"`      // KindTurnDone
-	Input      int              `json:"input,omitempty"`        // KindTurnDone
-	Output     int              `json:"output,omitempty"`       // KindTurnDone
-	Error      string           `json:"error,omitempty"`        // KindTurnDone
+	Kind    string           `json:"kind"`
+	Seq     uint64           `json:"seq,omitempty"`     // KindMessage
+	Event   *codec.Event     `json:"event,omitempty"`   // KindLLM
+	Message *llm.ChatMessage `json:"message,omitempty"` // KindMessage
+	// MessageHTML is the server-rendered HTML for a committed assistant
+	// message (KindMessage). It is set only for assistant messages with
+	// content, so the SSE client can render the committed copy exactly as the
+	// /view endpoint would (markdown) instead of approximating it client-side.
+	// Plaintext messages (user, tool) are excluded; the client already renders
+	// those identically to /view.
+	MessageHTML string `json:"message_html,omitempty"` // KindMessage
+	ToolCallID  string `json:"tool_call_id,omitempty"` // KindToolResult
+	Name        string `json:"name,omitempty"`         // KindToolResult
+	Result      string `json:"result,omitempty"`       // KindToolResult
+	TurnID      int64  `json:"turn_id,omitempty"`      // KindTurnDone
+	Input       int    `json:"input,omitempty"`        // KindTurnDone
+	Output      int    `json:"output,omitempty"`       // KindTurnDone
+	Error       string `json:"error,omitempty"`        // KindTurnDone
 }

@@ -846,3 +846,120 @@ func TestStreamReplaysFromSince(t *testing.T) {
 		t.Errorf("last event = %q, want %q", got[len(got)-1].Kind, api.KindTurnDone)
 	}
 }
+
+// markdownLLM streams a markdown reply (with a code fence) split across two
+// deltas, so a test can compare how the streaming envelope carries the
+// committed message vs how the Go /view endpoint renders it.
+func markdownLLM() http.HandlerFunc {
+	fence := "```go\ncode\n```"
+	reply := "**bold**\n\n# Heading\n\n- item\n\n" + fence
+	chunk1 := fmt.Sprintf(`data: {"choices":[{"delta":{"content":%q}}]}`+"\n\n", reply[:18])
+	chunk2 := fmt.Sprintf(`data: {"choices":[{"delta":{"content":%q,"finish_reason":"stop"}}],"usage":{"prompt_tokens":1,"completion_tokens":9}}`+"\n\n", reply[18:])
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, chunk1)
+		fmt.Fprint(w, chunk2)
+		fmt.Fprint(w, "data: [DONE]\n")
+	}
+}
+
+// TestStreamedAssistantHTMLMatchesView locks in the parity guarantee between
+// the two render paths: the committed assistant message that arrives on the
+// SSE stream must carry server-rendered markdown HTML (message_html) identical
+// to what /view renders on reload, so the UI cannot drift.
+func TestStreamedAssistantHTMLMatchesView(t *testing.T) {
+	srv := newTestServer(t, markdownLLM())
+	c := client.New(srv.URL)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	info, err := c.Create(ctx)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := c.Append(ctx, info.ID, "make md"); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+
+	var got []api.Envelope
+	err = c.Subscribe(ctx, info.ID, info.Seq, func(env api.Envelope) { got = append(got, env) },
+		func(env api.Envelope) bool { return env.Kind == api.KindTurnDone })
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+
+	// The committed assistant envelope must carry pre-rendered markdown HTML.
+	var streamHTML string
+	for _, env := range got {
+		if env.Kind == api.KindMessage && env.Message != nil && env.Message.Role == "assistant" {
+			streamHTML = env.MessageHTML
+			break
+		}
+	}
+	if streamHTML == "" {
+		t.Fatalf("assistant message_committed envelope has no message_html; got %+v", got)
+	}
+	for _, want := range []string{"<strong>bold</strong>", "<h1>Heading</h1>"} {
+		if !strings.Contains(streamHTML, want) {
+			t.Errorf("streamed assistant HTML missing %q: %s", want, streamHTML)
+		}
+	}
+	if strings.Contains(streamHTML, "**bold**") {
+		t.Errorf("streamed assistant HTML left literal markdown: %s", streamHTML)
+	}
+
+	// The /view render for the same message must produce the same HTML.
+	viewResp, err := http.Get(srv.URL + "/api/sessions/" + info.ID + "/view")
+	if err != nil {
+		t.Fatalf("GET view: %v", err)
+	}
+	defer viewResp.Body.Close()
+	body, _ := io.ReadAll(viewResp.Body)
+	view := string(body)
+	for _, frag := range []string{"<strong>bold</strong>", "<h1>Heading</h1>"} {
+		if !strings.Contains(view, frag) {
+			t.Errorf("/view HTML missing %q:\n%s", frag, view)
+		}
+	}
+	if strings.Contains(view, "**bold**") {
+		t.Errorf("/view HTML left literal markdown: %s", view)
+	}
+}
+
+// TestStreamSSECarriesMessageHTML verifies the raw SSE stream (the transport
+// the web UI consumes) serializes the pre-rendered message_html field on the
+// committed assistant message, not just the NDJSON client path.
+func TestStreamSSECarriesMessageHTML(t *testing.T) {
+	srv := newTestServer(t, markdownLLM())
+	c := client.New(srv.URL)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	info, err := c.Create(ctx)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := c.Append(ctx, info.ID, "make md"); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+
+	resp, err := http.Get(srv.URL + "/api/sessions/" + info.ID + "/stream?since=0")
+	if err != nil {
+		t.Fatalf("GET stream: %v", err)
+	}
+	defer resp.Body.Close()
+
+	got := readSSE(t, resp.Body)
+	var saw bool
+	for _, env := range got {
+		if env.Kind == api.KindMessage && env.Message != nil && env.Message.Role == "assistant" {
+			if !strings.Contains(env.MessageHTML, "<strong>bold</strong>") {
+				t.Errorf("SSE assistant envelope message_html = %q, want rendered markdown", env.MessageHTML)
+			}
+			saw = true
+		}
+	}
+	if !saw {
+		t.Fatalf("SSE stream missing committed assistant message; got %d envelopes", len(got))
+	}
+}

@@ -15,6 +15,7 @@ import (
 	"porter/internal/agent"
 	"porter/internal/api"
 	"porter/internal/llm"
+	"porter/internal/render"
 	"porter/internal/tools"
 )
 
@@ -191,9 +192,15 @@ func (s *Session) Turns() []TurnMeta {
 }
 
 // commit appends m to the authoritative history, stamps it on the bus log with
-// the next position, and publishes it to every subscriber.
+// the next position, and publishes it to every subscriber. For assistant
+// messages it also pre-renders the content to HTML (markdown) and carries it on
+// the envelope, so the SSE client renders the committed copy identically to the
+// /view endpoint rather than approximating it client-side.
 func (s *Session) commit(m llm.ChatMessage) uint64 {
 	env := api.Envelope{Kind: api.KindMessage, Message: &m}
+	if m.Role == "assistant" && m.Content != "" {
+		env.MessageHTML = render.Markdown(m.Content)
+	}
 	s.mu.Lock()
 	s.logSeq++
 	env.Seq = s.logSeq

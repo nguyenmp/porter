@@ -6,7 +6,6 @@
 package server
 
 import (
-	"bytes"
 	"embed"
 	"encoding/json"
 	"fmt"
@@ -17,12 +16,11 @@ import (
 	"strings"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/yuin/goldmark"
-	"github.com/yuin/goldmark/extension"
 
 	"porter/internal/api"
 	"porter/internal/config"
 	"porter/internal/llm"
+	mdr "porter/internal/render"
 	"porter/internal/session"
 )
 
@@ -30,23 +28,21 @@ import (
 var webFS embed.FS
 
 // nl2br converts newlines to <br> tags after HTML-escaping. Used in the view
-// template to render plaintext (user messages) with line breaks. Returns
-// template.HTML so the template engine does not double-escape the output.
+// template to render plaintext (user messages) with line breaks. It is a thin
+// wrapper over mdr.Plaintext so the template and the live SSE stream share
+// one implementation; returns template.HTML so the template engine does not
+// double-escape the output.
 func nl2br(s string) template.HTML {
-	s = template.HTMLEscapeString(s)
-	return template.HTML(strings.ReplaceAll(s, "\n", "<br>"))
+	return template.HTML(mdr.Plaintext(s))
 }
 
-// renderMarkdown converts markdown text to HTML using goldmark with the GFM
-// table extension. goldmark handles its own HTML escaping, so the output is
-// safe to return as template.HTML (the template engine will not re-escape it).
+// renderMarkdown converts markdown text to HTML via the shared render package.
+// It returns template.HTML so the template engine does not re-escape the
+// already-safe goldmark output. The same mdr.Markdown is used on the live
+// SSE stream, so a message looks identical whether it streamed in or was
+// rendered from history on load.
 func renderMarkdown(s string) template.HTML {
-	var buf bytes.Buffer
-	if err := goldmark.New(goldmark.WithExtensions(extension.GFM)).Convert([]byte(s), &buf); err != nil {
-		// On error, fall back to escaped plaintext with line breaks.
-		return nl2br(s)
-	}
-	return template.HTML(buf.String())
+	return template.HTML(mdr.Markdown(s))
 }
 
 // templates are parsed once at startup from the embedded web directory.
