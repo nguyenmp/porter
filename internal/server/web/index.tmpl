@@ -121,6 +121,19 @@
   // messages that are already in the DOM.
   const renderedCommits = new Set();
 
+  // --- Reasoning blocks ---
+  // Reasoning is collapsed by default to a single no-wrap row showing only the
+  // last line: enough to keep an eye on the live stream of the model's thinking
+  // without drowning the answer in it, and a constant one-line height so the
+  // block doesn't jitter while deltas stream in. CSS truncates the single
+  // collapsed line with a trailing ellipsis via text-overflow
+  // (see .reasoning-collapsed). The reasoning block is a plain div (no flex),
+  // so the toggle row sits above the reasoning text.
+  // The caret + "Reasoning" label at the front is the only interactive part:
+  // clicking it (or pressing Enter/Space on it) expands/collapses the full text.
+  // The reasoning text itself is plain, selectable text with no click handler,
+  // so it behaves like normal content. The complete text is always kept in
+  // memory on the element so expanded blocks keep updating live as deltas stream in.
   // --- Scroll modes ---
   // Auto-scroll is on by default and keeps the view pinned to the bottom as
   // new output streams in. The first time the user scrolls away from the
@@ -143,6 +156,7 @@
     // bottom when in auto-scroll mode. Guarded by autoScroll so a manual-mode
     // form submit can never yank the user back down.
     chat.addEventListener('htmx:afterSwap', function() {
+      initReasoningBlocks(chat);
       if (autoScroll) chat.scrollTop = chat.scrollHeight;
     });
   }
@@ -167,6 +181,79 @@
     return el.scrollHeight - el.scrollTop - el.clientHeight <= t;
   }
 
+  // --- Collapsible reasoning ---
+  // Render a reasoning block's text as HTML (escaped, newlines to <br>).
+  function reasonHTML(s) {
+    return escapeHTML(s).replace(/\n/g, '<br>');
+  }
+
+  // Build a reasoning element into the collapsible "show last line" block.
+  // The full text is stored on the element (el._reasoningFull) and
+  // renderReasoning() redraws the visible text from it, so the same element
+  // can keep updating in place while reasoning streams in.
+  function initReasoning(el, fullText) {
+    el._reasoningFull = fullText;
+    el._expanded = false;
+    el.classList.add('reasoning-inited');
+    // Only the caret + "Reasoning" label is interactive. The text span gets no
+    // click handler, so it stays selectable and clickable like normal text.
+    el.innerHTML = '<span class="reasoning-toggle" role="button" tabindex="0" aria-expanded="false" title="Reasoning - click to expand/collapse">' +
+                     '<span class="reasoning-caret">\u25b6</span><span class="reasoning-label">Reasoning</span>' +
+                   '</span><span class="reasoning-text"></span>';
+    const toggle = el.querySelector('.reasoning-toggle');
+    toggle.addEventListener('click', function() { toggleReasoning(el); });
+    toggle.addEventListener('keydown', function(e) {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        toggleReasoning(el);
+      }
+    });
+    renderReasoning(el);
+  }
+
+  // Redraw the visible text from el._reasoningFull according to the current
+  // collapsed/expanded state. Collapsed shows only the last line as a single
+  // no-wrap row (CSS handles the ellipsis and truncation); expanded shows the
+  // whole thing.
+  function renderReasoning(el) {
+    const text = el._reasoningFull || '';
+    const textEl = el.querySelector('.reasoning-text');
+    const toggle = el.querySelector('.reasoning-toggle');
+    if (el._expanded) {
+      el.classList.remove('reasoning-collapsed');
+      textEl.innerHTML = reasonHTML(text);
+      el.querySelector('.reasoning-caret').textContent = '\u25bc';
+      toggle.setAttribute('aria-expanded', 'true');
+    } else {
+      el.classList.add('reasoning-collapsed');
+      // Take only the final line so the block stays exactly one row tall while
+      // the line streams in. textContent keeps it cheap and inherently safe
+      // (no escaping needed). The .reasoning-collapsed CSS locks the row to one
+      // line and applies a trailing ellipsis via text-overflow; the ellipsis
+      // glyph lives only in CSS - JS just feeds it the last line.
+      const lines = text.replace(/\r\n/g, '\n').split('\n');
+      textEl.textContent = lines[lines.length - 1];
+      el.querySelector('.reasoning-caret').textContent = '\u25b6';
+      toggle.setAttribute('aria-expanded', 'false');
+    }
+  }
+
+  function toggleReasoning(el) {
+    el._expanded = !el._expanded;
+    renderReasoning(el);
+  }
+
+  // Server-rendered reasoning blocks arrive from /view as raw text on
+  // data-reasoning (so the full text never flashes on screen before JS can
+  // collapse it). Hydrate them into the collapsible form; live-streamed
+  // blocks are already built by initReasoning, so this only touches the raw
+  // ones (identified by the data-reasoning attribute).
+  function initReasoningBlocks(root) {
+    (root || document).querySelectorAll('.reasoning[data-reasoning]:not(.reasoning-inited)').forEach(function(el) {
+      initReasoning(el, el.dataset.reasoning);
+      el.removeAttribute('data-reasoning');
+    });
+  }
   function appendMessage(role, html) {
     const div = document.createElement('div');
     div.className = 'msg msg-' + role;
@@ -187,6 +274,7 @@
     if (!currentReasoning) {
       currentReasoning = document.createElement('div');
       currentReasoning.className = 'reasoning';
+      initReasoning(currentReasoning, '');
       ensureAssistant().before(currentReasoning);
     }
     return currentReasoning;
@@ -230,7 +318,7 @@
     if (m.reasoning && !hadLiveReasoning) {
       const r = document.createElement('div');
       r.className = 'reasoning';
-      r.innerHTML = escapeHTML(m.reasoning).replace(/\n/g, '<br>');
+      initReasoning(r, m.reasoning);
       div.before(r);
     }
     if (m.tool_calls) {
@@ -284,7 +372,11 @@
           ensureAssistant().insertAdjacentText('beforeend', ev.delta);
           hadNewContent = true;
         } else if (ev.type === 'reasoning_delta') {
-          ensureReasoning().insertAdjacentHTML('beforeend', escapeHTML(ev.reasoning).replace(/\n/g, '<br>'));
+          // Accumulate the raw text and redraw: collapsed shows the live last line,
+          // expanded shows the full stream growing in place.
+          const r = ensureReasoning();
+          r._reasoningFull = (r._reasoningFull || '') + ev.reasoning;
+          renderReasoning(r);
           hadNewContent = true;
         } else if (ev.type === 'tool_call') {
           // Streamed tool calls are rendered live; finalizeAssistant will

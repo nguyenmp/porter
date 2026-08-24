@@ -1036,6 +1036,11 @@ func TestReasoningPersistsAcrossReload(t *testing.T) {
 	if !strings.Contains(s, `class="reasoning"`) {
 		t.Errorf("/view does not render a reasoning block:\n%s", s)
 	}
+	// The full text rides on data-reasoning so JS can collapse it client-side
+	// without ever flashing the complete block on screen.
+	if !strings.Contains(s, `data-reasoning="`) {
+		t.Errorf("/view reasoning missing data-reasoning attribute:\n%s", s)
+	}
 	if !strings.Contains(s, "step one") || !strings.Contains(s, "step two") {
 		t.Errorf("/view reasoning missing streamed text:\n%s", s)
 	}
