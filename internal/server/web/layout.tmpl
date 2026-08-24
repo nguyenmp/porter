@@ -55,6 +55,12 @@
 		.reasoning-caret { font-style: normal; font-size: 0.65rem; margin-right: 0.3rem; color: #aaa; }
 		.reasoning-label { font-style: normal; font-size: 0.72rem; letter-spacing: 0.03em; color: #777; }
 		.reasoning-text { display: block; }
+		/* The "..." marker above the last line when more reasoning lines are
+		   hidden. Hidden by default and shown via .show (a class toggle, so the
+		   hidden state doesn't fight the `hidden` attribute's display:none).
+		   Its own block row sits between the toggle and the collapsed last line. */
+		.reasoning-more { display: none; color: #aaa; font-style: normal; font-size: 0.85em; line-height: 1; margin-bottom: 0.15em; }
+		.reasoning-more.show { display: block; }
 		/* Collapsed: lock the text to exactly one rendered line and show the
 		   standard trailing ellipsis via text-overflow. display:block makes the
 		   text span a block-level row underneath the toggle (so the toggle sits
