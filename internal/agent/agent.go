@@ -116,23 +116,50 @@ func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage,
 
 		commit(llm.AssistantMessage(reply.String(), reasoning, toLLMCalls(calls)))
 		for _, c := range calls {
-			result := ""
 			stream, err := js.Run(ctx, c.Name, []byte(c.Arguments))
 			if err != nil {
-				result = "error: " + err.Error()
-			} else {
-				b, rerr := io.ReadAll(stream)
-				_ = stream.Close()
+				// The tool never started; there is nothing to stream, so emit the
+				// terminal envelope directly (matching the old single-shot shape).
+				result := "error: " + err.Error()
+				if emit != nil {
+					emit(api.Envelope{Kind: api.KindToolResult, ToolCallID: c.ID, Name: c.Name, Result: result})
+				}
+				commit(llm.ToolResult(c.ID, result))
+				continue
+			}
+			// Stream the result out as it arrives instead of buffering it all
+			// first: long-running tools (tests, builds, tail -f) render live in
+			// the UI. Each chunk is broadcast as a KindToolResultDelta; the
+			// terminal KindToolResult below carries the assembled full result so
+			// subscribers reconcile to one complete record. The committed tool
+			// message is unchanged — history still stores the full result.
+			var result strings.Builder
+			buf := make([]byte, 32*1024)
+			for {
+				n, rerr := stream.Read(buf)
+				if n > 0 {
+					chunk := string(buf[:n])
+					result.WriteString(chunk)
+					if emit != nil {
+						emit(api.Envelope{Kind: api.KindToolResultDelta, ToolCallID: c.ID, Name: c.Name, Delta: chunk})
+					}
+				}
 				if rerr != nil {
-					result = "error: " + rerr.Error()
-				} else {
-					result = string(b)
+					if rerr != io.EOF {
+						errChunk := "error: " + rerr.Error()
+						result.WriteString(errChunk)
+						if emit != nil {
+							emit(api.Envelope{Kind: api.KindToolResultDelta, ToolCallID: c.ID, Name: c.Name, Delta: errChunk})
+						}
+					}
+					break
 				}
 			}
+			_ = stream.Close()
 			if emit != nil {
-				emit(api.Envelope{Kind: api.KindToolResult, ToolCallID: c.ID, Name: c.Name, Result: result})
+				emit(api.Envelope{Kind: api.KindToolResult, ToolCallID: c.ID, Name: c.Name, Result: result.String()})
 			}
-			commit(llm.ToolResult(c.ID, result))
+			commit(llm.ToolResult(c.ID, result.String()))
 		}
 	}
 }

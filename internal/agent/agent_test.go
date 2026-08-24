@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -188,5 +189,88 @@ func TestRunTurnOnMessage(t *testing.T) {
 	// onMessage output must match the assembled turn result.
 	if !reflect.DeepEqual(got, res.History[1:]) {
 		t.Errorf("onMessage order does not match turn history\ncommitted: %+v\nhistory:   %+v", got, res.History[1:])
+	}
+}
+
+// chunkStream returns a fixed set of chunks, one per Read, so a test can assert
+// that the agent emits one delta per chunk rather than a single buffered blob.
+type chunkStream struct {
+	chunks []string
+	i      int
+}
+
+func (s *chunkStream) Read(p []byte) (int, error) {
+	if s.i >= len(s.chunks) {
+		return 0, io.EOF
+	}
+	n := copy(p, s.chunks[s.i])
+	s.i++
+	return n, nil
+}
+
+func (s *chunkStream) Close() error { return nil }
+
+// fakeToolProvider streams a fixed set of chunks as a tool's output.
+type fakeToolProvider struct {
+	chunks []string
+}
+
+func (p *fakeToolProvider) Defs() []llm.Tool { return tools.Defs() }
+
+func (p *fakeToolProvider) Run(ctx context.Context, name string, args []byte) (io.ReadCloser, error) {
+	return &chunkStream{chunks: p.chunks}, nil
+}
+
+// TestRunTurnStreamsToolResultChunks verifies a tool's output is emitted live as
+// tool_result_delta chunks and then reconciled by a terminal tool_result with
+// the full result, while the committed tool message stores the full result.
+func TestRunTurnStreamsToolResultChunks(t *testing.T) {
+	srv, _ := toolServer(t)
+	defer srv.Close()
+
+	cfg := config.Config{BaseURL: srv.URL + "/v1", Model: "test", APIKey: "k"}
+	client := llm.NewClient(cfg, nil)
+
+	chunks := []string{"chunk one ", "chunk two ", "chunk three"}
+	var got []api.Envelope
+	res, err := RunTurn(context.Background(), client, []llm.ChatMessage{llm.UserMessage("run it")},
+		&fakeToolProvider{chunks: chunks}, func(env api.Envelope) { got = append(got, env) }, nil)
+	if err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+
+	var streamed strings.Builder
+	var deltas, terminals int
+	for _, env := range got {
+		switch env.Kind {
+		case api.KindToolResultDelta:
+			deltas++
+			streamed.WriteString(env.Delta)
+		case api.KindToolResult:
+			terminals++
+			if env.Result != "chunk one chunk two chunk three" {
+				t.Errorf("terminal result = %q, want full concatenation", env.Result)
+			}
+		}
+	}
+	if deltas != len(chunks) {
+		t.Errorf("tool_result_delta count = %d, want %d", deltas, len(chunks))
+	}
+	if streamed.String() != "chunk one chunk two chunk three" {
+		t.Errorf("streamed deltas = %q, want full concatenation", streamed.String())
+	}
+	if terminals != 1 {
+		t.Errorf("terminal tool_result count = %d, want 1", terminals)
+	}
+
+	// The committed history still stores the full result.
+	var committed string
+	for _, m := range res.History {
+		if m.Role == "tool" && m.ToolCallID == "call_1" {
+			committed = m.Content
+		}
+	}
+	if committed != "chunk one chunk two chunk three" {
+		t.Errorf("committed tool result = %q, want full concatenation", committed)
 	}
 }

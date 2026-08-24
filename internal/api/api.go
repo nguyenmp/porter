@@ -73,6 +73,12 @@ const (
 	// KindToolResult reports that the agent ran a tool and got this result. It
 	// comes from our system, not the model.
 	KindToolResult = "tool_result"
+	// KindToolResultDelta reports one live chunk of a running tool's output,
+	// streamed as the tool produces it. It comes from our system, not the
+	// model. The terminal KindToolResult (full result) still follows once the
+	// tool exits, so subscribers reconcile to one complete record and the REPL
+	// keeps a single audit line.
+	KindToolResultDelta = "tool_result_delta"
 	// KindMessage marks a message the server just committed to history, stamped
 	// with its seq. This is what reconciles a subscriber with history.
 	KindMessage = "message_committed"
@@ -97,9 +103,10 @@ type Envelope struct {
 	// Plaintext messages (user, tool) are excluded; the client already renders
 	// those identically to /view.
 	MessageHTML string `json:"message_html,omitempty"` // KindMessage
-	ToolCallID  string `json:"tool_call_id,omitempty"` // KindToolResult
-	Name        string `json:"name,omitempty"`         // KindToolResult
+	ToolCallID  string `json:"tool_call_id,omitempty"` // KindToolResult, KindToolResultDelta
+	Name        string `json:"name,omitempty"`         // KindToolResult, KindToolResultDelta
 	Result      string `json:"result,omitempty"`       // KindToolResult
+	Delta       string `json:"delta,omitempty"`        // KindToolResultDelta
 	TurnID      int64  `json:"turn_id,omitempty"`      // KindTurnDone
 	Input       int    `json:"input,omitempty"`        // KindTurnDone
 	Output      int    `json:"output,omitempty"`       // KindTurnDone

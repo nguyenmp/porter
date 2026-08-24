@@ -20,7 +20,7 @@
 		<div id="sse-processor"
 		     hx-ext="sse"
 		     sse-connect="/api/sessions/{{.Session}}/stream?since={{.Seq}}"
-		     sse-swap="message_committed,llm,tool_result,turn_completed"
+		     sse-swap="message_committed,llm,tool_result,tool_result_delta,turn_completed"
 		     hx-swap="none"
 		     hx-on:htmx:sse-message="sseMessage(event)">
 		</div>
@@ -110,11 +110,15 @@
   let currentAssistant = null;
   let currentReasoning = null;
 
-  // A tool result is broadcast twice per run: once live as tool_result, then
-  // again as a committed role-"tool" message (the copy that replays after a
-  // reconnect). Remember which calls we've already shown live so the committed
-  // copy only renders when there was no live one (i.e. on replay).
+  // A tool result is broadcast live as it runs (tool_result_delta chunks and a
+  // terminal tool_result), then again as a committed role-"tool" message (the
+  // copy that replays after a reconnect). Remember which calls we've already
+  // shown live so the committed copy only renders when there was no live one
+  // (i.e. on replay).
   const renderedToolResults = new Set();
+  // Live tool-result blocks keyed by call_id, so streamed deltas append to the
+  // same element. The terminal tool_result reconciles it with the full output.
+  const liveToolResults = new Map();
   // Committed messages are replayed by the server whenever the SSE stream
   // reconnects from its original `since` (the url is fixed at page load).
   // Remember which commit seqs we've rendered so a replay doesn't duplicate
@@ -335,6 +339,34 @@
     el.querySelector('.tool-call-args').textContent = el._toolArgs;
   }
 
+  // ensureToolResult returns the <details class="tool-result"> element for a
+  // streamed call, creating it on the first live chunk or the terminal
+  // envelope. Deltas append to the same element (keyed by call_id), so a result
+  // renders once and fills in as output streams from the tool. textContent keeps
+  // the streaming output safe without escaping, same as the other live blocks.
+  function ensureToolResult(callID, name) {
+    let el = liveToolResults.get(callID);
+    if (el) return el;
+    el = document.createElement('details');
+    el.className = 'tool-result';
+    el._result = '';
+    el._done = false;
+    el.innerHTML = '<summary class="tool-result-name"></summary><pre><code class="tool-result-body"></code></pre>';
+    chat.appendChild(el);
+    liveToolResults.set(callID, el);
+    renderedToolResults.add(callID);
+    updateToolResult(el, name);
+    return el;
+  }
+
+  // Redraw a tool-result block: the "running" marker in the summary stays until
+  // the terminal envelope marks it done; the body shows the accumulated output.
+  function updateToolResult(el, name) {
+    el.querySelector('.tool-result-name').textContent =
+      'tool result: ' + (name || '') + (el._done ? '' : ' (running…)');
+    el.querySelector('.tool-result-body').textContent = el._result;
+  }
+
   function finalizeAssistant(m, html) {
     // Replace the live text with the committed version (server-rendered
     // markdown when supplied, escaped plaintext otherwise) and ensure tool
@@ -448,16 +480,27 @@
         }
         break;
       case 'tool_result':
+        // The terminal result arrives once the tool exits. It may follow a
+        // series of tool_result_delta chunks that already rendered the block
+        // live; ensureToolResult returns that same element and we reconcile it
+        // with the authoritative full output (covering any dropped deltas, e.g.
+        // a subscriber buffer overrun), then mark it done.
         currentAssistant = null;
         currentReasoning = null;
-        if (env.tool_call_id) {
-          renderedToolResults.add(env.tool_call_id);
-        }
-        const details = document.createElement('details');
-        details.className = 'tool-result';
-        details.innerHTML = '<summary>tool result: ' + escapeHTML(env.name) + '</summary>' +
-                            '<pre><code>' + escapeHTML(env.result) + '</code></pre>';
-        chat.appendChild(details);
+        const tr = ensureToolResult(env.tool_call_id, env.name);
+        tr._result = env.result;
+        tr._done = true;
+        updateToolResult(tr, env.name);
+        hadNewContent = true;
+        break;
+      case 'tool_result_delta':
+        // One live chunk of a running tool's output: append to the existing
+        // block so long-running tools render as they produce output.
+        currentAssistant = null;
+        currentReasoning = null;
+        const trd = ensureToolResult(env.tool_call_id, env.name);
+        trd._result += env.delta;
+        updateToolResult(trd, env.name);
         hadNewContent = true;
         break;
       case 'resync':
