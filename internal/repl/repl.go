@@ -20,6 +20,7 @@ import (
 	"porter/internal/agent"
 	"porter/internal/api"
 	"porter/internal/client"
+	"porter/internal/codec"
 	"porter/internal/config"
 	"porter/internal/llm"
 	"porter/internal/tools"
@@ -72,31 +73,14 @@ func Run(ctx context.Context, cfg config.ClientConfig, in io.Reader, out, jsonl 
 		}
 	}()
 
-	// One sink tracks the latest committed seq so the next subscribe resumes
-	// exactly where the last one left off, relays live LLM events to both the
-	// JSONL stream and the human-readable view, and records system-side facts
-	// (tool results) on the JSONL stream.
-	seq := info.Seq
-	emit := func(env api.Envelope) {
-		if env.Seq > seq {
-			seq = env.Seq
-		}
-		switch env.Kind {
-		case api.KindTurnDone:
-			if env.Input > 0 || env.Output > 0 {
-				fmt.Fprintf(out, "(%d in, %d out tokens)\n", env.Input, env.Output)
-			}
-		case api.KindToolResult:
-			writeJSONL(jsonl, env)
-		case api.KindLLM:
-			if env.Event == nil {
-				return
-			}
-			ev := *env.Event
-			agent.EncodeJSON(jsonl)(ev)
-			agent.Render(out, agent.IsTerminal(out))(ev)
-		}
-	}
+	// view is the single sink for everything the human-readable terminal shows.
+	// It tracks the latest committed seq so the next subscribe resumes exactly
+	// where the last one left off, relays live LLM events to both the JSONL
+	// stream and the view, records system-side facts (tool results) on the
+	// JSONL stream, and — crucially — renders a committed assistant message that
+	// missed its live stream (the subscribe connected after the reply already
+	// streamed) instead of dropping it.
+	view := &liveView{out: out, jsonl: jsonl, dim: agent.IsTerminal(out), seq: info.Seq}
 	untilTurnDone := func(env api.Envelope) bool { return env.Kind == api.KindTurnDone }
 
 	for _, m := range info.History {
@@ -128,7 +112,7 @@ func Run(ctx context.Context, cfg config.ClientConfig, in io.Reader, out, jsonl 
 			return fmt.Errorf("append: %w", err)
 		}
 		for {
-			err := c.Subscribe(ctx, info.ID, seq, emit, untilTurnDone)
+			err := c.Subscribe(ctx, info.ID, view.seq, view.emit, untilTurnDone)
 			if errors.Is(err, client.ErrResync) {
 				h, herr := c.History(ctx, info.ID)
 				if herr != nil {
@@ -137,7 +121,7 @@ func Run(ctx context.Context, cfg config.ClientConfig, in io.Reader, out, jsonl 
 				for _, m := range h.History {
 					renderMessage(out, m)
 				}
-				seq = h.Seq
+				view.seq = h.Seq
 				continue
 			}
 			if err != nil {
@@ -151,14 +135,106 @@ func Run(ctx context.Context, cfg config.ClientConfig, in io.Reader, out, jsonl 
 	}
 }
 
-// renderMessage prints one committed conversation message to w.
+// liveView renders a session's event bus to the human-readable view. Live LLM
+// events (message/reasoning/tool-call deltas) are emitted by the server in
+// real time only — never replayed — while committed messages and turn markers
+// are logged and replayed. That asymmetry makes a subscriber that connects
+// after a fast reply has streamed miss every live delta. sawLive lets the view
+// notice that case: a committed assistant message is rendered from the
+// authoritative committed copy only when its live stream was never seen, so a
+// reply is never lost to the race and never rendered twice.
+type liveView struct {
+	out   io.Writer
+	jsonl io.Writer
+	dim   bool
+	seq   uint64
+	// sawLive reports whether the current assistant reply is being streamed
+	// live. It resets on each committed user message (the start of a turn).
+	sawLive bool
+}
+
+// emit handles one envelope from the session's event bus.
+func (v *liveView) emit(env api.Envelope) {
+	if env.Seq > v.seq {
+		v.seq = env.Seq
+	}
+	switch env.Kind {
+	case api.KindTurnDone:
+		if env.Input > 0 || env.Output > 0 {
+			fmt.Fprintf(v.out, "(%d in, %d out tokens)\n", env.Input, env.Output)
+		}
+	case api.KindToolResult:
+		writeJSONL(v.jsonl, env)
+	case api.KindLLM:
+		if env.Event == nil {
+			return
+		}
+		ev := *env.Event
+		switch ev.Type {
+		case codec.TypeMessageDelta, codec.TypeReasoningDelta, codec.TypeToolCall:
+			v.sawLive = true
+		}
+		agent.EncodeJSON(v.jsonl)(ev)
+		agent.Render(v.out, v.dim)(ev)
+	case api.KindMessage:
+		if env.Message == nil {
+			return
+		}
+		m := *env.Message
+		switch m.Role {
+		case "user":
+			// A new turn begins with its user message; the next assistant reply
+			// has not streamed live yet.
+			v.sawLive = false
+		case "assistant":
+			// If the live stream was missed (subscribed late, or the turn was
+			// replayed from the bus), the committed message is the only copy —
+			// render it now so a reply is never lost to that race.
+			if !v.sawLive {
+				renderMessage(v.out, m)
+				// The live stream was missed, so this committed message is the only
+				// record of the reply. Capture it on the structured stream (log) too,
+				// mirroring the terminal TypeMessage event the live decoder emits.
+				agent.EncodeJSON(v.jsonl)(codec.Event{
+					Type:      codec.TypeMessage,
+					Role:      "assistant",
+					Content:   m.Content,
+					Reasoning: m.Reasoning,
+				})
+			}
+		}
+	}
+}
+
+// renderMessage prints one committed conversation message to w, matching the
+// live view: content as plain text, reasoning dimmed, and tool calls as
+// `> name: args` lines. It is used for the initial/resync history dump and for
+// committed assistant messages that arrive with no live stream.
 func renderMessage(w io.Writer, m llm.ChatMessage) {
+	dim := agent.IsTerminal(w)
 	switch m.Role {
 	case "user":
 		fmt.Fprintf(w, "\n> %s\n", m.Content)
 	case "assistant":
+		if m.Reasoning != "" {
+			writeDimmed(w, dim, m.Reasoning)
+		}
 		fmt.Fprintln(w, m.Content)
+		for _, c := range m.ToolCalls {
+			writeDimmed(w, dim, "\n> "+c.Function.Name+": "+c.Function.Arguments+"\n")
+		}
 	}
+}
+
+// writeDimmed writes s, wrapped in dim escape codes when dim is true. It mirrors
+// agent's internal renderer so committed messages render with the same styling
+// as their live-streamed counterparts.
+func writeDimmed(w io.Writer, dim bool, s string) {
+	if !dim {
+		io.WriteString(w, s)
+		return
+	}
+	io.WriteString(w, "\x1b[2m"+s+"\x1b[0m")
 }
 
 // writeJSONL writes v as a single NDJSON line to w.
