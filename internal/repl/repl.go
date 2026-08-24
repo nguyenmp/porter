@@ -163,10 +163,11 @@ func (v *liveView) emit(env api.Envelope) {
 		if env.Input > 0 || env.Output > 0 {
 			fmt.Fprintf(v.out, "(%d in, %d out tokens)\n", env.Input, env.Output)
 		}
-	case api.KindToolResult, api.KindToolResultDelta:
-		// Streaming deltas are forwarded as they arrive so the JSONL log shows
-		// the result in real time; the terminal KindToolResult still carries the
-		// full record (and the committed tool message is the replay source).
+	case api.KindToolResult, api.KindToolResultDelta, api.KindToolStarted:
+		// Streaming deltas and the start marker are forwarded as they arrive so
+		// the JSONL log shows the result in real time; the terminal
+		// KindToolResult still carries the full record (and the committed tool
+		// message is the replay source).
 		writeJSONL(v.jsonl, env)
 	case api.KindLLM:
 		if env.Event == nil {

@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -46,9 +47,33 @@ func renderMarkdown(s string) template.HTML {
 }
 
 // templates are parsed once at startup from the embedded web directory.
+// fmtDur renders a tool-run duration for the view: tenths of a second below
+// 10s, whole seconds at/above 10s (matching the live client's granularity).
+func fmtDur(start, end int64) string {
+	if end <= start || start == 0 {
+		return "0s"
+	}
+	ms := end - start
+	if s := float64(ms) / 1000; s < 10 {
+		return fmt.Sprintf("%.1fs", s)
+	}
+	return fmt.Sprintf("%ds", (ms+500)/1000)
+}
+
+// fmtClock renders a server epoch-ms timestamp as local wall-clock time for the
+// view's reload summary tooltip.
+func fmtClock(ms int64) string {
+	if ms <= 0 {
+		return ""
+	}
+	return time.UnixMilli(ms).Format("15:04:05")
+}
+
 var templates = template.Must(template.New("").Funcs(template.FuncMap{
 	"nl2br":          nl2br,
 	"renderMarkdown": renderMarkdown,
+	"dur":            fmtDur,
+	"clock":          fmtClock,
 }).ParseFS(webFS, "web/*.tmpl"))
 
 // pageData is the data passed to every page template.
@@ -58,12 +83,22 @@ type pageData struct {
 	Seq     uint64
 }
 
+// ToolRunInfo carries the display details of one tool call for the view,
+// looked up by call_id so a committed role-"tool" result message can render the
+// tool name and arguments it shares with its calling assistant message.
+type ToolRunInfo struct {
+	Name      string
+	Arguments string
+}
+
 // viewData is passed to the view fragment template. Messages is the session's
 // committed history; Turns carries per-turn metadata (token usage, errors) for
-// rendering at the bottom of the view.
+// rendering at the bottom of the view; Tools maps each tool call_id to its
+// name/arguments so tool results render with their call context.
 type viewData struct {
 	Messages []llm.ChatMessage
 	Turns    []session.TurnMeta
+	Tools    map[string]ToolRunInfo
 }
 
 // Server owns the LLM client and all sessions.
@@ -315,9 +350,17 @@ func (s *Server) handleView(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "session not found", http.StatusNotFound)
 		return
 	}
+	messages := ses.Snapshot().History
+	tools := make(map[string]ToolRunInfo, len(messages))
+	for _, m := range messages {
+		for _, c := range m.ToolCalls {
+			tools[c.ID] = ToolRunInfo{Name: c.Function.Name, Arguments: c.Function.Arguments}
+		}
+	}
 	render(w, "view.tmpl", viewData{
-		Messages: ses.Snapshot().History,
+		Messages: messages,
 		Turns:    ses.Turns(),
+		Tools:    tools,
 	})
 }
 

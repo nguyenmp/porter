@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"porter/internal/api"
 	"porter/internal/codec"
@@ -122,17 +123,25 @@ func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage,
 				// terminal envelope directly (matching the old single-shot shape).
 				result := "error: " + err.Error()
 				if emit != nil {
-					emit(api.Envelope{Kind: api.KindToolResult, ToolCallID: c.ID, Name: c.Name, Result: result})
+					emit(api.Envelope{Kind: api.KindToolResult, ToolCallID: c.ID, Name: c.Name, Arguments: c.Arguments, Result: result})
 				}
 				commit(llm.ToolResult(c.ID, result))
 				continue
 			}
+			// The tool is now running. Broadcast the start with the server's
+			// clock before reading any output, so clients can show an honest
+			// queued -> running transition with an elapsed timer even for a
+			// silent long-running tool.
+			startedAt := time.Now().UnixMilli()
+			if emit != nil {
+				emit(api.Envelope{Kind: api.KindToolStarted, ToolCallID: c.ID, Name: c.Name, Arguments: c.Arguments, StartedAt: startedAt})
+			}
 			// Stream the result out as it arrives instead of buffering it all
 			// first: long-running tools (tests, builds, tail -f) render live in
 			// the UI. Each chunk is broadcast as a KindToolResultDelta; the
-			// terminal KindToolResult below carries the assembled full result so
-			// subscribers reconcile to one complete record. The committed tool
-			// message is unchanged — history still stores the full result.
+			// terminal KindToolResult below carries the assembled full result and
+			// the start/finish clocks so subscribers reconcile to one complete,
+			// server-timed record.
 			var result strings.Builder
 			buf := make([]byte, 32*1024)
 			for {
@@ -156,10 +165,18 @@ func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage,
 				}
 			}
 			_ = stream.Close()
+			finishedAt := time.Now().UnixMilli()
 			if emit != nil {
-				emit(api.Envelope{Kind: api.KindToolResult, ToolCallID: c.ID, Name: c.Name, Result: result.String()})
+				emit(api.Envelope{Kind: api.KindToolResult, ToolCallID: c.ID, Name: c.Name, Arguments: c.Arguments, StartedAt: startedAt, FinishedAt: finishedAt, Result: result.String()})
 			}
-			commit(llm.ToolResult(c.ID, result.String()))
+			// The committed tool message carries the server clocks (json:"-" so
+			// they never reach the model or the history API), letting /view
+			// render timing on reload. Committing in completion order is what
+			// keeps history (and the live DOM) ordered by completion time.
+			m := llm.ToolResult(c.ID, result.String())
+			m.StartedAt = startedAt
+			m.FinishedAt = finishedAt
+			commit(m)
 		}
 	}
 }

@@ -16,6 +16,13 @@ type ChatMessage struct {
 	Reasoning  string     `json:"reasoning,omitempty"`
 	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string     `json:"tool_call_id,omitempty"`
+	// StartedAt/FinishedAt are server-clock epoch milliseconds for a tool run,
+	// stamped by the agent when the tool runs. They are excluded from every
+	// JSON encoding (json:"-") so timing never leaks into the LLM request or
+	// the history API; the /view endpoint reads them directly from the
+	// in-memory history to render reload timing.
+	StartedAt  int64 `json:"-"`
+	FinishedAt int64 `json:"-"`
 }
 
 // ToolCall is a request the assistant made to run a named tool. Arguments is

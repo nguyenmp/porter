@@ -21,8 +21,9 @@
 			{{end}}
 		</div>
 	{{else if eq .Role "tool"}}
+		{{$t := index $.Tools .ToolCallID}}
 		<details class="tool-result">
-			<summary>tool result</summary>
+			<summary title="{{if $t.Name}}{{clock .StartedAt}} – {{clock .FinishedAt}}{{end}}">tool result: {{$t.Name}} {{if $t.Arguments}}{{$t.Arguments}}{{end}}{{if .StartedAt}} · done · {{dur .StartedAt .FinishedAt}}{{else}} · done{{end}}</summary>
 			<pre><code>{{nl2br .Content}}</code></pre>
 		</details>
 	{{end}}

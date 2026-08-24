@@ -80,10 +80,10 @@ func run(ctx context.Context, cfg config.ClientConfig, prompt string, out io.Wri
 			if env.Event != nil {
 				_ = enc.Write(*env.Event)
 			}
-		case api.KindToolResult, api.KindToolResultDelta:
-			// Live deltas are forwarded as they arrive so the CLI streams tool
-			// output in real time; the terminal KindToolResult still carries the
-			// full record.
+		case api.KindToolResult, api.KindToolResultDelta, api.KindToolStarted:
+			// Live deltas and the start marker are forwarded as they arrive so
+			// the CLI streams tool output in real time; the terminal
+			// KindToolResult still carries the full record.
 			data, _ := json.Marshal(env)
 			_, _ = out.Write(append(data, '\n'))
 		}

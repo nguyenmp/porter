@@ -523,6 +523,51 @@ func TestViewRendersHistory(t *testing.T) {
 	}
 }
 
+func TestViewRendersToolResultTiming(t *testing.T) {
+	srv := newTestServer(t, toolThenReplyLLM())
+	id, got, _ := runOneTurnID(t, srv.URL, "run it")
+
+	// Sanity: the live bus carried the start and terminal envelopes with clocks.
+	var sawStart, sawTerminal bool
+	for _, env := range got {
+		switch env.Kind {
+		case api.KindToolStarted:
+			sawStart = env.StartedAt > 0
+		case api.KindToolResult:
+			sawTerminal = env.StartedAt > 0 && env.FinishedAt >= env.StartedAt
+		}
+	}
+	if !sawStart {
+		t.Errorf("bus missing tool_started with start clock")
+	}
+	if !sawTerminal {
+		t.Errorf("bus missing terminal tool_result with start/finish clocks")
+	}
+
+	// The committed /view must render the result with its call context (name +
+	// args snippet) and a server-derived duration.
+	resp, err := http.Get(srv.URL + "/api/sessions/" + id + "/view")
+	if err != nil {
+		t.Fatalf("GET view: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	s := string(body)
+	// The args snippet is HTML-escaped in the summary (deliberately, like all
+	// other tool text), so assert on the escaped form.
+	for _, want := range []string{
+		`tool result: shell`, // tool name in the header
+		`echo hi`,            // args snippet from the call
+		`&#34;command&#34;`,  // escaped JSON in the args snippet
+		`· done · `,          // duration marker
+		`title="`,            // wall-clock tooltip
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("view missing %q; got:\n%s", want, s)
+		}
+	}
+}
+
 func TestViewNotFound(t *testing.T) {
 	srv := newTestServer(t, plainLLM())
 	resp, err := http.Get(srv.URL + "/api/sessions/nope/view")

@@ -79,6 +79,13 @@ const (
 	// tool exits, so subscribers reconcile to one complete record and the REPL
 	// keeps a single audit line.
 	KindToolResultDelta = "tool_result_delta"
+	// KindToolStarted marks that a tool run began, carrying the server's start
+	// clock and the call's arguments. It is emitted once the tool starts (not
+	// when it first produces output), so clients can show an honest
+	// queued -> running transition with an elapsed timer even for silent
+	// tools. The terminal KindToolResult then carries start/finish clocks so
+	// the final duration is server-derived.
+	KindToolStarted = "tool_started"
 	// KindMessage marks a message the server just committed to history, stamped
 	// with its seq. This is what reconciles a subscriber with history.
 	KindMessage = "message_committed"
@@ -103,10 +110,13 @@ type Envelope struct {
 	// Plaintext messages (user, tool) are excluded; the client already renders
 	// those identically to /view.
 	MessageHTML string `json:"message_html,omitempty"` // KindMessage
-	ToolCallID  string `json:"tool_call_id,omitempty"` // KindToolResult, KindToolResultDelta
-	Name        string `json:"name,omitempty"`         // KindToolResult, KindToolResultDelta
+	ToolCallID  string `json:"tool_call_id,omitempty"` // KindToolResult, KindToolResultDelta, KindToolStarted
+	Name        string `json:"name,omitempty"`         // KindToolResult, KindToolResultDelta, KindToolStarted
+	Arguments   string `json:"arguments,omitempty"`    // KindToolResult, KindToolStarted
 	Result      string `json:"result,omitempty"`       // KindToolResult
 	Delta       string `json:"delta,omitempty"`        // KindToolResultDelta
+	StartedAt   int64  `json:"started_at,omitempty"`   // KindToolStarted, KindToolResult
+	FinishedAt  int64  `json:"finished_at,omitempty"`  // KindToolResult
 	TurnID      int64  `json:"turn_id,omitempty"`      // KindTurnDone
 	Input       int    `json:"input,omitempty"`        // KindTurnDone
 	Output      int    `json:"output,omitempty"`       // KindTurnDone

@@ -240,7 +240,7 @@ func TestRunTurnStreamsToolResultChunks(t *testing.T) {
 	}
 
 	var streamed strings.Builder
-	var deltas, terminals int
+	var deltas, terminals, starts int
 	for _, env := range got {
 		switch env.Kind {
 		case api.KindToolResultDelta:
@@ -250,6 +250,20 @@ func TestRunTurnStreamsToolResultChunks(t *testing.T) {
 			terminals++
 			if env.Result != "chunk one chunk two chunk three" {
 				t.Errorf("terminal result = %q, want full concatenation", env.Result)
+			}
+			// The terminal envelope carries server clocks and the arguments, so
+			// the client can show a server-derived duration even if the start
+			// signal was missed.
+			if env.StartedAt <= 0 || env.FinishedAt < env.StartedAt {
+				t.Errorf("terminal envelope timing = start %d finish %d, want start>0 and finish>=start", env.StartedAt, env.FinishedAt)
+			}
+			if env.Arguments == "" {
+				t.Errorf("terminal envelope missing arguments")
+			}
+		case api.KindToolStarted:
+			starts++
+			if env.Name != "shell" || env.Arguments == "" || env.StartedAt <= 0 {
+				t.Errorf("tool_started = name %q args %q started_at %d, want shell + args + start clock", env.Name, env.Arguments, env.StartedAt)
 			}
 		}
 	}
@@ -262,15 +276,25 @@ func TestRunTurnStreamsToolResultChunks(t *testing.T) {
 	if terminals != 1 {
 		t.Errorf("terminal tool_result count = %d, want 1", terminals)
 	}
+	if starts != 1 {
+		t.Errorf("tool_started count = %d, want 1", starts)
+	}
 
-	// The committed history still stores the full result.
+	// The committed history still stores the full result, plus the server
+	// clocks so /view can render reload timing.
 	var committed string
+	var startedAt, finishedAt int64
 	for _, m := range res.History {
 		if m.Role == "tool" && m.ToolCallID == "call_1" {
 			committed = m.Content
+			startedAt = m.StartedAt
+			finishedAt = m.FinishedAt
 		}
 	}
 	if committed != "chunk one chunk two chunk three" {
 		t.Errorf("committed tool result = %q, want full concatenation", committed)
+	}
+	if startedAt <= 0 || finishedAt < startedAt {
+		t.Errorf("committed message timing = start %d finish %d, want start>0 and finish>=start", startedAt, finishedAt)
 	}
 }
