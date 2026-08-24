@@ -9,10 +9,13 @@
 	</nav>
 	<main class="main">
 		{{if .Session}}
-		<div id="chat"
-		  hx-get="/api/sessions/{{.Session}}/view"
-		  hx-trigger="load"
-		  hx-swap="innerHTML">
+		<div class="chat-wrap">
+			<div id="chat"
+			  hx-get="/api/sessions/{{.Session}}/view"
+			  hx-trigger="load"
+			  hx-swap="innerHTML">
+			</div>
+			<button id="follow-btn" type="button" hidden>Follow new output</button>
 		</div>
 		<div id="sse-processor"
 		     hx-ext="sse"
@@ -118,6 +121,40 @@
   // messages that are already in the DOM.
   const renderedCommits = new Set();
 
+  // --- Scroll modes ---
+  // Auto-scroll is on by default and keeps the view pinned to the bottom as
+  // new output streams in. The first time the user scrolls away from the
+  // bottom, auto-scroll is disabled (one-way: scrolling back down does NOT
+  // re-enable it). While disabled, a "Follow new output" button appears when
+  // new content streams in; clicking it re-enables auto-scroll.
+  let autoScroll = true;
+  const followBtn = document.getElementById('follow-btn');
+
+  if (chat) {
+    // A user-initiated scroll away from the bottom turns auto-scroll off.
+    // Programmatic scrolls to the bottom land at the bottom, so they don't
+    // trip this and auto-scroll stays enabled.
+    chat.addEventListener('scroll', function() {
+      if (!isNearBottom(chat)) {
+        autoScroll = false;
+      }
+    });
+    // After the initial /view load (hx-trigger="load") lands, pin to the
+    // bottom when in auto-scroll mode. Guarded by autoScroll so a manual-mode
+    // form submit can never yank the user back down.
+    chat.addEventListener('htmx:afterSwap', function() {
+      if (autoScroll) chat.scrollTop = chat.scrollHeight;
+    });
+  }
+
+  if (followBtn) {
+    followBtn.addEventListener('click', function() {
+      autoScroll = true;
+      followBtn.hidden = true;
+      chat.scrollTop = chat.scrollHeight;
+    });
+  }
+
   function escapeHTML(s) {
     return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   }
@@ -205,10 +242,10 @@
 
   window.sseMessage = function(evt) {
     const env = JSON.parse(evt.detail.data);
-    // Remember whether the user was already pinned to the bottom before this
-    // update touches the DOM. If they've scrolled up to read something, we
-    // should not yank them back down as new content arrives.
-    const wasAtBottom = isNearBottom(chat);
+    // Track whether this SSE event actually added content to the DOM. If
+    // auto-scroll is disabled, new content is what surfaces the "Follow new
+    // output" button (there's nothing to follow otherwise).
+    let hadNewContent = false;
     switch (env.kind) {
       case 'message_committed':
         const m = env.message;
@@ -220,8 +257,10 @@
           currentAssistant = null;
           currentReasoning = null;
           appendMessage('user', escapeHTML(m.content).replace(/\n/g, '<br>'));
+          hadNewContent = true;
         } else if (m.role === 'assistant') {
           finalizeAssistant(m, env.message_html);
+          hadNewContent = true;
         } else if (m.role === 'tool') {
           currentAssistant = null;
           currentReasoning = null;
@@ -235,6 +274,7 @@
           details.className = 'tool-result';
           details.innerHTML = '<summary>tool result</summary><pre><code>' + escapeHTML(m.content).replace(/\n/g, '<br>') + '</code></pre>';
           chat.appendChild(details);
+          hadNewContent = true;
         }
         break;
       case 'llm':
@@ -242,14 +282,17 @@
         if (!ev) break;
         if (ev.type === 'message_delta') {
           ensureAssistant().insertAdjacentText('beforeend', ev.delta);
+          hadNewContent = true;
         } else if (ev.type === 'reasoning_delta') {
           ensureReasoning().insertAdjacentHTML('beforeend', escapeHTML(ev.reasoning).replace(/\n/g, '<br>'));
+          hadNewContent = true;
         } else if (ev.type === 'tool_call') {
           // Streamed tool calls are rendered live; finalizeAssistant will
           // reconcile them against the committed message when it arrives.
           ensureAssistant().insertAdjacentHTML('beforeend',
             '<details class="tool-call"><summary>' + escapeHTML(ev.name) + '</summary>' +
             '<pre><code>' + escapeHTML(ev.arguments) + '</code></pre></details>');
+          hadNewContent = true;
         }
         break;
       case 'tool_result':
@@ -263,6 +306,7 @@
         details.innerHTML = '<summary>tool result: ' + escapeHTML(env.name) + '</summary>' +
                             '<pre><code>' + escapeHTML(env.result) + '</code></pre>';
         chat.appendChild(details);
+        hadNewContent = true;
         break;
       case 'resync':
         // The server closed the stream because we fell too far behind its
@@ -278,12 +322,16 @@
         chat.appendChild(meta);
         currentAssistant = null;
         currentReasoning = null;
+        hadNewContent = true;
         break;
     }
-    // Auto-scroll to the bottom only when the user was already at the bottom;
-    // otherwise respect their scroll position while they read earlier content.
-    if (wasAtBottom) {
+    // Modes: in auto-scroll mode we keep the view pinned to the bottom as new
+    // output arrives. If the user scrolled up, auto-scroll is off and we
+    // respect their position, surfacing the follow button so they can resume.
+    if (autoScroll) {
       chat.scrollTop = chat.scrollHeight;
+    } else if (hadNewContent && followBtn) {
+      followBtn.hidden = false;
     }
   };
 
