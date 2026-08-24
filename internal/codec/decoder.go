@@ -22,10 +22,10 @@ type delta struct {
 // deltaCall is the per-tool-call streaming fragment. A single logical call is
 // split across many deltas keyed by Index; Arguments arrives in pieces.
 type deltaCall struct {
-	Index    int                `json:"index"`
-	ID       string             `json:"id"`
-	Type     string             `json:"type"`
-	Function deltaCallFunction  `json:"function"`
+	Index    int               `json:"index"`
+	ID       string            `json:"id"`
+	Type     string            `json:"type"`
+	Function deltaCallFunction `json:"function"`
 }
 
 type deltaCallFunction struct {
@@ -34,12 +34,14 @@ type deltaCallFunction struct {
 }
 
 // ToolCall is the completed form of one tool call, emitted once its arguments
-// have fully streamed.
+// have fully streamed. Index is the stream index it was assembled from, so
+// consumers can match the completed call to the live tool_call_delta blocks.
 type ToolCall struct {
 	ID        string `json:"id"`
 	Type      string `json:"type"`
 	Name      string `json:"name"`
 	Arguments string `json:"arguments"`
+	Index     int    `json:"index"`
 }
 
 // chunk is the shape of a single SSE `data:` payload from a streaming Chat
@@ -133,7 +135,9 @@ func (d *Decoder) Process(line string) (bool, error) {
 			}
 		}
 		for _, call := range choice.Delta.ToolCalls {
-			d.accumulateToolCall(call)
+			if err := d.accumulateToolCall(call); err != nil {
+				return false, err
+			}
 		}
 		if choice.FinishReason != nil {
 			finished = true
@@ -150,7 +154,7 @@ func (d *Decoder) Process(line string) (bool, error) {
 func (d *Decoder) emitFinal() bool {
 	_ = d.emit(Event{Type: TypeMessage, Role: "assistant", Content: d.full.String(), Reasoning: d.reasoning.String()})
 	for _, call := range d.completedToolCalls() {
-		_ = d.emit(Event{Type: TypeToolCall, ToolCallID: call.ID, Name: call.Name, Arguments: call.Arguments})
+		_ = d.emit(Event{Type: TypeToolCall, Index: call.Index, ToolCallID: call.ID, Name: call.Name, Arguments: call.Arguments})
 	}
 	if d.inTokens > 0 || d.outTokens > 0 {
 		_ = d.emit(Event{Type: TypeUsage, InputTokens: d.inTokens, OutputTokens: d.outTokens})
@@ -160,14 +164,17 @@ func (d *Decoder) emitFinal() bool {
 
 // accumulateToolCall folds one streamed tool-call fragment into the running
 // set, creating a slot on first sight of an index and appending sliced
-// arguments on later deltas.
-func (d *Decoder) accumulateToolCall(c deltaCall) {
+// arguments on later deltas. It also emits a live tool_call_delta so consumers
+// can render the call as it forms, skipping fragments that carry nothing new
+// (some providers echo an index with no fields) so they don't cause spurious
+// re-renders.
+func (d *Decoder) accumulateToolCall(c deltaCall) error {
 	if d.toolCalls == nil {
 		d.toolCalls = make(map[int]*ToolCall)
 	}
 	cur, ok := d.toolCalls[c.Index]
 	if !ok {
-		cur = &ToolCall{Type: c.Type}
+		cur = &ToolCall{Type: c.Type, Index: c.Index}
 		d.toolCalls[c.Index] = cur
 	}
 	if c.ID != "" {
@@ -177,6 +184,19 @@ func (d *Decoder) accumulateToolCall(c deltaCall) {
 		cur.Name = c.Function.Name
 	}
 	cur.Arguments += c.Function.Arguments
+
+	if c.ID != "" || c.Function.Name != "" || c.Function.Arguments != "" {
+		if err := d.emit(Event{
+			Type:       TypeToolCallDelta,
+			Index:      c.Index,
+			ToolCallID: c.ID,
+			Name:       c.Function.Name,
+			Arguments:  c.Function.Arguments,
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // completedToolCalls returns the accumulated tool calls in index order.

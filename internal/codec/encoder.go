@@ -18,6 +18,11 @@ const (
 	TypeMessage        EventType = "message"
 	TypeUsage          EventType = "usage"
 	TypeToolCall       EventType = "tool_call"
+	// TypeToolCallDelta is one streamed fragment of a tool call (an id/name
+	// sighting or a slice of arguments), emitted live as it arrives so
+	// consumers can render the call while it forms. The assembled
+	// TypeToolCall is still emitted at stream end for the commit path.
+	TypeToolCallDelta EventType = "tool_call_delta"
 )
 
 // Event is a single JSONL line written to stdout. Reasoning is kept separate
@@ -25,16 +30,19 @@ const (
 // resubmitted assistant context. Tool calls are emitted separately so what the
 // agent ran is visible and auditable.
 type Event struct {
-	Type         EventType `json:"type"`
-	Role         string    `json:"role,omitempty"`
-	Delta        string    `json:"delta,omitempty"`
-	Content      string    `json:"content,omitempty"`
-	Reasoning    string    `json:"reasoning,omitempty"`
-	ToolCallID   string    `json:"tool_call_id,omitempty"`
-	Name         string    `json:"name,omitempty"`
-	Arguments    string    `json:"arguments,omitempty"`
-	InputTokens  int       `json:"input_tokens,omitempty"`
-	OutputTokens int       `json:"output_tokens,omitempty"`
+	Type       EventType `json:"type"`
+	Role       string    `json:"role,omitempty"`
+	Delta      string    `json:"delta,omitempty"`
+	Content    string    `json:"content,omitempty"`
+	Reasoning  string    `json:"reasoning,omitempty"`
+	ToolCallID string    `json:"tool_call_id,omitempty"`
+	Name       string    `json:"name,omitempty"`
+	Arguments  string    `json:"arguments,omitempty"`
+	// Index identifies which tool call in a stream this event belongs to
+	// (tool_call_delta and the assembled tool_call). Zero is the first call.
+	Index        int `json:"index,omitempty"`
+	InputTokens  int `json:"input_tokens,omitempty"`
+	OutputTokens int `json:"output_tokens,omitempty"`
 }
 
 // Encoder writes Events as JSONL to an underlying writer, one per line.

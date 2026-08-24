@@ -306,6 +306,35 @@
     return html;
   }
 
+  // ensureToolCall returns the <details class="tool-call"> element for a
+  // streamed call, creating it (empty) on first sight of that index and keeping
+  // accumulated state on the element. Live tool_call_delta fragments and the
+  // final assembled tool_call both flow through here, so a call that streamed
+  // in pieces renders exactly once, filling in as deltas arrive.
+  function ensureToolCall(contentEl, index, name) {
+    let map = contentEl._toolCalls;
+    if (!map) { contentEl._toolCalls = map = new Map(); }
+    let el = map.get(index);
+    if (!el) {
+      el = document.createElement('details');
+      el.className = 'tool-call';
+      el._toolName = name || '';
+      el._toolArgs = '';
+      el.innerHTML = '<summary class="tool-call-name"></summary><pre><code class="tool-call-args"></code></pre>';
+      contentEl.appendChild(el);
+      map.set(index, el);
+    }
+    return el;
+  }
+
+  // Redraw one streamed tool-call block from its accumulated state. textContent
+  // (not innerHTML) keeps the streaming JSON safe without escaping, same as the
+  // reasoning preview.
+  function renderToolCall(el) {
+    el.querySelector('.tool-call-name').textContent = el._toolName || 'tool call';
+    el.querySelector('.tool-call-args').textContent = el._toolArgs;
+  }
+
   function finalizeAssistant(m, html) {
     // Replace the live text with the committed version (server-rendered
     // markdown when supplied, escaped plaintext otherwise) and ensure tool
@@ -395,11 +424,26 @@
           renderReasoning(r);
           hadNewContent = true;
         } else if (ev.type === 'tool_call') {
-          // Streamed tool calls are rendered live; finalizeAssistant will
-          // reconcile them against the committed message when it arrives.
-          ensureAssistant().insertAdjacentHTML('beforeend',
-            '<details class="tool-call"><summary>' + escapeHTML(ev.name) + '</summary>' +
-            '<pre><code>' + escapeHTML(ev.arguments) + '</code></pre></details>');
+          // The assembled tool call arrives once the stream ends. It may follow
+          // a series of tool_call_delta events that already rendered the block
+          // live; ensureToolCall returns that same element and we finalize it
+          // with the authoritative full arguments (reconciling any drift, e.g.
+          // if deltas were coalesced). finalizeAssistant later reconciles this
+          // against the committed message when it arrives.
+          const el = ensureToolCall(ensureAssistant(), ev.index || 0, ev.name);
+          el._toolName = ev.name;
+          el._toolArgs = ev.arguments;
+          renderToolCall(el);
+          hadNewContent = true;
+        } else if (ev.type === 'tool_call_delta') {
+          // Streamed tool-call fragment: accumulate per-index state and redraw
+          // in place so the name and JSON arguments fill in live, mirroring how
+          // reasoning_delta redraws the reasoning block.
+          const index = ev.index || 0;
+          const el = ensureToolCall(ensureAssistant(), index, ev.name);
+          if (ev.name) el._toolName = ev.name; // last non-empty wins, like the decoder
+          el._toolArgs += ev.arguments;
+          renderToolCall(el);
           hadNewContent = true;
         }
         break;

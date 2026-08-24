@@ -101,6 +101,49 @@ func TestDecoderToolCallAccumulatesAcrossDeltas(t *testing.T) {
 	}
 }
 
+func TestDecoderEmitsToolCallDeltasLive(t *testing.T) {
+	got, err := feed(t,
+		// A tool call split over three deltas: id/name first, then args chunks.
+		`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"shell","arguments":""}}]},"finish_reason":null}]}`,
+		`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"echo "}}]},"finish_reason":null}]}`,
+		`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"hi"}}]},"finish_reason":"tool_calls"}]}`,
+		`data: [DONE]`,
+	)
+	if err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	// Each non-empty fragment must surface as a live delta carrying exactly its
+	// slice of the call, in addition to the assembled final tool_call.
+	for _, want := range []string{
+		`"type":"tool_call_delta"`, `"tool_call_id":"call_1"`, `"name":"shell"`,
+		`"type":"tool_call_delta"`, `"arguments":"echo "`,
+		`"type":"tool_call_delta"`, `"arguments":"hi"`,
+		`"type":"tool_call"`, `"arguments":"echo hi"`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("output missing %q; got:\n%s", want, got)
+		}
+	}
+}
+
+func TestDecoderToolCallDeltaSkipsEmptyFragment(t *testing.T) {
+	got, err := feed(t,
+		`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"shell","arguments":"hi"}}]},"finish_reason":null}]}`,
+		// An echo of the same index with no new fields must not emit a delta.
+		`data: {"choices":[{"delta":{"tool_calls":[{"index":0}]},"finish_reason":"tool_calls"}]}`,
+		`data: [DONE]`,
+	)
+	if err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	if !strings.Contains(got, `"type":"tool_call_delta"`) {
+		t.Fatalf("expected a live delta; got:\n%s", got)
+	}
+	if n, want := strings.Count(got, `"type":"tool_call_delta"`), 1; n != want {
+		t.Errorf("delta count = %d, want %d (empty fragment must not emit); got:\n%s", n, want, got)
+	}
+}
+
 func TestDecoderRejectsNonDataLine(t *testing.T) {
 	if _, err := feed(t, "event: ping"); err == nil {
 		t.Fatal("expected error for non-data line")

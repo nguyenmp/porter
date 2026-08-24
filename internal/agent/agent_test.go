@@ -128,6 +128,9 @@ func TestRunTurnExecutesToolAndLoops(t *testing.T) {
 	if !strings.Contains(text.String(), "shell") {
 		t.Errorf("text view missing tool indicator; got:\n%s", text.String())
 	}
+	if !strings.Contains(jsonl.String(), `"type":"tool_call_delta"`) {
+		t.Errorf("jsonl missing live tool_call_delta events; got:\n%s", jsonl.String())
+	}
 	if !strings.Contains(jsonl.String(), `"type":"tool_call"`) || !strings.Contains(jsonl.String(), `"kind":"tool_result"`) {
 		t.Errorf("jsonl missing tool events; got:\n%s", jsonl.String())
 	}

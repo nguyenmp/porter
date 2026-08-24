@@ -73,6 +73,10 @@ func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage,
 				reasoning = ev.Reasoning
 			case codec.TypeToolCall:
 				calls = append(calls, codec.ToolCall{ID: ev.ToolCallID, Name: ev.Name, Arguments: ev.Arguments})
+			case codec.TypeToolCallDelta:
+				// Streamed tool-call fragments are forwarded live to emit
+				// below; the assembled TypeToolCall is what lands in the
+				// committed message.
 			case codec.TypeUsage:
 				usage.Input += ev.InputTokens
 				usage.Output += ev.OutputTokens

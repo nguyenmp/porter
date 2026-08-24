@@ -171,7 +171,7 @@ func (v *liveView) emit(env api.Envelope) {
 		}
 		ev := *env.Event
 		switch ev.Type {
-		case codec.TypeMessageDelta, codec.TypeReasoningDelta, codec.TypeToolCall:
+		case codec.TypeMessageDelta, codec.TypeReasoningDelta, codec.TypeToolCall, codec.TypeToolCallDelta:
 			v.sawLive = true
 		}
 		agent.EncodeJSON(v.jsonl)(ev)
