@@ -111,18 +111,14 @@
   let currentAssistant = null;
   let currentReasoning = null;
 
-  // A tool result is broadcast live as it runs (tool_result_delta chunks and a
-  // terminal tool_result), then again as a committed role-"tool" message (the
-  // copy that replays after a reconnect). Remember which calls we've already
-  // shown live so the committed copy only renders when there was no live one
-  // (i.e. on replay).
-  const renderedToolResults = new Set();
-  // Live tool-result blocks keyed by call_id, so streamed deltas append to the
-  // same element. The terminal tool_result reconciles it with the full output.
-  // A run is: queued (call streaming) -> running (tool_started) -> done
-  // (tool_result). tool_started carries the server's start clock so the running
-  // timer starts the moment the tool begins, not when it first emits output.
-  const liveToolResults = new Map();
+  // toolRuns is the single source of truth for every tool call's state, keyed
+  // by the model's tool-call id once known. A run spans the whole lifecycle:
+  // streaming the call (name/args), running it (start clock, partial output),
+  // and its committed result — the DOM is just a view over this store. While a
+  // call is streaming, deltas arrive by index and may not carry the id yet, so
+  // the live assistant message's _toolRuns map (see getRunByIndex) tracks those
+  // pre-id runs and registers them here under the id once it arrives.
+  const toolRuns = new Map();
   // Single 100ms timer driving all running tool blocks; cleared when idle.
   let toolTimer = null;
   // Committed messages are replayed by the server whenever the SSE stream
@@ -320,33 +316,77 @@
     return html;
   }
 
-  // ensureToolCall returns the <details class="tool-call"> element for a
-  // streamed call, creating it (empty) on first sight of that index and keeping
-  // accumulated state on the element. Live tool_call_delta fragments and the
-  // final assembled tool_call both flow through here, so a call that streamed
-  // in pieces renders exactly once, filling in as deltas arrive.
-  function ensureToolCall(contentEl, index, name) {
-    let map = contentEl._toolCalls;
-    if (!map) { contentEl._toolCalls = map = new Map(); }
-    let el = map.get(index);
-    if (!el) {
-      el = document.createElement('details');
-      el.className = 'tool-call';
-      el._toolName = name || '';
-      el._toolArgs = '';
-      el.innerHTML = '<summary class="tool-call-name"></summary><pre><code class="tool-call-args"></code></pre>';
-      contentEl.appendChild(el);
-      map.set(index, el);
-    }
-    return el;
+  // createRun builds a fresh tool-run entry. State lives here, never on the
+  // DOM elements (callEl/resultEl are views derived from this entry). status is
+  // the run's lifecycle: streaming (call being typed) -> running (tool_started)
+  // -> done (tool_result). A run is registered in toolRuns under its id once
+  // the id is known.
+  function createRun(callID, index) {
+    const run = {
+      callID: callID || '',
+      index: index,
+      name: '',
+      args: '',
+      status: 'streaming',
+      startedAt: 0,
+      finishedAt: 0,
+      receivedAt: 0,
+      result: '',
+      callEl: null,
+      resultEl: null,
+      lastShown: null,
+    };
+    if (run.callID) toolRuns.set(run.callID, run);
+    return run;
   }
 
-  // Redraw one streamed tool-call block from its accumulated state. textContent
+  // getRunByIndex returns the run backing a streaming call block. Deltas arrive
+  // by index and may not carry the call_id yet (providers send it on the first
+  // delta), so each msg-content keeps an index -> run map for the pre-id phase;
+  // once a delta or the assembled tool_call carries an id, the run is adopted
+  // into the id-keyed toolRuns store so result-side events find the same entry.
+  function getRunByIndex(contentEl, index, callID) {
+    let byIndex = contentEl._toolRuns;
+    if (!byIndex) { contentEl._toolRuns = byIndex = new Map(); }
+    let run = byIndex.get(index);
+    if (!run) {
+      run = createRun(callID, index);
+      byIndex.set(index, run);
+    }
+    if (callID && callID !== run.callID) {
+      run.callID = callID;
+      toolRuns.set(callID, run);
+    }
+    return run;
+  }
+
+  // getRun returns the run for a result-side event (tool_started, deltas, the
+  // terminal result, a committed replay, or fetchRuns), creating it if the call
+  // was never seen live. Because the agent only starts a tool after its stream
+  // (and the id-bearing tool_call) completes, an existing streaming run is
+  // found here — the call and result share one entry.
+  function getRun(callID) {
+    let run = toolRuns.get(callID);
+    if (!run) {
+      run = createRun(callID, 0);
+      run.status = 'running';
+    }
+    return run;
+  }
+
+  // renderCall redraws the streaming call block from its run state. textContent
   // (not innerHTML) keeps the streaming JSON safe without escaping, same as the
-  // reasoning preview.
-  function renderToolCall(el) {
-    el.querySelector('.tool-call-name').textContent = el._toolName || 'tool call';
-    el.querySelector('.tool-call-args').textContent = el._toolArgs;
+  // reasoning preview. The block lives inside the live assistant msg-content
+  // and is recreated from the committed message on finalize.
+  function renderCall(run, contentEl) {
+    if (!run.callEl) {
+      run.callEl = document.createElement('details');
+      run.callEl.className = 'tool-call';
+      run.callEl.innerHTML = '<summary class="tool-call-name"></summary><pre><code class="tool-call-args"></code></pre>';
+      contentEl.appendChild(run.callEl);
+    }
+    run.callEl.querySelector('.tool-call-name').textContent = run.name || 'tool call';
+    run.callEl.querySelector('.tool-call-args').textContent = run.args;
   }
 
   // argsSnippet flattens a tool call's JSON arguments into a short single-line
@@ -396,39 +436,35 @@
     point.insertAdjacentElement('afterend', el);
   }
 
-  // ensureToolResult returns the <details class="tool-result"> element for a
-  // streamed call, creating it on first sight of that call_id. Deltas append to
-  // the same element, so a result renders once and fills in as output streams.
-  // textContent keeps the streaming output safe without escaping, same as the
-  // other live blocks. Runs appear in the order their start signal arrives,
-  // which — because the agent commits and appends each result as it finishes —
-  // is completion order.
-  function ensureToolResult(callID) {
-    let el = liveToolResults.get(callID);
-    if (el) return el;
-    el = document.createElement('details');
-    el.className = 'tool-result';
-    el._result = '';
-    el._done = false;
-    el._run = null;
-    el.innerHTML = '<summary class="tool-result-name"></summary><pre><code class="tool-result-body"></code></pre>';
-    insertToolResult(el);
-    liveToolResults.set(callID, el);
-    renderedToolResults.add(callID);
-    return el;
+  // ensureResult creates the run's result block on first need and returns it.
+  // Creating it marks the run as rendered live, which is what the committed
+  // role-"tool" replay checks (resultEl != null) so a live run is never
+  // double-rendered — replacing the old renderedToolResults set. Runs appear in
+  // the order their first event arrives, which — because the agent commits and
+  // appends each result as it finishes — is completion order.
+  function ensureResult(run) {
+    if (!run.resultEl) {
+      run.resultEl = document.createElement('details');
+      run.resultEl.className = 'tool-result';
+      run.resultEl.innerHTML = '<summary class="tool-result-name"></summary><pre><code class="tool-result-body"></code></pre>';
+      insertToolResult(run.resultEl);
+    }
+    return run.resultEl;
   }
 
-  // Redraw a tool-result block: name + args snippet, then the status — a
-  // server-derived duration once done, a live elapsed timer while running.
-  function updateToolResult(el) {
-    const run = el._run;
-    const base = 'tool result: ' + ((run && run.name) || '') +
-                 ((run && run.args) ? ' ' + run.args : '');
+  // Redraw a tool-result block from its run state: name + args snippet, then
+  // the status — a server-derived duration once done, a live elapsed timer
+  // while running. textContent keeps the output safe without escaping.
+  function renderResult(run) {
+    const el = run.resultEl;
+    if (!el) return;
+    const base = 'tool result: ' + (run.name || '') +
+                 (run.args ? ' ' + argsSnippet(run.args) : '');
     let status;
-    if (el._done) {
-      const dur = (el._finishedAt || 0) - (el._startedAt || 0);
+    if (run.status === 'done') {
+      const dur = (run.finishedAt || 0) - (run.startedAt || 0);
       status = 'done' + (dur > 0 ? ' · ' + fmtDur(dur) : '');
-    } else if (run && run.receivedAt) {
+    } else if (run.receivedAt) {
       // Running: elapsed measured from when this client received tool_started
       // (monotonic and clock-skew free). The final duration shown on done is
       // finished_at - started_at straight from the server.
@@ -437,7 +473,7 @@
       status = 'running…';
     }
     el.querySelector('.tool-result-name').textContent = base + ' · ' + status;
-    el.querySelector('.tool-result-body').textContent = el._result;
+    el.querySelector('.tool-result-body').textContent = run.result;
   }
 
   // toolTimerTick updates the elapsed shown on every running block, touching the
@@ -445,12 +481,12 @@
   // is running anymore.
   function toolTimerTick() {
     let anyRunning = false;
-    for (const el of liveToolResults.values()) {
-      if (el._done || !el._run || !el._run.receivedAt) continue;
-      const formatted = fmtDur(Math.max(0, Date.now() - el._run.receivedAt));
-      if (formatted !== el._run._lastShown) {
-        el._run._lastShown = formatted;
-        updateToolResult(el);
+    for (const run of toolRuns.values()) {
+      if (run.status !== 'running' || !run.receivedAt) continue;
+      const formatted = fmtDur(Math.max(0, Date.now() - run.receivedAt));
+      if (formatted !== run.lastShown) {
+        run.lastShown = formatted;
+        renderResult(run);
       }
       anyRunning = true;
     }
@@ -473,8 +509,8 @@
   }
 
   // fetchRuns GETs the session's in-flight tool runs and renders each as a
-  // running block. ensureToolResult dedups by call_id, so a block already live
-  // is reconciled (name/args/started clock + authoritative accumulated output)
+  // running block. getRun dedups by call_id, so a block already live is
+  // reconciled (name/args/started clock + authoritative accumulated output)
   // rather than duplicated. Server-accurate elapsed: the run's receivedAt is
   // back-dated by (serverNow - startedAt) from the response, so the timer shows
   // how long the tool has actually been running, not how long since we learned
@@ -488,19 +524,19 @@
       .then(data => {
         if (!data || !data.runs || data.runs.length === 0) return;
         const now = data.now || Date.now();
-        for (const run of data.runs) {
-          const el = ensureToolResult(run.call_id);
-          if (el._done) continue; // already finished on this client
-          el._run = {
-            name: run.name || '',
-            args: argsSnippet(run.arguments),
-            receivedAt: Date.now() - (now - run.started_at),
-          };
-          el._startedAt = run.started_at || 0;
+        for (const r of data.runs) {
+          const run = getRun(r.call_id);
+          if (run.status === 'done') continue; // already finished on this client
+          if (r.name) run.name = r.name;
+          if (r.arguments) run.args = r.arguments;
+          run.startedAt = r.started_at || run.startedAt || 0;
+          run.receivedAt = Date.now() - (now - r.started_at);
           // Reconcile the partial output to the server's authoritative
           // accumulated text, filling any deltas missed while disconnected.
-          el._result = run.output || '';
-          updateToolResult(el);
+          run.result = r.output || '';
+          run.status = 'running';
+          ensureResult(run);
+          renderResult(run);
           startToolTimer();
         }
       });
@@ -523,7 +559,17 @@
     let div;
     if (currentAssistant) {
       div = currentAssistant;
-      currentAssistant.querySelector('.msg-content').innerHTML = contentHTML;
+      // The live msg-content (and its streaming call blocks) is replaced by the
+      // committed copy. Detach the runs' callEl refs so they don't point at
+      // removed nodes; the committed tool calls are re-rendered statically
+      // below. The runs themselves stay in toolRuns — their result blocks live
+      // outside the msg-content and keep streaming.
+      const content = currentAssistant.querySelector('.msg-content');
+      if (content && content._toolRuns) {
+        content._toolRuns.forEach(run => { run.callEl = null; });
+        content._toolRuns = null;
+      }
+      content.innerHTML = contentHTML;
       // Remove any stale tool-call details so we can re-render from the commit.
       div.querySelectorAll('.tool-call').forEach(el => el.remove());
     } else {
@@ -568,19 +614,22 @@
         } else if (m.role === 'tool') {
           currentAssistant = null;
           currentReasoning = null;
-          // The live tool_result already rendered this run; only render the
-          // committed copy when it arrives alone (replay), which carries no
-          // tool name.
-          if (renderedToolResults.has(m.tool_call_id)) {
+          // The live/replayed stream already rendered this run when its
+          // resultEl exists; only render the committed copy when it arrives
+          // alone (replay), which carries no tool name.
+          const run = getRun(m.tool_call_id);
+          if (run.resultEl) {
             break;
           }
-          const details = document.createElement('details');
-          details.className = 'tool-result';
-          details.innerHTML = '<summary>tool result</summary><pre><code>' + escapeHTML(m.content).replace(/\n/g, '<br>') + '</code></pre>';
+          run.status = 'done';
+          run.result = m.content;
+          run.resultEl = document.createElement('details');
+          run.resultEl.className = 'tool-result';
+          run.resultEl.innerHTML = '<summary>tool result</summary><pre><code>' + escapeHTML(m.content).replace(/\n/g, '<br>') + '</code></pre>';
           // Position the replayed result right after its owning assistant
           // message, matching /view's history layout (live placement already
           // does this via insertToolResult).
-          insertToolResult(details);
+          insertToolResult(run.resultEl);
           hadNewContent = true;
         }
         break;
@@ -600,77 +649,80 @@
         } else if (ev.type === 'tool_call') {
           // The assembled tool call arrives once the stream ends. It may follow
           // a series of tool_call_delta events that already rendered the block
-          // live; ensureToolCall returns that same element and we finalize it
-          // with the authoritative full arguments (reconciling any drift, e.g.
-          // if deltas were coalesced). finalizeAssistant later reconciles this
+          // live; getRunByIndex returns that same run and we finalize it with
+          // the authoritative full arguments (reconciling any drift, e.g. if
+          // deltas were coalesced). finalizeAssistant later reconciles this
           // against the committed message when it arrives.
-          const el = ensureToolCall(ensureAssistant(), ev.index || 0, ev.name);
-          el._toolName = ev.name;
-          el._toolArgs = ev.arguments;
-          renderToolCall(el);
+          const contentEl = ensureAssistant();
+          const run = getRunByIndex(contentEl, ev.index || 0, ev.tool_call_id);
+          run.name = ev.name;
+          run.args = ev.arguments;
+          renderCall(run, contentEl);
           hadNewContent = true;
         } else if (ev.type === 'tool_call_delta') {
           // Streamed tool-call fragment: accumulate per-index state and redraw
           // in place so the name and JSON arguments fill in live, mirroring how
           // reasoning_delta redraws the reasoning block.
+          const contentEl = ensureAssistant();
           const index = ev.index || 0;
-          const el = ensureToolCall(ensureAssistant(), index, ev.name);
-          if (ev.name) el._toolName = ev.name; // last non-empty wins, like the decoder
-          el._toolArgs += ev.arguments;
-          renderToolCall(el);
+          const run = getRunByIndex(contentEl, index, ev.tool_call_id);
+          if (ev.name) run.name = ev.name; // last non-empty wins, like the decoder
+          run.args += ev.arguments;
+          renderCall(run, contentEl);
           hadNewContent = true;
         }
         break;
       case 'tool_started':
-        // The tool began running on the server. Create/claim its block and
-        // start the elapsed timer from the server's start clock; this is what
-        // makes the queued -> running transition honest even for a silent tool.
+        // The tool began running on the server. Claim its run and start the
+        // elapsed timer from the server's start clock; this is what makes the
+        // queued -> running transition honest even for a silent tool.
         currentAssistant = null;
         currentReasoning = null;
-        const tsEl = ensureToolResult(env.tool_call_id);
-        tsEl._run = {
-          name: env.name || '',
-          args: argsSnippet(env.arguments),
-          receivedAt: Date.now(),
-        };
-        tsEl._startedAt = env.started_at || 0;
-        updateToolResult(tsEl);
+        const tsRun = getRun(env.tool_call_id);
+        if (env.name) tsRun.name = env.name;
+        if (env.arguments) tsRun.args = env.arguments;
+        tsRun.startedAt = env.started_at || 0;
+        tsRun.receivedAt = Date.now();
+        tsRun.status = 'running';
+        ensureResult(tsRun);
+        renderResult(tsRun);
         startToolTimer();
         hadNewContent = true;
         break;
       case 'tool_result':
         // The terminal result arrives once the tool exits. It may follow a
         // series of tool_result_delta chunks that already rendered the block
-        // live; ensureToolResult returns that same element and we reconcile it
-        // with the authoritative full output (covering any dropped deltas, e.g.
-        // a subscriber buffer overrun), then mark it done with the server's
+        // live; getRun returns that same run and we reconcile it with the
+        // authoritative full output (covering any dropped deltas, e.g. a
+        // subscriber buffer overrun), then mark it done with the server's
         // start/finish clocks so the duration is server-derived.
         currentAssistant = null;
         currentReasoning = null;
-        const tr = ensureToolResult(env.tool_call_id);
-        tr._result = env.result;
-        tr._done = true;
-        tr._startedAt = env.started_at || tr._startedAt || 0;
-        tr._finishedAt = env.finished_at || 0;
-        if (!tr._run) {
-          tr._run = { name: env.name || '', args: argsSnippet(env.arguments) };
-        }
-        updateToolResult(tr);
+        const trRun = getRun(env.tool_call_id);
+        if (env.name) trRun.name = env.name;
+        if (env.arguments) trRun.args = env.arguments;
+        trRun.result = env.result;
+        trRun.status = 'done';
+        trRun.startedAt = env.started_at || trRun.startedAt || 0;
+        trRun.finishedAt = env.finished_at || 0;
+        ensureResult(trRun);
+        renderResult(trRun);
         hadNewContent = true;
         break;
       case 'tool_result_delta':
-        // One live chunk of a running tool's output: append to the existing
-        // block so long-running tools render as they produce output. If the
-        // tool_started signal was missed (e.g. a dropped envelope), the block
+        // One live chunk of a running tool's output: append to the run so
+        // long-running tools render as they produce output. If the
+        // tool_started signal was missed (e.g. a dropped envelope), the run
         // still renders, just without a live elapsed timer.
         currentAssistant = null;
         currentReasoning = null;
-        const trd = ensureToolResult(env.tool_call_id);
-        if (!trd._run) {
-          trd._run = { name: env.name || '', args: argsSnippet(env.arguments) };
-        }
-        trd._result += env.delta;
-        updateToolResult(trd);
+        const trdRun = getRun(env.tool_call_id);
+        if (env.name) trdRun.name = env.name;
+        if (env.arguments) trdRun.args = env.arguments;
+        trdRun.result += env.delta;
+        trdRun.status = trdRun.status === 'done' ? 'done' : 'running';
+        ensureResult(trdRun);
+        renderResult(trdRun);
         hadNewContent = true;
         break;
       case 'resync':
