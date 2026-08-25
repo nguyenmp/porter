@@ -393,6 +393,62 @@ func TestEmptyAppendRejected(t *testing.T) {
 		}
 	}
 }
+func TestListSessions(t *testing.T) {
+	srv := newTestServer(t, plainLLM())
+	c := client.New(srv.URL)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Two sessions, created with a gap so their order is deterministic; the
+	// older one gets a user message so its preview is populated.
+	oldInfo, err := c.Create(ctx)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := c.Append(ctx, oldInfo.ID, "first message here"); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	time.Sleep(10 * time.Millisecond)
+	newInfo, err := c.Create(ctx)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	resp, err := http.Get(srv.URL + api.SessionsPath)
+	if err != nil {
+		t.Fatalf("GET %s: %v", api.SessionsPath, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	var list api.SessionsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	if len(list.Sessions) != 2 {
+		t.Fatalf("got %d sessions, want 2: %+v", len(list.Sessions), list.Sessions)
+	}
+	// Newest first.
+	if list.Sessions[0].ID != newInfo.ID {
+		t.Errorf("first = %q, want newest %q", list.Sessions[0].ID, newInfo.ID)
+	}
+	if list.Sessions[1].ID != oldInfo.ID {
+		t.Errorf("second = %q, want oldest %q", list.Sessions[1].ID, oldInfo.ID)
+	}
+	// Preview comes from the first user message; the empty session has none.
+	if list.Sessions[1].Preview != "first message here" {
+		t.Errorf("preview = %q, want %q", list.Sessions[1].Preview, "first message here")
+	}
+	if list.Sessions[0].Preview != "" {
+		t.Errorf("new session should have no preview, got %q", list.Sessions[0].Preview)
+	}
+	// CreatedAt timestamps should be populated and in descending order.
+	if list.Sessions[0].CreatedAt < list.Sessions[1].CreatedAt {
+		t.Errorf("CreatedAt not newest-first: %d < %d", list.Sessions[0].CreatedAt, list.Sessions[1].CreatedAt)
+	}
+}
+
 func TestCreateReturnsAllFields(t *testing.T) {
 	srv := newTestServer(t, plainLLM())
 	c := client.New(srv.URL)
@@ -530,8 +586,11 @@ func TestIndexContainsSidebar(t *testing.T) {
 	if !strings.Contains(s, `id="session-list"`) {
 		t.Errorf("index does not contain the sidebar session list")
 	}
-	if !strings.Contains(s, "porter.sessions") {
-		t.Errorf("index script does not reference the localStorage session registry")
+	if strings.Contains(s, "localStorage") {
+		t.Errorf("index script should not keep a client-side session registry")
+	}
+	if !strings.Contains(s, "fetch('/api/sessions')") {
+		t.Errorf("index script does not fetch the session list from the server")
 	}
 	if !strings.Contains(s, "+ New chat") {
 		t.Errorf("sidebar does not contain the New chat button")

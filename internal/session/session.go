@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"porter/internal/agent"
 	"porter/internal/api"
@@ -80,11 +81,61 @@ func (st *Store) Get(id string) (*Session, bool) {
 	return ses, ok
 }
 
+// List returns a summary of every live session, newest first. It is what the
+// web sidebar renders; SQLite persistence will later make this survive
+// restarts. The server is the single writer, so the snapshot is a point-in-time
+// view and callers never race a turn.
+func (st *Store) List() []api.SessionSummary {
+	st.mu.Lock()
+	sessions := make([]*Session, 0, len(st.sessions))
+	for _, ses := range st.sessions {
+		sessions = append(sessions, ses)
+	}
+	st.mu.Unlock()
+	out := make([]api.SessionSummary, 0, len(sessions))
+	for _, ses := range sessions {
+		out = append(out, ses.Summary())
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt > out[j].CreatedAt })
+	return out
+}
+
+// Summary describes a session for the list view: its id, creation time, and a
+// short single-line preview of the first user message (empty when the session
+// has no messages yet).
+func (s *Session) Summary() api.SessionSummary {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var preview string
+	for _, m := range s.history {
+		if m.Role == "user" {
+			preview = previewOf(m.Content)
+			break
+		}
+	}
+	return api.SessionSummary{ID: s.id, CreatedAt: s.createdAt, Preview: preview}
+}
+
+// previewOf shortens the first user message to a single-line sidebar label:
+// the first line, trimmed, truncated to previewMax runes with an ellipsis.
+func previewOf(s string) string {
+	const previewMax = 80
+	s = strings.TrimSpace(s)
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		s = s[:i]
+	}
+	if r := []rune(s); len(r) > previewMax {
+		return string(r[:previewMax]) + "…"
+	}
+	return s
+}
+
 // Session is one conversation. All state is guarded by mu; the scheduler
 // goroutine owns turn execution.
 type Session struct {
-	id     string
-	client *llm.Client
+	id        string
+	client    *llm.Client
+	createdAt int64 // server clock at creation; used to order the session list
 
 	mu      sync.Mutex
 	js      tools.Provider
@@ -126,10 +177,11 @@ func newSession(id string, client *llm.Client, js tools.Provider) *Session {
 		js = tools.NewDispatcher()
 	}
 	return &Session{
-		id:     id,
-		client: client,
-		js:     js,
-		queue:  make(chan string, 16),
+		id:        id,
+		client:    client,
+		js:        js,
+		createdAt: time.Now().UnixMilli(),
+		queue:     make(chan string, 16),
 	}
 }
 

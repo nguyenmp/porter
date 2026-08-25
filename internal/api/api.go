@@ -12,7 +12,8 @@ import (
 // Routes the client can reach. All are served by the server; {id} is a session
 // id substituted at request time.
 const (
-	// SessionsPath creates a session: POST.
+	// SessionsPath is the session collection: POST creates a session,
+	// GET lists them (newest first).
 	SessionsPath = "/api/sessions"
 	// SessionHistoryPath returns a session's authoritative history and seq: GET.
 	SessionHistoryPath = "/api/sessions/{id}"
@@ -144,4 +145,20 @@ type Envelope struct {
 	Input       int    `json:"input,omitempty"`        // KindTurnDone
 	Output      int    `json:"output,omitempty"`       // KindTurnDone
 	Error       string `json:"error,omitempty"`        // KindTurnDone
+}
+
+// SessionSummary is one row of the session list (GET /api/sessions). ID and
+// CreatedAt are always present; Preview is the first user message truncated to
+// a single line, or empty when the session has no messages yet.
+type SessionSummary struct {
+	ID        string `json:"id"`
+	CreatedAt int64  `json:"created_at"`
+	Preview   string `json:"preview,omitempty"`
+}
+
+// SessionsResponse is returned by GET /api/sessions, newest first. The server
+// is the source of truth for which sessions exist; a client (e.g. the web
+// sidebar) renders these instead of keeping its own registry.
+type SessionsResponse struct {
+	Sessions []SessionSummary `json:"sessions"`
 }

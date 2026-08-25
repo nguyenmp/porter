@@ -52,55 +52,39 @@
     } catch (e) {}
   };
 
-  // --- Client-side session registry (Step 4) ---
-  // No server list endpoint yet; the browser remembers the sessions it has
-  // created or visited in localStorage and renders them in the sidebar. This is
-  // a placeholder until the server grows a list endpoint / SQLite persistence.
-  const SESSIONS_KEY = 'porter.sessions';
-
-  function loadSessionIds() {
-    try {
-      const raw = localStorage.getItem(SESSIONS_KEY);
-      const arr = raw ? JSON.parse(raw) : [];
-      return Array.isArray(arr) ? arr : [];
-    } catch (e) { return []; }
-  }
-
-  function saveSessionIds(ids) {
-    try { localStorage.setItem(SESSIONS_KEY, JSON.stringify(ids)); } catch (e) {}
-  }
-
-  function recordSession(id) {
-    const ids = loadSessionIds().filter(x => x !== id);
-    ids.unshift(id);
-    saveSessionIds(ids);
-    renderSidebar(id);
-  }
+  // --- Sidebar sessions (Step 5) ---
+  // The server is the source of truth for which sessions exist: GET /api/sessions
+  // returns every session (newest first) with a preview of its first message, and
+  // the sidebar renders that. Nothing is kept client-side — the page is fully
+  // web-reliant, so every load (and the New chat jump) refetches the list.
+  const app = document.getElementById('app');
+  const activeSession = app ? app.dataset.session || '' : '';
 
   function renderSidebar(activeId) {
     const listEl = document.getElementById('session-list');
     if (!listEl) return;
-    const ids = loadSessionIds();
-    listEl.innerHTML = '';
-    for (const id of ids) {
-      const a = document.createElement('a');
-      a.href = '/?session=' + encodeURIComponent(id);
-      a.textContent = id;
-      a.className = 'session-link' + (id === activeId ? ' active' : '');
-      listEl.appendChild(a);
-    }
-    listEl.hidden = ids.length === 0;
+    fetch('/api/sessions')
+      .then(resp => resp.ok ? resp.json() : null)
+      .then(data => {
+        if (!data || !Array.isArray(data.sessions)) return;
+        listEl.innerHTML = '';
+        for (const s of data.sessions) {
+          if (!s || !s.id) continue;
+          const a = document.createElement('a');
+          a.href = '/?session=' + encodeURIComponent(s.id);
+          a.textContent = s.preview || s.id;
+          a.title = s.id;
+          a.className = 'session-link' + (s.id === activeId ? ' active' : '');
+          listEl.appendChild(a);
+        }
+        listEl.hidden = data.sessions.length === 0;
+      })
+      .catch(function() {}); // page is web-reliant; leave the list empty on failure
   }
 
-  // Register the active session (if any) on load so a fresh visit shows up in
-  // the sidebar, and render the list (empty state has no active session).
-  const app = document.getElementById('app');
-  const activeSession = app ? app.dataset.session || '' : '';
-  if (activeSession) {
-    recordSession(activeSession);
-  } else {
-    renderSidebar(null);
-  }
+  // Render the list on load (empty state has no active session). The New chat
+  // flow navigates with ?session=, so a fresh load always refetches.
+  renderSidebar(activeSession || null);
 
   const chat = document.getElementById('chat');
   const form = document.querySelector('.msg-form');

@@ -12,12 +12,13 @@ Web UI — Task Breakdown
 - **Step 1: Functional — Live streaming via SSE.** `GET /api/sessions/{id}/stream` emits the session bus as Server-Sent Events; the chat page connects with HTMX's SSE extension (`sse-connect`/`sse-swap`) and streams message deltas, tool calls, and reasoning live. `/view` still serves the initial full-history render; `since` bridges the gap.
 - **Step 2: Refactor — Server-local execution provider.** The server runs tools locally by default (`provider()` → `Dispatcher`) when no exec client is connected, and the web UI never registers as an exec provider. Verified by `TestSetProviderDefaultsToLocal` and a full no-client turn in `TestToolResultEnvelope`.
 - **Step 3: Functional — New chat button, no auto-create.** Bare `GET /` renders an empty state instead of manufacturing a session; the New chat button POSTs to `/api/sessions` and navigates to the new session client-side (`onNewChat`). Chat, SSE, and the message form only render when a session is selected.
-- **Step 4: Functional (UI) — Sidebar of sessions.** Left sidebar with New chat on top and a session list below. With no server list endpoint yet, the browser keeps its own registry in `localStorage` (`porter.sessions`), rendering links to `/?session=<id>` newest-first with the active one highlighted. UI-only placeholder until a server list endpoint or SQLite persistence lands.
+- **Step 4: Functional (UI) — Sidebar of sessions.** Left sidebar with New chat on top and a session list below, rendering links to `/?session=<id>` newest-first with the active one highlighted. Initially a UI-only placeholder backed by a browser `localStorage` registry; superseded by the server-backed list in Step 5. SQLite persistence will later make the server list survive restarts.
+- **Step 5: Functional — Server-backed session list.** `GET /api/sessions` returns every live session (`SessionSummary`: id, `created_at`, and a single-line `preview` of the first user message), newest first, from the store's authoritative state (`Store.List`). The sidebar fetches it on every load and renders the preview instead of the bare id; no client-side registry — the page is fully web-reliant. Verified by `TestListSessions` and `TestIndexContainsSidebar`. This is the first server-side step toward cross-device sync and the SQLite persistence roadmap item.
 
 ### Later steps (abstract)
 
-- **Tool call/result display** — collapsible, syntax-highlighted, with timing and exit codes. Stream tool output live as it runs.
-- **Reasoning display** — collapsible reasoning blocks, dimmed by default, expandable.
+- ~~**Tool call/result display** — collapsible, syntax-highlighted, with timing and exit codes. Stream tool output live as it runs.~~ *(done: live streaming, timing, exit codes, reconnect reconstruction)*
+- ~~**Reasoning display** — collapsible reasoning blocks, dimmed by default, expandable.~~ *(done: collapsible with one-line live preview)*
 - **Cost/token display** — per-message, per-turn, per-session totals. Data is already on the bus (`KindTurnDone`); just needs rendering.
 - **Fork/tree visualization** — conversation tree view, click to fork or rewind. Requires turn IDs in the history response and a tree rendering.
 - **Connection status indicators** — show whether the SSE stream is connected, whether a turn is running, queue depth.

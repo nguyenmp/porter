@@ -163,6 +163,7 @@ func (s *Server) ListenAndServe() error {
 func (s *Server) Handler() http.Handler {
 	r := chi.NewRouter()
 	r.Get("/", s.handleIndex)
+	r.Get(api.SessionsPath, s.handleList)
 	r.Post(api.SessionsPath, s.handleCreate)
 	r.Post(api.SessionMessagesPath, s.handleAppend)
 	r.Get(api.SessionHistoryPath, s.handleHistory)
@@ -189,6 +190,14 @@ func (f flushWriter) Write(p []byte) (int, error) {
 		}
 	}
 	return n, err
+}
+
+// handleList returns every live session, newest first, for the web sidebar.
+// The server is the source of truth for which sessions exist, so a client can
+// render the list from here instead of keeping its own registry.
+func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(api.SessionsResponse{Sessions: s.store.List()})
 }
 
 // handleCreate makes a new session and returns its id, history, and resume seq.
