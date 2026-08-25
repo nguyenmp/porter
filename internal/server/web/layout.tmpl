@@ -98,6 +98,85 @@
 		}
 		#follow-btn:hover { background: #f0f0f0; }
 		.empty-state { text-align: center; color: #666; margin-top: 4rem; }
+		/* Hamburger that toggles the sidebar drawer on small screens. Hidden on
+		   desktop, where the sidebar is always visible. */
+		#menu-btn {
+			display: none;
+			position: fixed;
+			top: calc(0.5rem + env(safe-area-inset-top, 0px));
+			left: calc(0.5rem + env(safe-area-inset-left, 0px));
+			z-index: 40;
+			width: 2.75rem;
+			height: 2.75rem;
+			border: 1px solid #ccc;
+			border-radius: 8px;
+			background: #fff;
+			color: #333;
+			font-size: 1.25rem;
+			line-height: 1;
+			cursor: pointer;
+			box-shadow: 0 2px 6px rgba(0, 0, 0, 0.12);
+		}
+		#menu-btn:hover { background: #f0f0f0; }
+		/* Backdrop behind the open drawer. Hidden everywhere by default; shown
+		   only while the drawer is open on small screens, so no JS is needed to
+		   show/hide it — toggling .sidebar-open on #app drives both. */
+		#sidebar-backdrop {
+			display: none;
+			position: fixed;
+			inset: 0;
+			background: rgba(0, 0, 0, 0.4);
+			z-index: 20;
+		}
+
+		/* --- Mobile layout (below 768px) ---
+		   The sidebar becomes an off-canvas drawer: the main chat takes the full
+		   width and the session list slides in from the left. All targets grow
+		   for touch, the message input stays at 16px (so iOS does not zoom on
+		   focus), and safe-area insets keep the menu button, message form, and
+		   follow button clear of notches and the home indicator. */
+		@media (max-width: 767px) {
+			#app { gap: 0; }
+			#menu-btn { display: flex; align-items: center; justify-content: center; }
+			.sidebar {
+				position: fixed;
+				top: 0;
+				left: 0;
+				bottom: 0;
+				width: min(280px, 85vw);
+				padding: calc(1rem + env(safe-area-inset-top, 0px)) 1rem calc(1rem + env(safe-area-inset-bottom, 0px));
+				background: #fff;
+				z-index: 30;
+				transform: translateX(-100%);
+				transition: transform 0.2s ease;
+				box-shadow: 2px 0 12px rgba(0, 0, 0, 0.15);
+			}
+			#app.sidebar-open .sidebar { transform: translateX(0); }
+			#app.sidebar-open #sidebar-backdrop { display: block; }
+
+			/* Touch-friendly drawer targets. */
+			.new-chat button { padding: 0.7rem 0.75rem; font-size: 1rem; }
+			#session-list { gap: 0.125rem; }
+			#session-list a { padding: 0.7rem 0.75rem; font-size: 1rem; }
+			.status { font-size: 0.9rem; }
+			.status-dot { width: 10px; height: 10px; }
+
+			/* The floating hamburger sits at the top-left, so give the chat a
+			   matching top inset so the first message isn't hidden under it. */
+			#chat { padding: calc(3.25rem + env(safe-area-inset-top, 0px)) 0.5rem 0.5rem; }
+			.msg { padding: 0.6rem; }
+			.msg-content { font-size: 1rem; }
+			/* Long tables scroll horizontally instead of blowing out the layout. */
+			.msg-content table { display: block; overflow-x: auto; }
+			/* Bigger tap area for collapsible reasoning. */
+			.reasoning-toggle { padding: 0.4rem 0.5rem; margin-left: -0.5rem; }
+			/* Message form: taller touch targets, 16px input (no iOS zoom), and
+			   bottom safe-area inset so the home indicator never overlaps it. */
+			.msg-form { gap: 0.5rem; padding: 0.6rem 0.5rem calc(0.6rem + env(safe-area-inset-bottom, 0px)); }
+			.msg-form input[type="text"] { padding: 0.75rem 0.6rem; font-size: 16px; }
+			.msg-form button { padding: 0.75rem 1.1rem; font-size: 1rem; }
+			#follow-btn { bottom: calc(0.75rem + env(safe-area-inset-bottom, 0px)); padding: 0.6rem 1.1rem; }
+		}
 	</style>
 </head>
 <body>

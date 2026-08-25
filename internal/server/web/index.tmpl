@@ -1,5 +1,6 @@
 {{define "content"}}
 <div id="app" data-session="{{.Session}}">
+	<button id="menu-btn" type="button" aria-label="Toggle session list" aria-expanded="false" title="Sessions">&#9776;</button>
 	<nav class="sidebar">
 		<span class="brand">porter</span>
 		{{if .Session}}
@@ -13,6 +14,7 @@
 		</form>
 		<ul id="session-list" hidden></ul>
 	</nav>
+	<div id="sidebar-backdrop"></div>
 	<main class="main">
 		{{if .Session}}
 		<div class="chat-wrap">
@@ -132,6 +134,30 @@
   }
 
   updateStatus();
+
+  // --- Mobile sidebar drawer ---
+  // On small screens the sidebar is an off-canvas drawer: the hamburger opens
+  // it, the backdrop or Escape closes it. It's a pure CSS transition on #app's
+  // sidebar-open class (both the slide and the backdrop are driven by it), so
+  // the only state this keeps is the class + aria-expanded.
+  const menuBtn = document.getElementById('menu-btn');
+  const backdropEl = document.getElementById('sidebar-backdrop');
+  function setSidebarOpen(open) {
+    if (!app) return;
+    app.classList.toggle('sidebar-open', open);
+    if (menuBtn) menuBtn.setAttribute('aria-expanded', String(open));
+  }
+  if (menuBtn) {
+    menuBtn.addEventListener('click', function() {
+      setSidebarOpen(!(app && app.classList.contains('sidebar-open')));
+    });
+  }
+  if (backdropEl) {
+    backdropEl.addEventListener('click', function() { setSidebarOpen(false); });
+  }
+  document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') setSidebarOpen(false);
+  });
 
   const chat = document.getElementById('chat');
   const form = document.querySelector('.msg-form');

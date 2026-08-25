@@ -766,6 +766,21 @@ func TestIndexContainsSidebar(t *testing.T) {
 	if !strings.Contains(s, "htmx:sse-error") {
 		t.Errorf("index does not wire an SSE error handler for connection status")
 	}
+	if !strings.Contains(s, `id="menu-btn"`) {
+		t.Errorf("index does not contain the mobile sidebar hamburger")
+	}
+	if !strings.Contains(s, `id="sidebar-backdrop"`) {
+		t.Errorf("index does not contain the mobile sidebar backdrop")
+	}
+	if !strings.Contains(s, "sidebar-open") {
+		t.Errorf("index does not toggle the sidebar drawer via the sidebar-open class")
+	}
+	if !strings.Contains(s, "@media (max-width: 767px)") {
+		t.Errorf("index does not ship the mobile layout media query")
+	}
+	if !strings.Contains(s, "safe-area-inset-bottom") {
+		t.Errorf("index does not account for mobile safe-area insets")
+	}
 }
 
 func TestIndexEmptyStateHasNoActiveSession(t *testing.T) {
