@@ -7,9 +7,10 @@
 	<script src="https://unpkg.com/htmx.org@2.0.6"></script>
 	<script src="https://unpkg.com/htmx-ext-sse@2.2.2/sse.js"></script>
 	<style>
-		body { font-family: sans-serif; max-width: 1000px; margin: 1rem auto; }
-		#app { display: flex; gap: 1.5rem; align-items: flex-start; }
-		.sidebar { width: 220px; flex-shrink: 0; }
+		html, body { height: 100%; }
+		body { font-family: sans-serif; margin: 0; overflow: hidden; }
+		#app { display: flex; gap: 1.5rem; align-items: stretch; height: 100vh; height: 100dvh; }
+		.sidebar { width: 220px; flex-shrink: 0; padding: 1rem 0 1rem 1rem; overflow-y: auto; }
 		.sidebar .brand { display: block; margin-bottom: 0.75rem; font-weight: bold; font-size: 1.1em; }
 		.new-chat { margin-bottom: 0.75rem; }
 		.new-chat button { width: 100%; padding: 0.4rem 0.75rem; border: 1px solid #ccc; border-radius: 4px; background: #fff; color: #333; cursor: pointer; }
@@ -18,7 +19,7 @@
 		#session-list a { display: block; padding: 0.35rem 0.5rem; border-radius: 4px; color: #333; text-decoration: none; font-size: 0.9em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 		#session-list a:hover { background: #f0f0f0; }
 		#session-list a.active { background: #e0e0e0; font-weight: bold; }
-		.main { flex: 1; min-width: 0; }
+		.main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 		.msg { margin-bottom: 0.75rem; padding: 0.5rem; border-radius: 4px; }
 		.msg-user { background: #e8f4fd; }
 		.msg-assistant { background: #f5f5f5; }
@@ -44,7 +45,7 @@
 		.msg-content blockquote { border-left: 3px solid #ccc; margin: 0.5em 0; padding-left: 1em; color: #666; }
 		.msg-content h1, .msg-content h2, .msg-content h3 { margin: 0.5em 0 0.3em; }
 		/* Message form */
-		.msg-form { display: flex; gap: 0.5rem; margin-top: 1rem; }
+		.msg-form { display: flex; gap: 0.5rem; width: 100%; max-width: 1000px; margin: 0 auto; padding: 1rem 0.5rem; box-sizing: border-box; }
 		.msg-form input[type="text"] { flex: 1; padding: 0.5rem; border: 1px solid #ccc; border-radius: 4px; font-size: 1rem; }
 		.msg-form button { padding: 0.5rem 1rem; border: none; border-radius: 4px; background: #007bff; color: #fff; font-size: 1rem; cursor: pointer; }
 		.msg-form button:hover { background: #0056b3; }
@@ -67,8 +68,12 @@
 		   above the text) and gives text-overflow: ellipsis a width to truncate
 		   against. */
 		.reasoning.reasoning-collapsed .reasoning-text { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-		#chat { max-height: 70vh; overflow-y: auto; }
-		.chat-wrap { position: relative; }
+		.chat-wrap { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
+		/* The chat is the full-width scroll container: it reaches the right edge of
+		   the window so the scrollbar sits there, while each inner block is
+		   centered and capped at the same readable width as the old body column. */
+		#chat { flex: 1; min-height: 0; overflow-y: auto; padding: 1rem 0.5rem; box-sizing: border-box; }
+		#chat > * { max-width: 1000px; margin-left: auto; margin-right: auto; }
 		#follow-btn {
 			position: absolute;
 			bottom: 0.75rem;
