@@ -69,11 +69,43 @@ func fmtClock(ms int64) string {
 	return time.UnixMilli(ms).Format("15:04:05")
 }
 
+// toolExitCode extracts the exit-status line the shell tool appends to its
+// output ("exit code: 0") and returns it in the summary label form
+// ("exit_code: 0"). It returns "" when the result carries no such line (e.g. a
+// tool that failed before it started), so the status can be omitted. Mirrored
+// by exitCodeLabel in the web client so live and reload render identically.
+func toolExitCode(result string) string {
+	s := strings.TrimSpace(result)
+	if i := strings.LastIndexByte(s, '\n'); i >= 0 {
+		s = s[i+1:]
+	}
+	s = strings.TrimSpace(s)
+	code := strings.TrimPrefix(s, "exit code: ")
+	if code == s {
+		return "" // no "exit code: " prefix on the final line
+	}
+	return "exit_code: " + code
+}
+
+// argsSnippet flattens a tool call's JSON arguments into the short single-line
+// form used on the tool-call/result summary, truncating past 60 chars with an
+// ellipsis. Mirrors argsSnippet in the web client so live and reload render
+// identically.
+func argsSnippet(args string) string {
+	flat := strings.Join(strings.Fields(args), " ")
+	if len(flat) > 60 {
+		return flat[:60] + "…"
+	}
+	return flat
+}
+
 var templates = template.Must(template.New("").Funcs(template.FuncMap{
 	"nl2br":          nl2br,
 	"renderMarkdown": renderMarkdown,
 	"dur":            fmtDur,
 	"clock":          fmtClock,
+	"toolExitCode":   toolExitCode,
+	"argsSnippet":    argsSnippet,
 }).ParseFS(webFS, "web/*.tmpl"))
 
 // pageData is the data passed to every page template.

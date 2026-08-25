@@ -310,7 +310,8 @@
     if (!calls || calls.length === 0) return '';
     let html = '';
     for (const call of calls) {
-      html += '<details class="tool-call"><summary>' + escapeHTML(call.function.name) + '</summary>' +
+      html += '<details class="tool-call"><summary>tool call: ' + escapeHTML(call.function.name) +
+              (call.function.arguments ? ' ' + escapeHTML(argsSnippet(call.function.arguments)) : '') + '</summary>' +
               '<pre><code>' + escapeHTML(call.function.arguments) + '</code></pre></details>';
     }
     return html;
@@ -385,7 +386,11 @@
       run.callEl.innerHTML = '<summary class="tool-call-name"></summary><pre><code class="tool-call-args"></code></pre>';
       contentEl.appendChild(run.callEl);
     }
-    run.callEl.querySelector('.tool-call-name').textContent = run.name || 'tool call';
+    // The summary mirrors the tool-result header (name + args snippet) but with
+    // no duration or exit status: this is a request, not a result.
+    const summary = 'tool call: ' + (run.name || '') +
+                    (run.args ? ' ' + argsSnippet(run.args) : '');
+    run.callEl.querySelector('.tool-call-name').textContent = summary;
     run.callEl.querySelector('.tool-call-args').textContent = run.args;
   }
 
@@ -395,6 +400,19 @@
   function argsSnippet(args) {
     const flat = (args || '').replace(/\s+/g, ' ').trim();
     return flat.length > 60 ? flat.slice(0, 60) + '…' : flat;
+  }
+
+  // exitCodeLabel extracts the trailing "exit code: N" line the shell tool
+  // appends to its output and returns it in the summary label form
+  // ("exit_code: 0"), or '' when the result carries none (e.g. a tool that
+  // failed before it started). Mirrors toolExitCode in the server's /view
+  // render so live and reload produce identical result summaries.
+  function exitCodeLabel(result) {
+    const text = (result || '').trim();
+    const lines = text.split('\n');
+    const last = lines[lines.length - 1].trim();
+    const m = /^exit code: (.*)$/.exec(last);
+    return m ? 'exit_code: ' + m[1].trim() : '';
   }
 
   // fmtDur matches the server's reload rendering: tenths below 10s, whole
@@ -462,8 +480,13 @@
                  (run.args ? ' ' + argsSnippet(run.args) : '');
     let status;
     if (run.status === 'done') {
+      // The shell tool appends its exit status as the final line of output, so
+      // a finished result shows exit_code: N (instead of 'done') plus the
+      // server-derived duration.
+      const code = exitCodeLabel(run.result);
       const dur = (run.finishedAt || 0) - (run.startedAt || 0);
-      status = 'done' + (dur > 0 ? ' · ' + fmtDur(dur) : '');
+      status = code;
+      if (dur > 0) status = (status ? status + ' · ' : '') + fmtDur(dur);
     } else if (run.receivedAt) {
       // Running: elapsed measured from when this client received tool_started
       // (monotonic and clock-skew free). The final duration shown on done is
@@ -472,7 +495,7 @@
     } else {
       status = 'running…';
     }
-    el.querySelector('.tool-result-name').textContent = base + ' · ' + status;
+    el.querySelector('.tool-result-name').textContent = base + (status ? ' · ' + status : '');
     el.querySelector('.tool-result-body').textContent = run.result;
   }
 
@@ -625,7 +648,8 @@
           run.result = m.content;
           run.resultEl = document.createElement('details');
           run.resultEl.className = 'tool-result';
-          run.resultEl.innerHTML = '<summary>tool result</summary><pre><code>' + escapeHTML(m.content).replace(/\n/g, '<br>') + '</code></pre>';
+          const code = exitCodeLabel(m.content);
+          run.resultEl.innerHTML = '<summary>tool result' + (code ? ' · ' + code : '') + '</summary><pre><code>' + escapeHTML(m.content).replace(/\n/g, '<br>') + '</code></pre>';
           // Position the replayed result right after its owning assistant
           // message, matching /view's history layout (live placement already
           // does this via insertToolResult).

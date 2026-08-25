@@ -657,10 +657,11 @@ func TestViewRendersToolResultTiming(t *testing.T) {
 	// The args snippet is HTML-escaped in the summary (deliberately, like all
 	// other tool text), so assert on the escaped form.
 	for _, want := range []string{
-		`tool result: shell`, // tool name in the header
+		`tool call: shell`,   // tool name in the call header
+		`tool result: shell`, // tool name in the result header
 		`echo hi`,            // args snippet from the call
 		`&#34;command&#34;`,  // escaped JSON in the args snippet
-		`· done · `,          // duration marker
+		`exit_code: 0 · `,    // exit status + duration marker in the result header
 		`title="`,            // wall-clock tooltip
 	} {
 		if !strings.Contains(s, want) {

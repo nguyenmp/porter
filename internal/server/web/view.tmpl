@@ -15,15 +15,16 @@
 			{{end}}
 			{{range .ToolCalls}}
 				<details class="tool-call">
-					<summary>{{.Function.Name}}</summary>
+					<summary>tool call: {{.Function.Name}}{{if .Function.Arguments}} {{argsSnippet .Function.Arguments}}{{end}}</summary>
 					<pre><code>{{.Function.Arguments}}</code></pre>
 				</details>
 			{{end}}
 		</div>
 	{{else if eq .Role "tool"}}
 		{{$t := index $.Tools .ToolCallID}}
+		{{$code := toolExitCode .Content}}
 		<details class="tool-result">
-			<summary title="{{if $t.Name}}{{clock .StartedAt}} – {{clock .FinishedAt}}{{end}}">tool result: {{$t.Name}} {{if $t.Arguments}}{{$t.Arguments}}{{end}}{{if .StartedAt}} · done · {{dur .StartedAt .FinishedAt}}{{else}} · done{{end}}</summary>
+			<summary title="{{if $t.Name}}{{clock .StartedAt}} – {{clock .FinishedAt}}{{end}}">tool result: {{$t.Name}}{{if $t.Arguments}} {{argsSnippet $t.Arguments}}{{end}}{{if $code}} · {{$code}}{{end}}{{if .StartedAt}} · {{dur .StartedAt .FinishedAt}}{{end}}</summary>
 			<pre><code>{{nl2br .Content}}</code></pre>
 		</details>
 	{{end}}
