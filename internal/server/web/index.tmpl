@@ -2,6 +2,12 @@
 <div id="app" data-session="{{.Session}}">
 	<nav class="sidebar">
 		<span class="brand">porter</span>
+		{{if .Session}}
+		<div id="status" class="status" data-running="{{.Running}}" data-queue="{{.Queue}}">
+			<span class="status-dot"></span>
+			<span id="status-text">connecting…</span>
+		</div>
+		{{end}}
 		<form class="new-chat" hx-post="/api/sessions" hx-swap="none" hx-on::after-request="onNewChat(event)">
 			<button type="submit">+ New chat</button>
 		</form>
@@ -23,7 +29,8 @@
 		     sse-swap="message_committed,llm,tool_started,tool_result,tool_result_delta,turn_completed"
 		     hx-swap="none"
 		     hx-on:htmx:sse-message="sseMessage(event)"
-		     hx-on:htmx:sse-open="onSSEOpen()">
+		     hx-on:htmx:sse-open="onSSEOpen()"
+		     hx-on:htmx:sse-error="onSSEError()">
 		</div>
 		<form hx-post="/api/sessions/{{.Session}}/messages"
 		      hx-target="#chat"
@@ -85,6 +92,46 @@
   // Render the list on load (empty state has no active session). The New chat
   // flow navigates with ?session=, so a fresh load always refetches.
   renderSidebar(activeSession || null);
+
+  // --- Connection / turn status (Step 6) ---
+  // The sidebar indicator shows three signals. SSE connection comes from the
+  // stream lifecycle (htmx:sse-open / htmx:sse-error; the extension auto-retries
+  // with backoff, so a drop shows "disconnected" until it reconnects). Turn
+  // running and queue depth come from the server: the page's initial state rides
+  // on #status's data attributes (captured at render), then the bus updates it —
+  // every user message_committed reports how many turns are queued behind it, and
+  // turn_completed clears the running flag.
+  const statusEl = document.getElementById('status');
+  const statusTextEl = statusEl ? document.getElementById('status-text') : null;
+  // null = connecting (before the first open/error); true/false = open/closed.
+  let sseConnected = null;
+  let turnRunning = statusEl ? statusEl.dataset.running === 'true' : false;
+  let queueDepth = statusEl ? (parseInt(statusEl.dataset.queue, 10) || 0) : 0;
+
+  function updateStatus() {
+    if (!statusEl) return;
+    let text, cls;
+    if (sseConnected === null) {
+      text = 'connecting…';
+      cls = 'status-wait';
+    } else if (!sseConnected) {
+      text = 'disconnected';
+      cls = 'status-err';
+    } else if (turnRunning) {
+      text = queueDepth > 0 ? 'running · ' + queueDepth + ' queued' : 'running…';
+      cls = 'status-run';
+    } else if (queueDepth > 0) {
+      text = queueDepth + ' queued';
+      cls = 'status-run';
+    } else {
+      text = 'connected';
+      cls = 'status-ok';
+    }
+    statusEl.className = 'status ' + cls;
+    if (statusTextEl) statusTextEl.textContent = text;
+  }
+
+  updateStatus();
 
   const chat = document.getElementById('chat');
   const form = document.querySelector('.msg-form');
@@ -508,12 +555,23 @@
   }
 
   // onSSEOpen fires on every SSE connection (initial connect and every
-  // reconnect). Fetching in-flight runs here is what lets a client that
-  // reconnects mid-run reconstruct the running tool blocks (and the partial
-  // output produced while it was away) from the server's authoritative state.
-  function onSSEOpen() {
+  // reconnect): mark the stream open, refetch in-flight tool runs (so a client
+  // that reconnects mid-run reconstructs running blocks from the server's
+  // authoritative state), and refresh the status indicator. Exposed on window
+  // because hx-on attribute handlers run in global scope.
+  window.onSSEOpen = function() {
+    sseConnected = true;
     fetchRuns();
-  }
+    updateStatus();
+  };
+
+  // onSSEError fires whenever the EventSource errors (network drop or server
+  // restart); the SSE extension retries with backoff and fires onSSEOpen again
+  // once the stream reconnects.
+  window.onSSEError = function() {
+    sseConnected = false;
+    updateStatus();
+  };
 
   // fetchRuns GETs the session's in-flight tool runs and renders each as a
   // running block. getRun dedups by call_id, so a block already live is
@@ -614,6 +672,11 @@
           currentAssistant = null;
           currentReasoning = null;
           appendMessage('user', escapeHTML(m.content).replace(/\n/g, '<br>'));
+          // A user commit marks the start of its turn; the server reports how
+          // many turns are still queued behind this one.
+          turnRunning = true;
+          queueDepth = env.queue || 0;
+          updateStatus();
           hadNewContent = true;
         } else if (m.role === 'assistant') {
           finalizeAssistant(m, env.message_html);
@@ -747,6 +810,12 @@
         chat.appendChild(meta);
         currentAssistant = null;
         currentReasoning = null;
+        // The running turn finished. Queue depth is left as-is: the server
+        // corrects it on the next user message_committed (which reports how
+        // many turns remain behind it), and between commits the current value
+        // is accurate.
+        turnRunning = false;
+        updateStatus();
         hadNewContent = true;
         break;
     }

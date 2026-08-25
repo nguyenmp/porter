@@ -449,6 +449,171 @@ func TestListSessions(t *testing.T) {
 	}
 }
 
+// TestQueueDepthOnUserCommit verifies each user message_committed reports how
+// many turns are still queued behind it. Turn 1's tool is held open so the
+// remaining messages pile up deterministically; releasing it lets the queue
+// drain one turn at a time, and the subscriber observes queue depths 2, 1, 0.
+func TestQueueDepthOnUserCommit(t *testing.T) {
+	srv := newTestServer(t, toolThenReplyLLM())
+	c := client.New(srv.URL)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	info, err := c.Create(ctx)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// Hold a tool open (the exec provider's pipe) so turn 1 stays running.
+	pr, pw := io.Pipe()
+	dispatch := func(ctx context.Context, name string, args []byte) (io.ReadCloser, error) {
+		return pr, nil
+	}
+	go func() { _ = c.ServeExec(ctx, info.ID, dispatch) }()
+	time.Sleep(100 * time.Millisecond)
+
+	// Subscribe before any message is sent so every commit is delivered live
+	// (or replayed from since=0 for anything committed before registration).
+	var mu sync.Mutex
+	var got []api.Envelope
+	turnDone := 0
+	subDone := make(chan error, 1)
+	go func() {
+		subDone <- c.Subscribe(ctx, info.ID, info.Seq, func(env api.Envelope) {
+			mu.Lock()
+			got = append(got, env)
+			mu.Unlock()
+		}, func(env api.Envelope) bool {
+			mu.Lock()
+			defer mu.Unlock()
+			if env.Kind == api.KindTurnDone {
+				turnDone++
+			}
+			return turnDone >= 4 // turn 1 plus the three queued turns
+		})
+	}()
+	time.Sleep(100 * time.Millisecond) // let the subscription register
+
+	// Turn 1: committed (queue empty), tool held open.
+	if err := c.Append(ctx, info.ID, "a"); err != nil {
+		t.Fatalf("Append(a): %v", err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		rr, err := c.Runs(ctx, info.ID)
+		if err != nil {
+			t.Fatalf("Runs: %v", err)
+		}
+		if len(rr.Runs) > 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	// Queue three more while turn 1 runs.
+	for _, content := range []string{"b", "c", "d"} {
+		if err := c.Append(ctx, info.ID, content); err != nil {
+			t.Fatalf("Append(%q): %v", content, err)
+		}
+	}
+
+	// Release turn 1; the remaining turns drain serially.
+	_, _ = pw.Write([]byte("rest\n"))
+	_ = pw.Close()
+
+	select {
+	case err := <-subDone:
+		if err != nil {
+			t.Fatalf("Subscribe: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for turns to drain")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	var queues []int
+	for _, env := range got {
+		if env.Kind == api.KindMessage && env.Message != nil && env.Message.Role == "user" {
+			queues = append(queues, env.Queue)
+		}
+	}
+	// Turn 1 starts with an empty queue; b/c/d then report 2/1/0 left behind.
+	want := []int{0, 2, 1, 0}
+	if len(queues) != len(want) {
+		t.Fatalf("user commit queues = %v, want %v", queues, want)
+	}
+	for i, q := range queues {
+		if q != want[i] {
+			t.Errorf("user commit %d queue = %d, want %d", i, q, want[i])
+		}
+	}
+}
+
+// TestIndexReportsRunningAndQueue verifies the page seeds the status indicator
+// with the live turn state at render time: running=true while a turn's tool is
+// in flight, and queue=1 when a second message is waiting behind it.
+func TestIndexReportsRunningAndQueue(t *testing.T) {
+	srv := newTestServer(t, toolThenReplyLLM())
+	c := client.New(srv.URL)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	info, err := c.Create(ctx)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// Hold a tool open (the exec provider's pipe) so turn 1 stays running
+	// while we inspect the rendered page.
+	pr, pw := io.Pipe()
+	dispatch := func(ctx context.Context, name string, args []byte) (io.ReadCloser, error) {
+		return pr, nil
+	}
+	go func() { _ = c.ServeExec(ctx, info.ID, dispatch) }()
+	time.Sleep(100 * time.Millisecond)
+
+	if err := c.Append(ctx, info.ID, "run it"); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+
+	// Wait until turn 1 is visibly running (its tool is in-flight).
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		rr, err := c.Runs(ctx, info.ID)
+		if err != nil {
+			t.Fatalf("Runs: %v", err)
+		}
+		if len(rr.Runs) > 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if err := c.Append(ctx, info.ID, "second"); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+
+	resp, err := http.Get(srv.URL + "/?session=" + info.ID)
+	if err != nil {
+		t.Fatalf("GET /: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	s := string(body)
+	if !strings.Contains(s, `id="status"`) {
+		t.Errorf("index does not contain the status indicator")
+	}
+	if !strings.Contains(s, `data-running="true"`) {
+		t.Errorf("index does not report the running turn (data-running=true)")
+	}
+	if !strings.Contains(s, `data-queue="1"`) {
+		t.Errorf("index does not report queue depth 1 (data-queue=1)")
+	}
+
+	// Let turn 1 finish so the session drains before the test ends.
+	_, _ = pw.Write([]byte("rest\n"))
+	_ = pw.Close()
+}
+
 func TestCreateReturnsAllFields(t *testing.T) {
 	srv := newTestServer(t, plainLLM())
 	c := client.New(srv.URL)
@@ -594,6 +759,12 @@ func TestIndexContainsSidebar(t *testing.T) {
 	}
 	if !strings.Contains(s, "+ New chat") {
 		t.Errorf("sidebar does not contain the New chat button")
+	}
+	if !strings.Contains(s, `id="status"`) {
+		t.Errorf("index does not contain the connection status indicator")
+	}
+	if !strings.Contains(s, "htmx:sse-error") {
+		t.Errorf("index does not wire an SSE error handler for connection status")
 	}
 }
 

@@ -220,7 +220,13 @@ func (s *Session) loop(ctx context.Context) {
 
 func (s *Session) runTurn(ctx context.Context, content string) {
 	turnID := s.nextTurn()
-	s.commit(llm.UserMessage(content))
+	// Committing the user message marks the start of this turn. Carry the
+	// remaining queue depth so subscribers can show how many turns are still
+	// waiting behind this one (the loop already pulled this message out of the
+	// queue, so QueueDepth is exactly the backlog).
+	msg := llm.UserMessage(content)
+	env := api.Envelope{Kind: api.KindMessage, Message: &msg, Queue: s.QueueDepth()}
+	s.commitEnv(env)
 
 	done := api.Envelope{Kind: api.KindTurnDone, TurnID: turnID}
 	res, err := agent.RunTurn(ctx, s.client, s.snapshot(), s.provider(), s.emitLive, func(m llm.ChatMessage) {
@@ -243,6 +249,22 @@ func (s *Session) Enqueue(content string) {
 
 // ID returns the session's id.
 func (s *Session) ID() string { return s.id }
+
+// QueueDepth returns how many user messages are still waiting in the queue
+// behind the turn currently running (0 when idle). The server is the single
+// writer, so this is the authoritative backlog; it is what the web client shows
+// as a "N queued" indicator.
+func (s *Session) QueueDepth() int {
+	return len(s.queue)
+}
+
+// Running reports whether a turn is currently in progress: one has started (its
+// user message committed) but its completion marker has not been committed yet.
+func (s *Session) Running() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.turn > int64(len(s.turns))
+}
 
 // Snapshot returns the authoritative committed history and the bus position to
 // resume from.
@@ -273,10 +295,18 @@ func (s *Session) commit(m llm.ChatMessage) uint64 {
 	if m.Role == "assistant" && m.Content != "" {
 		env.MessageHTML = render.Markdown(m.Content)
 	}
+	return s.commitEnv(env)
+}
+
+// commitEnv is the tail of commit: stamp the envelope with the next bus
+// position, append its message to history, log it for replay, and broadcast it
+// to every subscriber. Splitting it out lets turn start commit a user message
+// with extra metadata (the queue depth) without duplicating the plumbing.
+func (s *Session) commitEnv(env api.Envelope) uint64 {
 	s.mu.Lock()
 	s.logSeq++
 	env.Seq = s.logSeq
-	s.history = append(s.history, m)
+	s.history = append(s.history, *env.Message)
 	s.bufferLocked(env)
 	subs := s.subs
 	s.mu.Unlock()

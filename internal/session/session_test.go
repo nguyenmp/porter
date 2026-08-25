@@ -199,6 +199,25 @@ func TestEnqueueRunsTurn(t *testing.T) {
 
 // TestSetProviderDefaultsToLocal verifies a fresh session resolves to a local
 // provider and can swap to a registered one without racing.
+// TestRunningAndQueueDepth covers the status-indicator primitives directly:
+// a fresh session is idle with an empty queue, and enqueued messages are
+// visible via QueueDepth without waiting for a turn to start.
+func TestRunningAndQueueDepth(t *testing.T) {
+	s := newTestSession("s")
+	if s.Running() {
+		t.Errorf("fresh session should not report a running turn")
+	}
+	if d := s.QueueDepth(); d != 0 {
+		t.Errorf("fresh session queue depth = %d, want 0", d)
+	}
+	for i := 0; i < 3; i++ {
+		s.Enqueue(fmt.Sprintf("m%d", i))
+	}
+	if d := s.QueueDepth(); d != 3 {
+		t.Errorf("queue depth after 3 enqueues = %d, want 3", d)
+	}
+}
+
 func TestSetProviderDefaultsToLocal(t *testing.T) {
 	st := NewStore()
 	s := st.Create(nil)

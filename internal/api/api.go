@@ -145,6 +145,12 @@ type Envelope struct {
 	Input       int    `json:"input,omitempty"`        // KindTurnDone
 	Output      int    `json:"output,omitempty"`       // KindTurnDone
 	Error       string `json:"error,omitempty"`        // KindTurnDone
+	// Queue is the number of turns still waiting in the server's queue behind
+	// the message this envelope commits. It is set on user KindMessage
+	// envelopes (the server reports, at each turn start, how many messages are
+	// queued after it) so the web client can show a live queue-depth indicator
+	// without polling.
+	Queue int `json:"queue,omitempty"` // KindMessage (user)
 }
 
 // SessionSummary is one row of the session list (GET /api/sessions). ID and

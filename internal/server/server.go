@@ -113,6 +113,11 @@ type pageData struct {
 	Title   string
 	Session string
 	Seq     uint64
+	// Running and Queue seed the connection/turn status indicator at render
+	// time, so a page loaded mid-turn (or with turns queued) shows the correct
+	// state before the SSE stream catches it up.
+	Running bool
+	Queue   int
 }
 
 // ToolRunInfo carries the display details of one tool call for the view,
@@ -442,5 +447,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		Title:   "porter",
 		Session: sessID,
 		Seq:     ses.Snapshot().Seq,
+		Running: ses.Running(),
+		Queue:   ses.QueueDepth(),
 	})
 }

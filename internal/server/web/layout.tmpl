@@ -12,6 +12,13 @@
 		#app { display: flex; gap: 1.5rem; align-items: stretch; height: 100vh; height: 100dvh; }
 		.sidebar { width: 220px; flex-shrink: 0; padding: 1rem 0 1rem 1rem; overflow-y: auto; }
 		.sidebar .brand { display: block; margin-bottom: 0.75rem; font-weight: bold; font-size: 1.1em; }
+		/* Connection / turn status indicator */
+		.status { display: flex; align-items: center; gap: 0.4rem; margin-bottom: 0.75rem; font-size: 0.8em; color: #666; }
+		.status-dot { width: 8px; height: 8px; border-radius: 50%; background: #999; }
+		.status-ok .status-dot { background: #2e8b57; }
+		.status-run .status-dot { background: #d97706; }
+		.status-err .status-dot { background: #d33; }
+		.status-wait .status-dot { background: #999; }
 		.new-chat { margin-bottom: 0.75rem; }
 		.new-chat button { width: 100%; padding: 0.4rem 0.75rem; border: 1px solid #ccc; border-radius: 4px; background: #fff; color: #333; cursor: pointer; }
 		.new-chat button:hover { background: #f0f0f0; }
