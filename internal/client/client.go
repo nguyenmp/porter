@@ -54,6 +54,13 @@ func (c *Client) History(ctx context.Context, id string) (api.SessionHistory, er
 	return h, nil
 }
 
+// Runs returns the session's in-flight tool runs and the server's clock.
+func (c *Client) Runs(ctx context.Context, id string) (api.RunsResponse, error) {
+	var out api.RunsResponse
+	err := c.doJSON(ctx, http.MethodGet, c.path(api.SessionRunsPath, id), nil, &out)
+	return out, err
+}
+
 // Append queues a user message for the session's turn scheduler. It is
 // non-blocking with respect to the running turn; the server decides when it
 // runs.

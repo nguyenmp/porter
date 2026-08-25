@@ -218,3 +218,50 @@ func TestSetProviderDefaultsToLocal(t *testing.T) {
 func newTestSession(id string) *Session {
 	return newSession(id, nil, nil)
 }
+func TestTrackToolRunsForReconnect(t *testing.T) {
+	s := newTestSession("s")
+
+	// No runs yet.
+	if got := s.Runs(); len(got) != 0 {
+		t.Fatalf("Runs before any tool = %+v, want empty", got)
+	}
+
+	// A run starts (server clock), emits partial output, then another run starts.
+	s.trackToolRun(api.Envelope{Kind: api.KindToolStarted, ToolCallID: "call-1", Name: "shell", Arguments: `{"command":"echo hi"}`, StartedAt: 1000})
+	s.trackToolRun(api.Envelope{Kind: api.KindToolResultDelta, ToolCallID: "call-1", Delta: "partial line\n"})
+	s.trackToolRun(api.Envelope{Kind: api.KindToolResultDelta, ToolCallID: "call-1", Delta: "more line\n"})
+	s.trackToolRun(api.Envelope{Kind: api.KindToolStarted, ToolCallID: "call-2", Name: "shell", Arguments: `{"command":"sleep 5"}`, StartedAt: 2000})
+
+	runs := s.Runs()
+	if len(runs) != 2 {
+		t.Fatalf("Runs = %+v, want 2 in-flight", runs)
+	}
+	// Ordered by start time: call-1 first, call-2 second.
+	if runs[0].CallID != "call-1" || runs[1].CallID != "call-2" {
+		t.Errorf("run order = %s, %s; want call-1, call-2", runs[0].CallID, runs[1].CallID)
+	}
+	// Accumulated partial output is authoritative.
+	if runs[0].Output != "partial line\nmore line\n" {
+		t.Errorf("run call-1 output = %q, want both deltas", runs[0].Output)
+	}
+	if runs[0].StartedAt != 1000 || runs[1].StartedAt != 2000 {
+		t.Errorf("started clocks = %d, %d; want 1000, 2000", runs[0].StartedAt, runs[1].StartedAt)
+	}
+	if runs[0].Name != "shell" || runs[0].Arguments == "" {
+		t.Errorf("run call-1 identity = %+v, want shell + args", runs[0])
+	}
+
+	// The terminal result removes the run (it is now committed, not in-flight).
+	s.trackToolRun(api.Envelope{Kind: api.KindToolResult, ToolCallID: "call-1", Result: "partial line\nmore line\nexit code: 0\n"})
+	runs = s.Runs()
+	if len(runs) != 1 || runs[0].CallID != "call-2" {
+		t.Fatalf("Runs after call-1 finished = %+v, want only call-2", runs)
+	}
+
+	// Non-tool envelopes and unknown call ids are ignored safely.
+	s.trackToolRun(api.Envelope{Kind: api.KindLLM})
+	s.trackToolRun(api.Envelope{Kind: api.KindToolResultDelta, ToolCallID: "nope", Delta: "x"})
+	if len(s.Runs()) != 1 {
+		t.Errorf("Runs after no-ops = %+v, want still 1", s.Runs())
+	}
+}

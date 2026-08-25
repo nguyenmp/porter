@@ -10,6 +10,8 @@ package session
 import (
 	"context"
 	"fmt"
+	"sort"
+	"strings"
 	"sync"
 
 	"porter/internal/agent"
@@ -98,7 +100,25 @@ type Session struct {
 	execCalls map[string]*execCall
 	execSeq   int
 
+	// In-flight tool runs keyed by call_id. The agent's live envelopes are
+	// recorded here (started/delta/result) so a client that connects or
+	// reconnects mid-run can reconstruct running blocks from the authoritative
+	// server state instead of missing everything that streamed while it was
+	// away. Runs are removed when their terminal result arrives.
+	runs map[string]*toolRun
+
 	queue chan string
+}
+
+// toolRun is the accumulated state of one in-flight tool execution: what was
+// called, when it started (server clock), and the partial output produced so
+// far.
+type toolRun struct {
+	callID    string
+	name      string
+	args      string
+	startedAt int64
+	output    strings.Builder
 }
 
 func newSession(id string, client *llm.Client, js tools.Provider) *Session {
@@ -151,7 +171,7 @@ func (s *Session) runTurn(ctx context.Context, content string) {
 	s.commit(llm.UserMessage(content))
 
 	done := api.Envelope{Kind: api.KindTurnDone, TurnID: turnID}
-	res, err := agent.RunTurn(ctx, s.client, s.snapshot(), s.provider(), s.publish, func(m llm.ChatMessage) {
+	res, err := agent.RunTurn(ctx, s.client, s.snapshot(), s.provider(), s.emitLive, func(m llm.ChatMessage) {
 		s.commit(m)
 	})
 	if err != nil {
@@ -240,6 +260,71 @@ func (s *Session) publish(env api.Envelope) {
 	subs := s.subs
 	s.mu.Unlock()
 	s.sendTo(subs, env)
+}
+
+// emitLive records tool-run state for reconnect reconstruction, then broadcasts
+// the envelope live. It is the emit sink RunTurn is given, so every tool
+// envelope the agent produces updates the in-flight run registry before going
+// out to subscribers.
+func (s *Session) emitLive(env api.Envelope) {
+	s.trackToolRun(env)
+	s.publish(env)
+}
+
+// trackToolRun updates the in-flight run registry from the live tool envelopes:
+// tool_started creates a run, tool_result_delta appends to its partial output,
+// and the terminal tool_result removes it. Other envelope kinds are ignored.
+func (s *Session) trackToolRun(env api.Envelope) {
+	switch env.Kind {
+	case api.KindToolStarted:
+		if env.ToolCallID == "" {
+			return
+		}
+		s.mu.Lock()
+		if s.runs == nil {
+			s.runs = make(map[string]*toolRun)
+		}
+		s.runs[env.ToolCallID] = &toolRun{
+			callID:    env.ToolCallID,
+			name:      env.Name,
+			args:      env.Arguments,
+			startedAt: env.StartedAt,
+		}
+		s.mu.Unlock()
+	case api.KindToolResultDelta:
+		if env.ToolCallID == "" {
+			return
+		}
+		s.mu.Lock()
+		if r, ok := s.runs[env.ToolCallID]; ok {
+			r.output.WriteString(env.Delta)
+		}
+		s.mu.Unlock()
+	case api.KindToolResult:
+		s.mu.Lock()
+		delete(s.runs, env.ToolCallID)
+		s.mu.Unlock()
+	}
+}
+
+// Runs returns a snapshot of the session's in-flight tool runs, ordered by
+// start time. It is what lets a client reconstruct running blocks after a
+// reconnect mid-run.
+func (s *Session) Runs() []api.RunInfo {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]api.RunInfo, 0, len(s.runs))
+	for _, r := range s.runs {
+		out = append(out, api.RunInfo{
+			CallID:    r.callID,
+			Name:      r.name,
+			Arguments: r.args,
+			StartedAt: r.startedAt,
+			Output:    r.output.String(),
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].StartedAt < out[j].StartedAt })
+	return out
 }
 
 // bufferLocked appends env to the replayable log, evicting the oldest when it

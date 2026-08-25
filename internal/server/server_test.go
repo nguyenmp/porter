@@ -180,6 +180,107 @@ func TestToolResultEnvelope(t *testing.T) {
 	}
 }
 
+// TestRunsReportsInFlightTool tests the reconnect story end to end: a tool that
+// is still running appears on /runs with the server's clock and the partial
+// output accumulated so far, and disappears once it completes.
+func TestRunsReportsInFlightTool(t *testing.T) {
+	srv := newTestServer(t, toolThenReplyLLM())
+	c := client.New(srv.URL)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	info, err := c.Create(ctx)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// Register as the execution provider; the dispatch hands back a pipe we
+	// control, so the tool "runs" until we write output and close it.
+	pr, pw := io.Pipe()
+	dispatch := func(ctx context.Context, name string, args []byte) (io.ReadCloser, error) {
+		return pr, nil
+	}
+	go func() { _ = c.ServeExec(ctx, info.ID, dispatch) }()
+	time.Sleep(100 * time.Millisecond)
+
+	if err := c.Append(ctx, info.ID, "run it"); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+
+	// The tool is running on the server: /runs must report it.
+	var run api.RunInfo
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		rr, err := c.Runs(ctx, info.ID)
+		if err != nil {
+			t.Fatalf("Runs: %v", err)
+		}
+		if len(rr.Runs) > 0 {
+			if rr.Now <= 0 {
+				t.Errorf("Runs now = %d, want server clock", rr.Now)
+			}
+			run = rr.Runs[0]
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if run.CallID == "" {
+		t.Fatal("tool never appeared on /runs")
+	}
+	if run.Name != "shell" || !strings.Contains(run.Arguments, "echo hi") {
+		t.Errorf("in-flight run = %+v, want shell + echo hi args", run)
+	}
+	if run.StartedAt <= 0 {
+		t.Errorf("in-flight run started_at = %d, want server clock", run.StartedAt)
+	}
+
+	// Stream partial output; it must accumulate on the server.
+	_, _ = pw.Write([]byte("partial line 1\n"))
+	deadline = time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		rr, _ := c.Runs(ctx, info.ID)
+		if len(rr.Runs) > 0 && strings.Contains(rr.Runs[0].Output, "partial line 1") {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	rr, err := c.Runs(ctx, info.ID)
+	if err != nil {
+		t.Fatalf("Runs: %v", err)
+	}
+	if len(rr.Runs) != 1 || !strings.Contains(rr.Runs[0].Output, "partial line 1") {
+		t.Fatalf("runs after partial output = %+v, want accumulated output", rr.Runs)
+	}
+
+	// Complete the tool: the run leaves /runs and history gains the result.
+	_, _ = pw.Write([]byte("rest\n"))
+	_ = pw.Close()
+	deadline = time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		rr, _ = c.Runs(ctx, info.ID)
+		if len(rr.Runs) == 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if len(rr.Runs) != 0 {
+		t.Errorf("runs after completion = %+v, want empty", rr.Runs)
+	}
+	h, err := c.History(ctx, info.ID)
+	if err != nil {
+		t.Fatalf("History: %v", err)
+	}
+	var found bool
+	for _, m := range h.History {
+		if m.Role == "tool" && strings.Contains(m.Content, "partial line 1") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("committed tool result missing partial output; history = %+v", h.History)
+	}
+}
+
 // TestServerRunsToolViaExecProvider verifies that a client registered as the
 // session's execution provider (via ServeExec) runs the agent's tool calls and
 // streams results back into History, instead of the server running them.

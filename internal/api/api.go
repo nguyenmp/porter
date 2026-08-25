@@ -25,6 +25,10 @@ const (
 	SessionEventsPath = "/api/sessions/{id}/events"
 	// SessionStreamPath streams a session's event bus as Server-Sent Events.
 	SessionStreamPath = "/api/sessions/{id}/stream"
+	// SessionRunsPath lists a session's in-flight tool runs (those started but
+	// not yet finished), so a client that connects or reconnects mid-run can
+	// reconstruct running blocks from the server's authoritative state: GET.
+	SessionRunsPath = "/api/sessions/{id}/runs"
 	// SessionExecPath registers a client as the session's execution provider
 	// and holds the connection open for exec requests: GET (NDJSON requests).
 	SessionExecPath = "/api/sessions/{id}/exec"
@@ -61,6 +65,25 @@ type AppendRequest struct {
 type SessionHistory struct {
 	History []llm.ChatMessage `json:"history"`
 	Seq     uint64            `json:"seq"`
+}
+
+// RunInfo describes one in-flight tool run. Output is the partial result
+// accumulated so far (the server is the source of truth for what has been
+// produced while the client was disconnected). StartedAt is the server clock.
+type RunInfo struct {
+	CallID    string `json:"call_id"`
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
+	StartedAt int64  `json:"started_at"`
+	Output    string `json:"output"`
+}
+
+// RunsResponse is returned by GET /api/sessions/{id}/runs. Now is the server's
+// clock at response time, so a client can compute a server-accurate elapsed
+// time for each run regardless of clock skew.
+type RunsResponse struct {
+	Now  int64     `json:"now"`
+	Runs []RunInfo `json:"runs"`
 }
 
 // Envelope kinds carried on a session's event bus. An Envelope is the union of

@@ -137,6 +137,7 @@ func (s *Server) Handler() http.Handler {
 	r.Get(api.SessionViewPath, s.handleView)
 	r.Get(api.SessionEventsPath, s.handleEvents)
 	r.Get(api.SessionStreamPath, s.handleStream)
+	r.Get(api.SessionRunsPath, s.handleRuns)
 	r.Get(api.SessionExecPath, s.handleExec)
 	r.Post(api.SessionExecResultPath, s.handleExecResult)
 	return r
@@ -221,6 +222,22 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(ses.Snapshot())
+}
+
+// handleRuns returns the session's in-flight tool runs plus the server's clock,
+// so a client that connects or reconnects mid-run can reconstruct running
+// blocks with server-accurate elapsed times.
+func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
+	ses, ok := s.store.Get(chi.URLParam(r, "id"))
+	if !ok {
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(api.RunsResponse{
+		Now:  time.Now().UnixMilli(),
+		Runs: ses.Runs(),
+	})
 }
 
 // sseEventLine formats one envelope as an SSE event line.

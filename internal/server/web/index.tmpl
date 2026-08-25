@@ -22,7 +22,8 @@
 		     sse-connect="/api/sessions/{{.Session}}/stream?since={{.Seq}}"
 		     sse-swap="message_committed,llm,tool_started,tool_result,tool_result_delta,turn_completed"
 		     hx-swap="none"
-		     hx-on:htmx:sse-message="sseMessage(event)">
+		     hx-on:htmx:sse-message="sseMessage(event)"
+		     hx-on:htmx:sse-open="onSSEOpen()">
 		</div>
 		<form hx-post="/api/sessions/{{.Session}}/messages"
 		      hx-target="#chat"
@@ -168,6 +169,10 @@
     // form submit can never yank the user back down.
     chat.addEventListener('htmx:afterSwap', function() {
       initReasoningBlocks(chat);
+      // A /view innerHTML swap can wipe live blocks appended before history
+      // landed (e.g. opening the page mid-run); re-fetch in-flight runs so
+      // running tool blocks are restored after every history render.
+      fetchRuns();
       if (autoScroll) chat.scrollTop = chat.scrollHeight;
     });
   }
@@ -425,6 +430,48 @@
 
   function startToolTimer() {
     if (!toolTimer) toolTimer = setInterval(toolTimerTick, 100);
+  }
+
+  // onSSEOpen fires on every SSE connection (initial connect and every
+  // reconnect). Fetching in-flight runs here is what lets a client that
+  // reconnects mid-run reconstruct the running tool blocks (and the partial
+  // output produced while it was away) from the server's authoritative state.
+  function onSSEOpen() {
+    fetchRuns();
+  }
+
+  // fetchRuns GETs the session's in-flight tool runs and renders each as a
+  // running block. ensureToolResult dedups by call_id, so a block already live
+  // is reconciled (name/args/started clock + authoritative accumulated output)
+  // rather than duplicated. Server-accurate elapsed: the run's receivedAt is
+  // back-dated by (serverNow - startedAt) from the response, so the timer shows
+  // how long the tool has actually been running, not how long since we learned
+  // about it.
+  function fetchRuns() {
+    const app = document.getElementById('app');
+    const sess = app ? app.dataset.session : null;
+    if (!sess) return;
+    fetch('/api/sessions/' + encodeURIComponent(sess) + '/runs')
+      .then(resp => resp.ok ? resp.json() : null)
+      .then(data => {
+        if (!data || !data.runs || data.runs.length === 0) return;
+        const now = data.now || Date.now();
+        for (const run of data.runs) {
+          const el = ensureToolResult(run.call_id);
+          if (el._done) continue; // already finished on this client
+          el._run = {
+            name: run.name || '',
+            args: argsSnippet(run.arguments),
+            receivedAt: Date.now() - (now - run.started_at),
+          };
+          el._startedAt = run.started_at || 0;
+          // Reconcile the partial output to the server's authoritative
+          // accumulated text, filling any deltas missed while disconnected.
+          el._result = run.output || '';
+          updateToolResult(el);
+          startToolTimer();
+        }
+      });
   }
 
   function finalizeAssistant(m, html) {
