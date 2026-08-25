@@ -364,6 +364,38 @@
     return s < 10 ? s.toFixed(1) + 's' : Math.round(s) + 's';
   }
 
+  // findToolOwner returns the assistant message that owns the most recent batch
+  // of tool calls — the last assistant message that carries a .tool-call block.
+  // A result belongs next to the call that requested it, and because the agent
+  // runs tools sequentially (each batch's results are committed before the next
+  // assistant reply), in-flight results always belong to the latest such
+  // message. This works for both the live stream and history after a /view
+  // render, so live placement matches reload placement.
+  function findToolOwner() {
+    const assistants = chat.querySelectorAll('.msg-assistant');
+    for (let i = assistants.length - 1; i >= 0; i--) {
+      if (assistants[i].querySelector('.tool-call')) return assistants[i];
+    }
+    return null;
+  }
+
+  // insertToolResult places a result block as a sibling immediately after its
+  // owning assistant message — and after any earlier results of the same batch
+  // — so results render in completion order right under the call, matching the
+  // /view history layout. Falls back to appending at the chat root only if no
+  // owner is found (e.g. a replay with no live assistant copy).
+  function insertToolResult(el) {
+    const owner = findToolOwner();
+    if (!owner) { chat.appendChild(el); return; }
+    let point = owner;
+    let nxt = owner.nextElementSibling;
+    while (nxt && nxt.classList.contains('tool-result')) {
+      point = nxt;
+      nxt = nxt.nextElementSibling;
+    }
+    point.insertAdjacentElement('afterend', el);
+  }
+
   // ensureToolResult returns the <details class="tool-result"> element for a
   // streamed call, creating it on first sight of that call_id. Deltas append to
   // the same element, so a result renders once and fills in as output streams.
@@ -380,7 +412,7 @@
     el._done = false;
     el._run = null;
     el.innerHTML = '<summary class="tool-result-name"></summary><pre><code class="tool-result-body"></code></pre>';
-    chat.appendChild(el);
+    insertToolResult(el);
     liveToolResults.set(callID, el);
     renderedToolResults.add(callID);
     return el;
@@ -545,7 +577,10 @@
           const details = document.createElement('details');
           details.className = 'tool-result';
           details.innerHTML = '<summary>tool result</summary><pre><code>' + escapeHTML(m.content).replace(/\n/g, '<br>') + '</code></pre>';
-          chat.appendChild(details);
+          // Position the replayed result right after its owning assistant
+          // message, matching /view's history layout (live placement already
+          // does this via insertToolResult).
+          insertToolResult(details);
           hadNewContent = true;
         }
         break;
