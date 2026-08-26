@@ -26,4 +26,4 @@ Web UI — Task Breakdown
 - ~~**Connection status indicators** — show whether the SSE stream is connected, whether a turn is running, queue depth.~~ *(done: Step 6)*
 - ~~**Mobile-responsive layout** — the README emphasizes "chat from any device." Fluid layout, touch-friendly input.~~ *(done: Step 7)*
 - **Auth** — single-user token, gate the whole UI behind it. Defer until the UI is useful.
-- **Persistent sessions** — tie into the SQLite-backed history roadmap item so sessions survive server restarts.
+- ~~**Persistent sessions** — tie into the SQLite-backed history roadmap item so sessions survive server restarts.~~ *(done: the server persists every session — creation time, full committed history incl. tool timing/reasoning/tool calls, and the bus position — to `porter.db` via SQLite and loads it back on startup, so sessions, the sidebar list, `/view`, and SSE resume all survive restarts. Committed state is written DB-first and fail-fast; in-memory state is limited to transient/rebuildable caches. Verified by `TestRestartPersistsSessionState` and `TestRestartPersistsReasoning`.)*

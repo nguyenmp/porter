@@ -57,6 +57,10 @@ We build and run through Docker so the pinned Go version is used for portable de
 3. `make server` — starts the server (owns the LLM connection + tool execution) in one terminal
 4. `make repl` — starts the interactive REPL client in another, or `make run PROMPT="say hi"` for one-shot
 
+### Persisted sessions
+
+The server owns conversation state, and since the SQLite-backed history roadmap item it persists every session — its creation time, full committed history (including tool timing, reasoning, and tool calls), and the bus position clients resume from — to a SQLite database at `porter.db` in the working directory. When running via `make server` (which mounts the repo at `/app`) or `porter-macos` from the repo, the file lands in the repo and is gitignored, exactly like `porter.log`. Because committed state lives in the database, sessions survive server restarts: a restarted server loads them back and the sidebar, `/view`, and SSE resume all keep working.
+
 ### Quiet REPL logs
 
 In the REPL the human-readable conversation goes to stdout while the structured JSONL event stream (plus progress lines) goes to stderr. When run interactively through a container, both land on the same terminal and the JSONL can get noisy. Set `PORTER_LOG=/path/to/porter.log` in `.env` to redirect that stream to a file instead — the REPL then only prints the conversation. When running via `make shell` (which mounts the repo at `/app`), a relative path like `porter.log` is written into the repo and gitignored.
@@ -89,7 +93,7 @@ General pain points:
 
 ## Technical decisions
 
-- **Tech stack:** Go with Chi server + HTMX directly, SQLite (start with JSONL). Minimal dependencies.
+- **Tech stack:** Go with Chi server + HTMX directly, SQLite (via the pure-Go `modernc.org/sqlite` driver, keeping the static build). Minimal dependencies.
 - **Models:** support OpenAI-compatible APIs. I already run a LiteLLM proxy and have OpenRouter access.
 - **Permissions:** YOLO for now.
 - **Auth:** only when needed; single-user.
@@ -117,7 +121,7 @@ Terms used throughout this README, grouped by the part of the system they belong
 
 ### The server (state + bus)
 
-- **History** — the raw, append-only, full-fidelity record of everything committed in a session. Ground truth; never rewritten in place. *(Planned: persisted to SQLite.)*
+- **History** — the raw, append-only, full-fidelity record of everything committed in a session, persisted to SQLite. Ground truth; never rewritten in place.
 - **Queue** — the server's per-session to-do list of user messages; worked through one turn at a time, in order.
 - **Bus / event log** — the ordered stream a subscriber watches. Committed messages and turn markers are logged for replay in the same order History is built; live Events and tool results stream on top, real-time only.
 - **Envelope** — one line on the bus; the union of everything a subscriber can receive: an Event, a tool result, a committed message, a turn completion, or a resync signal.
@@ -142,7 +146,7 @@ Build order:
 - [x] 3. Tool-call shell (file edits + network calls)
 - [x] 4. Server-owned conversation state (stateless clients poll history and subscribe to an event bus; commands instead of full-history resubmission)
 - [ ] Web UI (render from history poll + event bus, send commands)
-- [ ] SQLite-backed history (persist the server-owned session state)
+- [x] SQLite-backed history (persist the server-owned session state)
 - [ ] Handoff / async execution
 - [ ] Metrics & performance (tokens/sec, tool timing, worktree cache)
 - [ ] Token cost management (`tool_output` trimming, `read_output`, budget before send)
