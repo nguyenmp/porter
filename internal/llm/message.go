@@ -23,6 +23,14 @@ type ChatMessage struct {
 	// in-memory history to render reload timing.
 	StartedAt  int64 `json:"-"`
 	FinishedAt int64 `json:"-"`
+	// Cancelled reports that a tool run was aborted by the user before it
+	// completed. It is set on the committed role-"tool" message so history (and
+	// /view) can render the result as cancelled rather than a normal exit.
+	// Unlike StartedAt/FinishedAt it IS serialized (json:"cancelled,omitempty")
+	// so the SSE replay of the committed message carries it to a reconnecting
+	// client, and so the model knows on the next turn that the previous run was
+	// aborted. It only appears when true.
+	Cancelled bool `json:"cancelled,omitempty"`
 }
 
 // ToolCall is a request the assistant made to run a named tool. Arguments is

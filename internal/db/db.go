@@ -22,7 +22,7 @@ var ErrNotFound = errors.New("db: session not found")
 
 // schemaVersion is the current schema revision, tracked in PRAGMA user_version.
 // Bump it and extend migrate when the schema changes.
-const schemaVersion = 1
+const schemaVersion = 2
 
 // DB wraps the SQLite database handle. It deliberately uses a single
 // connection: pragmas like foreign_keys are per-connection, and a single
@@ -106,6 +106,17 @@ CREATE INDEX IF NOT EXISTS idx_sessions_created ON sessions(created_at DESC, id 
 			return fmt.Errorf("set user_version: %w", err)
 		}
 	}
+	if v < 2 {
+		// v2: the `cancelled` flag on committed tool messages, so a run aborted
+		// by the user survives a reload as "cancelled" rather than a plain exit.
+		const ddl = "ALTER TABLE messages ADD COLUMN cancelled INTEGER NOT NULL DEFAULT 0"
+		if _, err := d.db.Exec(ddl); err != nil {
+			return fmt.Errorf("apply schema v2: %w", err)
+		}
+		if _, err := d.db.Exec("PRAGMA user_version=2"); err != nil {
+			return fmt.Errorf("set user_version: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -136,6 +147,14 @@ type Summary struct {
 	FirstUser string
 }
 
+// boolInt converts a Go bool to the 0/1 integer SQLite stores booleans as.
+func boolInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
 // CreateSession inserts a new session and returns its database id (the numeric
 // part of the "session_<id>" identifier the store exposes).
 func (d *DB) CreateSession(createdAt int64) (int64, error) {
@@ -158,9 +177,9 @@ func (d *DB) AppendMessage(sessionID int64, m Message) error {
 		return fmt.Errorf("marshal tool calls: %w", err)
 	}
 	_, err = d.db.Exec(
-		`INSERT INTO messages (session_id, seq, role, content, reasoning, tool_call_id, tool_calls, started_at, finished_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		sessionID, m.Seq, m.Role, m.Content, m.Reasoning, m.ToolCallID, string(calls), m.StartedAt, m.FinishedAt,
+		`INSERT INTO messages (session_id, seq, role, content, reasoning, tool_call_id, tool_calls, started_at, finished_at, cancelled)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		sessionID, m.Seq, m.Role, m.Content, m.Reasoning, m.ToolCallID, string(calls), m.StartedAt, m.FinishedAt, boolInt(m.Cancelled),
 	)
 	if err != nil {
 		return fmt.Errorf("insert message: %w", err)
@@ -180,7 +199,7 @@ func (d *DB) LoadSession(id int64) (Session, error) {
 		return Session{}, fmt.Errorf("load session %d: %w", id, err)
 	}
 	rows, err := d.db.Query(
-		`SELECT seq, role, content, reasoning, tool_call_id, tool_calls, started_at, finished_at
+		`SELECT seq, role, content, reasoning, tool_call_id, tool_calls, started_at, finished_at, cancelled
 		 FROM messages WHERE session_id = ? ORDER BY seq ASC`, id)
 	if err != nil {
 		return Session{}, fmt.Errorf("load messages for %d: %w", id, err)
@@ -189,9 +208,11 @@ func (d *DB) LoadSession(id int64) (Session, error) {
 	for rows.Next() {
 		var m Message
 		var calls string
-		if err := rows.Scan(&m.Seq, &m.Role, &m.Content, &m.Reasoning, &m.ToolCallID, &calls, &m.StartedAt, &m.FinishedAt); err != nil {
+		var cancelled int
+		if err := rows.Scan(&m.Seq, &m.Role, &m.Content, &m.Reasoning, &m.ToolCallID, &calls, &m.StartedAt, &m.FinishedAt, &cancelled); err != nil {
 			return Session{}, fmt.Errorf("scan message: %w", err)
 		}
+		m.Cancelled = cancelled != 0
 		if calls != "" {
 			if err := json.Unmarshal([]byte(calls), &m.ToolCalls); err != nil {
 				return Session{}, fmt.Errorf("decode tool calls for seq %d: %w", m.Seq, err)
