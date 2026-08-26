@@ -187,6 +187,10 @@
   // an error block. Turn-completion markers are also replayed on reconnect,
   // so remember which marker seqs we've shown to avoid duplicating the block.
   const renderedTurnErrors = new Set();
+  // Successful turns report their per-turn token totals (the REPL's "(N in,
+  // M out tokens)" line). Like errors, the completion marker replays on
+  // reconnect, so dedup the rendered token line by seq too.
+  const renderedTurnTokens = new Set();
 
   // --- Reasoning blocks ---
   // Reasoning is collapsed by default to a single no-wrap row showing only the
@@ -927,6 +931,17 @@
           errDiv.innerHTML = '<span class="msg-role">error</span><div class="msg-content">' +
             escapeHTML(env.error).replace(/\n/g, '<br>') + '</div>';
           chat.appendChild(errDiv);
+          hadNewContent = true;
+        } else if ((env.input > 0 || env.output > 0) && !(env.seq && renderedTurnTokens.has(env.seq))) {
+          // A successful turn reports its per-turn token totals, mirroring the
+          // REPL's "(N in, M out tokens)" line, so the web UI surfaces the
+          // usage the bus now carries. Dedup by seq like errors (the marker
+          // replays on reconnect).
+          if (env.seq) renderedTurnTokens.add(env.seq);
+          const tokDiv = document.createElement('div');
+          tokDiv.className = 'token-line';
+          tokDiv.textContent = '(' + env.input + ' in, ' + env.output + ' out tokens)';
+          chat.appendChild(tokDiv);
           hadNewContent = true;
         }
         updateStatus();
