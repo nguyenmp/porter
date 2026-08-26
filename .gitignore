@@ -12,3 +12,8 @@ porter.log
 
 # Editors / OS
 .DS_Store
+
+# SQLite database (server-owned session state; see PORTER_DB)
+porter.db
+porter.db-wal
+porter.db-shm

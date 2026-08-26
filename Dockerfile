@@ -2,7 +2,8 @@
 FROM golang:1.26.6-alpine AS build
 WORKDIR /src
 COPY . ./
-# No go.sum yet: porter has no third-party dependencies beyond the stdlib.
+# Dependencies (chi, goldmark, modernc.org/sqlite) are vendored by go mod
+# download; modernc.org/sqlite is pure Go so CGO_ENABLED=0 stays static.
 # CGO_ENABLED=0 forces a static binary so the alpine runtime has no libc deps.
 RUN CGO_ENABLED=0 go build -o /porter ./cmd/porter
 
