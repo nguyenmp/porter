@@ -19,6 +19,17 @@ type chatRequest struct {
 	Messages []ChatMessage `json:"messages"`
 	Tools    []Tool        `json:"tools,omitempty"`
 	Stream   bool          `json:"stream"`
+	// StreamOptions requests the provider's token usage on the final streamed
+	// chunk. OpenAI-compatible providers (and LiteLLM in front of them) omit
+	// `usage` from a streaming response unless include_usage is set, so without
+	// it turn metadata can never report input/output token counts.
+	StreamOptions *streamOptions `json:"stream_options,omitempty"`
+}
+
+// streamOptions is the Chat Completions stream_options payload. IncludeUsage
+// asks the provider to send a final chunk carrying the round-trip token usage.
+type streamOptions struct {
+	IncludeUsage bool `json:"include_usage"`
 }
 
 // Client makes streaming Chat Completions requests.
@@ -59,10 +70,11 @@ func (c *Client) After() io.Closer {
 // to the model so it may respond with tool calls.
 func (c *Client) Stream(ctx context.Context, messages []ChatMessage, tools []Tool) (io.ReadCloser, error) {
 	body, err := json.Marshal(chatRequest{
-		Model:    c.cfg.Model,
-		Messages: messages,
-		Tools:    tools,
-		Stream:   true,
+		Model:         c.cfg.Model,
+		Messages:      messages,
+		Tools:         tools,
+		Stream:        true,
+		StreamOptions: &streamOptions{IncludeUsage: true},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
