@@ -147,8 +147,9 @@ func TestRunTurnOnMessage(t *testing.T) {
 	client := llm.NewClient(cfg, nil)
 
 	var got []llm.ChatMessage
-	res, err := RunTurn(context.Background(), client, []llm.ChatMessage{llm.UserMessage("run it")}, tools.NewDispatcher(), nil, func(m llm.ChatMessage) {
+	res, err := RunTurn(context.Background(), client, []llm.ChatMessage{llm.UserMessage("run it")}, tools.NewDispatcher(), nil, func(m llm.ChatMessage) error {
 		got = append(got, m)
+		return nil
 	})
 	if err != nil {
 		t.Fatalf("RunTurn: %v", err)

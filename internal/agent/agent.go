@@ -46,15 +46,21 @@ type TurnResult struct {
 // conversation state can commit each message as it completes (rather than only
 // receiving the assembled history at the end). The loop does no rendering;
 // presentation is the caller's job.
-func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage, js tools.Provider, emit func(api.Envelope), onMessage func(llm.ChatMessage)) (TurnResult, error) {
+func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage, js tools.Provider, emit func(api.Envelope), onMessage func(llm.ChatMessage) error) (TurnResult, error) {
 	res := TurnResult{History: history}
 	// commit appends a finished message to the turn result and, when set,
 	// streams it out so callers can commit each message the moment it's done.
-	commit := func(m llm.ChatMessage) {
+	// A failing onMessage aborts the whole turn: the caller (the session store)
+	// persists each committed message first and treats a persist failure as a
+	// server fault, so there is no point continuing to run the turn.
+	commit := func(m llm.ChatMessage) error {
 		res.History = append(res.History, m)
 		if onMessage != nil {
-			onMessage(m)
+			if err := onMessage(m); err != nil {
+				return err
+			}
 		}
+		return nil
 	}
 
 	for {
@@ -111,11 +117,15 @@ func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage,
 
 		if len(calls) == 0 {
 			res.Text = reply.String()
-			commit(llm.AssistantMessage(res.Text, reasoning, nil))
+			if err := commit(llm.AssistantMessage(res.Text, reasoning, nil)); err != nil {
+				return res, err
+			}
 			return res, nil
 		}
 
-		commit(llm.AssistantMessage(reply.String(), reasoning, toLLMCalls(calls)))
+		if err := commit(llm.AssistantMessage(reply.String(), reasoning, toLLMCalls(calls))); err != nil {
+			return res, err
+		}
 		for _, c := range calls {
 			stream, err := js.Run(ctx, c.Name, []byte(c.Arguments))
 			if err != nil {
@@ -125,7 +135,9 @@ func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage,
 				if emit != nil {
 					emit(api.Envelope{Kind: api.KindToolResult, ToolCallID: c.ID, Name: c.Name, Arguments: c.Arguments, Result: result})
 				}
-				commit(llm.ToolResult(c.ID, result))
+				if err := commit(llm.ToolResult(c.ID, result)); err != nil {
+					return res, err
+				}
 				continue
 			}
 			// The tool is now running. Broadcast the start with the server's
@@ -176,7 +188,9 @@ func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage,
 			m := llm.ToolResult(c.ID, result.String())
 			m.StartedAt = startedAt
 			m.FinishedAt = finishedAt
-			commit(m)
+			if err := commit(m); err != nil {
+				return res, err
+			}
 		}
 	}
 }

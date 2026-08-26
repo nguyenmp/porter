@@ -20,6 +20,7 @@ import (
 
 	"porter/internal/api"
 	"porter/internal/config"
+	"porter/internal/db"
 	"porter/internal/llm"
 	mdr "porter/internal/render"
 	"porter/internal/session"
@@ -144,18 +145,36 @@ type Server struct {
 }
 
 // New validates cfg and builds a Server with its own LLM client and session
-// store. Each session resolves its own execution provider at runtime,
-// defaulting to local execution.
+// store, opening the server-owned session database at porter.db in the working
+// directory and loading every persisted session so history, the session list,
+// and bus positions survive restarts. Each session resolves its own execution
+// provider at runtime, defaulting to local execution.
 func New(cfg config.Config) (*Server, error) {
+	return newServer(cfg, "porter.db")
+}
+
+// newServer is New with an explicit database path, so tests (and future
+// configuration) can point the server at a database other than ./porter.db.
+func newServer(cfg config.Config, dbPath string) (*Server, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
-	return &Server{
-		addr:   cfg.Addr,
-		client: llm.NewClient(cfg, nil),
-		store:  session.NewStore(),
-	}, nil
+	d, err := db.Open(dbPath)
+	if err != nil {
+		return nil, err
+	}
+	client := llm.NewClient(cfg, nil)
+	store := session.NewStore(d)
+	if err := store.Load(client); err != nil {
+		_ = d.Close()
+		return nil, fmt.Errorf("load persisted sessions: %w", err)
+	}
+	return &Server{addr: cfg.Addr, client: client, store: store}, nil
 }
+
+// Close stops the session schedulers and closes the session database. It is
+// used on shutdown and by tests that simulate a restart.
+func (s *Server) Close() { s.store.Close() }
 
 // ListenAndServe serves the API until the process stops.
 func (s *Server) ListenAndServe() error {
@@ -205,7 +224,11 @@ func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
 
 // handleCreate makes a new session and returns its id, history, and resume seq.
 func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
-	ses := s.store.Create(s.client)
+	ses, err := s.store.Create(s.client)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	snap := ses.Snapshot()
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(api.SessionInfo{

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -32,17 +33,32 @@ func plainLLM() http.HandlerFunc {
 	}
 }
 
-// newTestServer stands up a real porter server backed by the given fake LLM.
+// newTestServer stands up a real porter server backed by the given fake LLM
+// and its own temporary SQLite database (so tests never share or pollute the
+// working-directory porter.db).
 func newTestServer(t *testing.T, llmHandler http.HandlerFunc) *httptest.Server {
 	t.Helper()
+	_, ts := startServerDB(t, filepath.Join(t.TempDir(), "porter.db"), llmHandler)
+	return ts
+}
+
+// startServerDB stands up a porter server on a specific database path and
+// returns both the backing *Server (so a test can Close it to simulate a
+// restart) and its HTTP endpoint. Both are cleaned up when the test ends.
+func startServerDB(t *testing.T, dbPath string, llmHandler http.HandlerFunc) (*Server, *httptest.Server) {
+	t.Helper()
 	llmSrv := httptest.NewServer(llmHandler)
-	s, err := New(config.Config{BaseURL: llmSrv.URL + "/v1", Model: "m", APIKey: "k"})
+	s, err := newServer(config.Config{BaseURL: llmSrv.URL + "/v1", Model: "m", APIKey: "k"}, dbPath)
 	if err != nil {
-		t.Fatalf("New: %v", err)
+		t.Fatalf("newServer: %v", err)
 	}
 	ts := httptest.NewServer(s.Handler())
-	t.Cleanup(func() { ts.Close(); llmSrv.Close() })
-	return ts
+	t.Cleanup(func() {
+		s.Close()
+		ts.Close()
+		llmSrv.Close()
+	})
+	return s, ts
 }
 
 // runOneTurn creates a session, appends a user message, subscribes until the
@@ -1419,5 +1435,184 @@ func TestReasoningPersistsAcrossReload(t *testing.T) {
 	}
 	if !strings.Contains(s, "The answer") {
 		t.Errorf("/view missing the answer content:\n%s", s)
+	}
+}
+
+// TestRestartPersistsSessionState is the persistence proof: run a tool turn on
+// one server, shut it down (stopping its schedulers and closing its database),
+// boot a fresh server on the same database, and verify the session, its full
+// committed history (tool call + result + timing + reasoning), the /view
+// render, the sidebar list, and the SSE resume position all survive.
+func TestRestartPersistsSessionState(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "porter.db")
+
+	// --- Server 1: run a tool turn that ends with a plain reply. ---
+	srv1, ts1 := startServerDB(t, dbPath, toolThenReplyLLM())
+	c1 := client.New(ts1.URL)
+	ctx1, cancel1 := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel1()
+
+	info, err := c1.Create(ctx1)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if !strings.HasPrefix(info.ID, "session_") {
+		t.Errorf("session id = %q, want session_<n>", info.ID)
+	}
+	if err := c1.Append(ctx1, info.ID, "run it"); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	if err := c1.Subscribe(ctx1, info.ID, info.Seq, nil, func(env api.Envelope) bool {
+		return env.Kind == api.KindTurnDone
+	}); err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	srv1.Close() // stop schedulers + close the database: the process "restarts"
+
+	// --- Server 2: same database, everything must be back. ---
+	_, ts2 := startServerDB(t, dbPath, plainLLM())
+	c2 := client.New(ts2.URL)
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel2()
+
+	// Sidebar list: the session is present with the persisted preview.
+	resp, err := http.Get(ts2.URL + api.SessionsPath)
+	if err != nil {
+		t.Fatalf("GET list: %v", err)
+	}
+	defer resp.Body.Close()
+	var list api.SessionsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	if len(list.Sessions) != 1 {
+		t.Fatalf("list after restart = %+v, want 1 session", list.Sessions)
+	}
+	if list.Sessions[0].ID != info.ID {
+		t.Errorf("session id after restart = %q, want %q", list.Sessions[0].ID, info.ID)
+	}
+	if list.Sessions[0].Preview != "run it" {
+		t.Errorf("preview after restart = %q, want %q", list.Sessions[0].Preview, "run it")
+	}
+
+	// History: the full conversation, with tool calls and reasoning intact.
+	h, err := c2.History(ctx2, info.ID)
+	if err != nil {
+		t.Fatalf("History after restart: %v", err)
+	}
+	if len(h.History) != 4 {
+		t.Fatalf("history after restart len = %d, want 4: %+v", len(h.History), h.History)
+	}
+	if h.History[0].Role != "user" || h.History[0].Content != "run it" {
+		t.Errorf("history[0] = %+v, want user 'run it'", h.History[0])
+	}
+	if h.History[1].Role != "assistant" || len(h.History[1].ToolCalls) != 1 {
+		t.Fatalf("history[1] = %+v, want assistant with a tool call", h.History[1])
+	}
+	if h.History[1].ToolCalls[0].Function.Name != "shell" || !strings.Contains(h.History[1].ToolCalls[0].Function.Arguments, "echo hi") {
+		t.Errorf("history[1] tool call = %+v, want shell + echo hi args", h.History[1].ToolCalls[0])
+	}
+	if h.History[2].Role != "tool" || h.History[2].ToolCallID != "c1" ||
+		!strings.Contains(h.History[2].Content, "hi") || !strings.Contains(h.History[2].Content, "exit code: 0") {
+		t.Errorf("history[2] = %+v, want the tool result", h.History[2])
+	}
+	if h.History[3].Role != "assistant" || !strings.Contains(h.History[3].Content, "done") {
+		t.Errorf("history[3] = %+v, want the final reply", h.History[3])
+	}
+
+	// /view renders the tool call context, exit status, and a server-derived
+	// duration — the tool timing (started/finished) survived as real columns.
+	viewResp, err := http.Get(ts2.URL + "/api/sessions/" + info.ID + "/view")
+	if err != nil {
+		t.Fatalf("GET view: %v", err)
+	}
+	defer viewResp.Body.Close()
+	vbody, _ := io.ReadAll(viewResp.Body)
+	view := string(vbody)
+	for _, want := range []string{
+		`tool call: shell`,
+		`tool result: shell`,
+		`echo hi`,
+		`exit_code: 0 · `,
+		`title="`,
+	} {
+		if !strings.Contains(view, want) {
+			t.Errorf("view after restart missing %q:\n%s", want, view)
+		}
+	}
+
+	// SSE resume: subscribing from the persisted seq streams the NEXT turn with
+	// no gap — no resync, no replay of the old commits — proving the bus
+	// position survived. (Timing/started_at are json:"-" so they don't appear in
+	// the history API; /view above proves they survived.)
+	if err := c2.Append(ctx2, info.ID, "again"); err != nil {
+		t.Fatalf("Append after restart: %v", err)
+	}
+	var envs []api.Envelope
+	if err := c2.Subscribe(ctx2, info.ID, h.Seq, func(env api.Envelope) { envs = append(envs, env) },
+		func(env api.Envelope) bool { return env.Kind == api.KindTurnDone }); err != nil {
+		t.Fatalf("Subscribe after restart: %v", err)
+	}
+	if len(envs) == 0 {
+		t.Fatal("resumed stream produced no envelopes")
+	}
+	for _, env := range envs {
+		if env.Kind == api.KindResync {
+			t.Errorf("resumed stream resynced (bus position lost); got %+v", envs)
+		}
+	}
+	var sawNewUser bool
+	for _, env := range envs {
+		if env.Kind == api.KindMessage && env.Message != nil && env.Message.Role == "user" && env.Message.Content == "again" {
+			sawNewUser = true
+		}
+	}
+	if !sawNewUser {
+		t.Errorf("resumed stream missing the new user message; got %+v", envs)
+	}
+}
+
+// TestRestartPersistsReasoning locks in the restart guarantee for reasoning
+// blocks: a reasoning-capable turn committed to one server is re-rendered by
+// /view identically after a restart on the same database.
+func TestRestartPersistsReasoning(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "porter.db")
+
+	srv1, ts1 := startServerDB(t, dbPath, reasoningLLM())
+	c1 := client.New(ts1.URL)
+	ctx1, cancel1 := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel1()
+	info, err := c1.Create(ctx1)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := c1.Append(ctx1, info.ID, "think"); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	if err := c1.Subscribe(ctx1, info.ID, info.Seq, nil, func(env api.Envelope) bool {
+		return env.Kind == api.KindTurnDone
+	}); err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	srv1.Close()
+
+	_, ts2 := startServerDB(t, dbPath, reasoningLLM())
+
+	resp, err := http.Get(ts2.URL + "/api/sessions/" + info.ID + "/view")
+	if err != nil {
+		t.Fatalf("GET view: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	s := string(body)
+	for _, want := range []string{
+		`class="reasoning"`,
+		`data-reasoning="let me think`,
+		"step two",
+		"The answer",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("view after restart missing %q:\n%s", want, s)
+		}
 	}
 }

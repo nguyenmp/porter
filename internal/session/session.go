@@ -10,6 +10,7 @@ package session
 import (
 	"context"
 	"fmt"
+	"log"
 	"sort"
 	"strings"
 	"sync"
@@ -17,6 +18,7 @@ import (
 
 	"porter/internal/agent"
 	"porter/internal/api"
+	"porter/internal/db"
 	"porter/internal/llm"
 	"porter/internal/render"
 	"porter/internal/tools"
@@ -30,37 +32,69 @@ const logEventsMax = 256
 // turn's envelopes as an HTTP handler drains it.
 const subBuffer = 64
 
-// Store owns the live set of sessions. It serializes id allocation and lookup,
-// but each session serializes its own history writes. Sessions' schedules run on
-// the store's context, which should outlive any single request (the session
-// server's lifetime).
+// Persister is the durable backing for a session's committed state. The store
+// writes every commit here first (fail-fast, so the database can never fall
+// behind what the bus has told subscribers) and reads history, the session
+// list, and startup state back from it. In-memory state is limited to
+// transient or rebuildable caches: the replay ring buffer, the queue, and
+// in-flight tool runs. *db.DB implements this interface.
+type Persister interface {
+	// CreateSession inserts a session and returns its numeric row id, the
+	// numeric part of the "session_<id>" identifier the store exposes.
+	CreateSession(createdAt int64) (int64, error)
+	// AppendMessage writes one committed message with its bus position (seq).
+	AppendMessage(sessionID int64, m db.Message) error
+	// LoadSession returns a session's full persisted state: its creation time,
+	// every committed message in seq order, and the highest seq written.
+	LoadSession(id int64) (db.Session, error)
+	// ListSessions returns every session, newest first, with the raw content of
+	// each session's first user message (the sidebar preview source).
+	ListSessions() ([]db.Summary, error)
+}
+
+// Store owns the live set of sessions. Sessions are created by persisting a
+// row (the database is the id allocator and the source of truth), and their
+// committed history and bus position come from the persister. Each session
+// serializes its own history writes. Sessions' schedules run on the store's
+// context, which should outlive any single request (the session server's
+// lifetime).
 type Store struct {
 	ctx      context.Context
+	cancel   context.CancelFunc
 	mu       sync.Mutex
-	next     int
+	persist  Persister
 	sessions map[string]*Session
 }
 
-// NewStore returns an empty store. Pass a context to bind the session schedules'
-// lifetime to it; otherwise they live for the process lifetime.
-func NewStore(ctxs ...context.Context) *Store {
+// NewStore returns an empty store backed by persist. Pass a context to bind the
+// session schedules' lifetime to it; otherwise they live for the process
+// lifetime.
+func NewStore(persist Persister, ctxs ...context.Context) *Store {
 	ctx := context.Background()
 	if len(ctxs) > 0 {
 		ctx = ctxs[0]
 	}
-	return &Store{ctx: ctx, sessions: map[string]*Session{}}
+	ctx, cancel := context.WithCancel(ctx)
+	return &Store{ctx: ctx, cancel: cancel, persist: persist, sessions: map[string]*Session{}}
 }
 
-// Create makes a new session and starts its turn scheduler.
-func (st *Store) Create(client *llm.Client) *Session {
+// Create makes a new session and starts its turn scheduler. The session is
+// persisted before it exists in memory: the row id becomes the numeric part of
+// the public "session_<id>" identifier, and an insert failure is returned so
+// the caller can surface it as a server fault.
+func (st *Store) Create(client *llm.Client) (*Session, error) {
+	now := time.Now().UnixMilli()
+	dbID, err := st.persist.CreateSession(now)
+	if err != nil {
+		return nil, fmt.Errorf("create session: %w", err)
+	}
+	id := fmt.Sprintf("session_%d", dbID)
+	s := newSession(id, client, nil, st.persist, dbID, now)
 	st.mu.Lock()
-	st.next++
-	id := fmt.Sprintf("sess-%d", st.next)
-	s := newSession(id, client, nil)
 	st.sessions[id] = s
 	st.mu.Unlock()
 	go s.loop(st.ctx)
-	return s
+	return s, nil
 }
 
 // Get returns the session with the given id and whether it exists.
@@ -71,39 +105,58 @@ func (st *Store) Get(id string) (*Session, bool) {
 	return ses, ok
 }
 
-// List returns a summary of every live session, newest first. It is what the
-// web sidebar renders; SQLite persistence will later make this survive
-// restarts. The server is the single writer, so the snapshot is a point-in-time
-// view and callers never race a turn.
+// List returns a summary of every session, newest first, read from the
+// persister. It is what the web sidebar renders; because every session lives in
+// the persister, the list survives restarts unchanged. The preview is derived
+// from the persisted first user message.
 func (st *Store) List() []api.SessionSummary {
-	st.mu.Lock()
-	sessions := make([]*Session, 0, len(st.sessions))
-	for _, ses := range st.sessions {
-		sessions = append(sessions, ses)
+	summaries, err := st.persist.ListSessions()
+	if err != nil {
+		log.Printf("list sessions: %v", err)
+		return []api.SessionSummary{}
 	}
-	st.mu.Unlock()
-	out := make([]api.SessionSummary, 0, len(sessions))
-	for _, ses := range sessions {
-		out = append(out, ses.Summary())
+	out := make([]api.SessionSummary, 0, len(summaries))
+	for _, s := range summaries {
+		out = append(out, api.SessionSummary{
+			ID:        fmt.Sprintf("session_%d", s.ID),
+			CreatedAt: s.CreatedAt,
+			Preview:   previewOf(s.FirstUser),
+		})
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt > out[j].CreatedAt })
 	return out
 }
 
-// Summary describes a session for the list view: its id, creation time, and a
-// short single-line preview of the first user message (empty when the session
-// has no messages yet).
-func (s *Session) Summary() api.SessionSummary {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	var preview string
-	for _, m := range s.history {
-		if m.Role == "user" {
-			preview = previewOf(m.Content)
-			break
-		}
+// Load rebuilds the live session set from the persister: one Session per row,
+// reconstructing each session's history, replay buffer, and bus position. It is
+// called once at startup, before the server starts serving.
+func (st *Store) Load(client *llm.Client) error {
+	summaries, err := st.persist.ListSessions()
+	if err != nil {
+		return fmt.Errorf("load sessions: %w", err)
 	}
-	return api.SessionSummary{ID: s.id, CreatedAt: s.createdAt, Preview: preview}
+	for _, sm := range summaries {
+		ps, err := st.persist.LoadSession(sm.ID)
+		if err != nil {
+			return fmt.Errorf("load session %d: %w", sm.ID, err)
+		}
+		id := fmt.Sprintf("session_%d", ps.ID)
+		s := newSession(id, client, nil, st.persist, ps.ID, ps.CreatedAt)
+		s.rebuildFromPersisted(ps)
+		st.mu.Lock()
+		st.sessions[id] = s
+		st.mu.Unlock()
+		go s.loop(st.ctx)
+	}
+	return nil
+}
+
+// Close stops every session scheduler and closes the persister. The server
+// calls it on shutdown; a restarted server reopens the same database.
+func (st *Store) Close() {
+	st.cancel()
+	if c, ok := st.persist.(interface{ Close() error }); ok {
+		_ = c.Close()
+	}
 }
 
 // previewOf shortens the first user message to a single-line sidebar label:
@@ -122,17 +175,25 @@ func previewOf(s string) string {
 
 // Session is one conversation. All state is guarded by mu; the scheduler
 // goroutine owns turn execution.
+//
+// Committed state lives in the persister (the source of truth): history,
+// creation time, and bus position are read back from it, so a restart loses
+// nothing. What stays in memory is transient or rebuildable: the replay ring
+// buffer (a cache rebuilt from the persister at startup), the turn/queue/exec
+// plumbing, and in-flight tool runs. The session is the single writer for its
+// persister rows, so memory and the database cannot diverge.
 type Session struct {
 	id        string
+	dbID      int64 // numeric row id in the persister (the "n" of session_<n>)
 	client    *llm.Client
-	createdAt int64 // server clock at creation; used to order the session list
+	createdAt int64 // creation time from the persister; orders the session list
 
 	mu      sync.Mutex
+	persist Persister
 	js      tools.Provider
 	logSeq  uint64
 	turn    int64
 	running bool // a turn has started but its completion marker is not yet committed
-	history []llm.ChatMessage
 	log     []api.Envelope
 	subs    []chan api.Envelope
 
@@ -162,15 +223,17 @@ type toolRun struct {
 	output    strings.Builder
 }
 
-func newSession(id string, client *llm.Client, js tools.Provider) *Session {
+func newSession(id string, client *llm.Client, js tools.Provider, persist Persister, dbID int64, createdAt int64) *Session {
 	if js == nil {
 		js = tools.NewDispatcher()
 	}
 	return &Session{
 		id:        id,
+		dbID:      dbID,
 		client:    client,
 		js:        js,
-		createdAt: time.Now().UnixMilli(),
+		persist:   persist,
+		createdAt: createdAt,
 		queue:     make(chan string, 16),
 	}
 }
@@ -216,11 +279,16 @@ func (s *Session) runTurn(ctx context.Context, content string) {
 	// queue, so QueueDepth is exactly the backlog).
 	msg := llm.UserMessage(content)
 	env := api.Envelope{Kind: api.KindMessage, Message: &msg, Queue: s.QueueDepth()}
-	s.commitEnv(env)
+	if err := s.commitEnv(env); err != nil {
+		// The turn never started: its user message could not be persisted.
+		// Report the failure on the bus and move on to the next queued message.
+		s.endTurn(api.Envelope{Kind: api.KindTurnDone, TurnID: turnID, Error: err.Error()})
+		return
+	}
 
 	done := api.Envelope{Kind: api.KindTurnDone, TurnID: turnID}
-	res, err := agent.RunTurn(ctx, s.client, s.snapshot(), s.provider(), s.emitLive, func(m llm.ChatMessage) {
-		s.commit(m)
+	res, err := agent.RunTurn(ctx, s.client, s.snapshot(), s.provider(), s.emitLive, func(m llm.ChatMessage) error {
+		return s.commit(m)
 	})
 	if err != nil {
 		done.Error = err.Error()
@@ -257,22 +325,46 @@ func (s *Session) Running() bool {
 }
 
 // Snapshot returns the authoritative committed history and the bus position to
-// resume from.
+// resume from. Both come from the persister in a single read: History is every
+// committed message and Seq is the highest committed message seq, so a client
+// that replays the bus with since=seq gets exactly the messages newer than the
+// returned history — no gap, no overlap.
 func (s *Session) Snapshot() api.SessionHistory {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return api.SessionHistory{
-		History: append([]llm.ChatMessage{}, s.history...),
-		Seq:     s.logSeq,
-	}
+	msgs, maxSeq := s.loadMessages()
+	return api.SessionHistory{History: msgs, Seq: maxSeq}
 }
 
-// commit appends m to the authoritative history, stamps it on the bus log with
-// the next position, and publishes it to every subscriber. For assistant
-// messages it also pre-renders the content to HTML (markdown) and carries it on
-// the envelope, so the SSE client renders the committed copy identically to the
-// /view endpoint rather than approximating it client-side.
-func (s *Session) commit(m llm.ChatMessage) uint64 {
+// snapshot returns the committed history as a slice, seeding the agent's view
+// for one turn. The agent loop reads history exactly once per turn (then
+// extends its own copy), and the persister is the source of truth, so this
+// reads the database rather than a mirror.
+func (s *Session) snapshot() []llm.ChatMessage {
+	msgs, _ := s.loadMessages()
+	return msgs
+}
+
+// loadMessages reads the session's committed history and its highest message
+// seq from the persister in one call.
+func (s *Session) loadMessages() ([]llm.ChatMessage, uint64) {
+	ps, err := s.persist.LoadSession(s.dbID)
+	if err != nil {
+		log.Printf("load session %s: %v", s.id, err)
+		return nil, 0
+	}
+	msgs := make([]llm.ChatMessage, 0, len(ps.Messages))
+	for _, m := range ps.Messages {
+		msgs = append(msgs, m.ChatMessage)
+	}
+	return msgs, ps.MaxSeq
+}
+
+// commit writes m to the persister first (fail-fast: a message that cannot be
+// persisted aborts the turn), then stamps it on the bus log with the next
+// position and publishes it to every subscriber. For assistant messages it also
+// pre-renders the content to HTML (markdown) and carries it on the envelope, so
+// the SSE client renders the committed copy identically to the /view endpoint
+// rather than approximating it client-side.
+func (s *Session) commit(m llm.ChatMessage) error {
 	env := api.Envelope{Kind: api.KindMessage, Message: &m}
 	if m.Role == "assistant" && m.Content != "" {
 		env.MessageHTML = render.Markdown(m.Content)
@@ -281,24 +373,57 @@ func (s *Session) commit(m llm.ChatMessage) uint64 {
 }
 
 // commitEnv is the tail of commit: stamp the envelope with the next bus
-// position, append its message to history, log it for replay, and broadcast it
-// to every subscriber. Splitting it out lets turn start commit a user message
-// with extra metadata (the queue depth) without duplicating the plumbing.
-func (s *Session) commitEnv(env api.Envelope) uint64 {
+// position, write its message to the persister, log it for replay, and
+// broadcast it to every subscriber. Splitting it out lets turn start commit a
+// user message with extra metadata (the queue depth) without duplicating the
+// plumbing.
+//
+// The persister write happens before the in-memory and bus updates so a crash
+// never loses a committed message; on error the caller aborts the turn (the
+// reserved seq is skipped, which is harmless since seqs are monotonic). The
+// scheduler goroutine is the session's single writer, so logSeq is only ever
+// touched here, in endTurn, and at startup load.
+func (s *Session) commitEnv(env api.Envelope) error {
 	s.mu.Lock()
 	s.logSeq++
-	env.Seq = s.logSeq
-	s.history = append(s.history, *env.Message)
+	next := s.logSeq
+	env.Seq = next
+	s.mu.Unlock()
+
+	if err := s.persist.AppendMessage(s.dbID, db.Message{Seq: next, ChatMessage: *env.Message}); err != nil {
+		return fmt.Errorf("persist message: %w", err)
+	}
+
+	s.mu.Lock()
 	s.bufferLocked(env)
 	subs := s.subs
 	s.mu.Unlock()
 	s.sendTo(subs, env)
-	return env.Seq
+	return nil
+}
+
+// rebuildFromPersisted reconstructs the in-memory replay cache for a session
+// loaded from the persister at startup: the ring buffer gets one message
+// envelope per committed message (in seq order, with assistant HTML re-rendered
+// from the stored markdown) and logSeq resumes at the highest message seq so
+// the next commit takes the next position. Turn-completion markers are not
+// persisted, so the rebuilt buffer contains only message commits and the
+// running flag starts false.
+func (s *Session) rebuildFromPersisted(ps db.Session) {
+	s.logSeq = ps.MaxSeq
+	for _, m := range ps.Messages {
+		env := api.Envelope{Kind: api.KindMessage, Message: &m.ChatMessage, Seq: m.Seq}
+		if m.Role == "assistant" && m.Content != "" {
+			env.MessageHTML = render.Markdown(m.Content)
+		}
+		s.bufferLocked(env)
+	}
 }
 
 // endTurn logs and broadcasts a turn-completion marker so late subscribers see
 // it even if the turn finished before they connected, and clears the running
-// flag.
+// flag. The marker is live-only (it is not persisted); a restarted session
+// starts with a clean bus containing only its committed messages.
 func (s *Session) endTurn(env api.Envelope) {
 	s.mu.Lock()
 	s.logSeq++
@@ -488,11 +613,4 @@ func (s *Session) nextTurn() int64 {
 	s.turn++
 	s.running = true
 	return s.turn
-}
-
-// snapshot returns a defensive copy of the committed history.
-func (s *Session) snapshot() []llm.ChatMessage {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return append([]llm.ChatMessage{}, s.history...)
 }

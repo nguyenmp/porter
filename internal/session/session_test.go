@@ -10,6 +10,7 @@ import (
 
 	"porter/internal/api"
 	"porter/internal/config"
+	"porter/internal/db"
 	"porter/internal/llm"
 	"porter/internal/tools"
 )
@@ -18,12 +19,14 @@ import (
 func commitN(t *testing.T, s *Session, prefix string, n int) {
 	t.Helper()
 	for i := 1; i <= n; i++ {
-		s.commit(llm.UserMessage(fmt.Sprintf("%s%d", prefix, i)))
+		if err := s.commit(llm.UserMessage(fmt.Sprintf("%s%d", prefix, i))); err != nil {
+			t.Fatalf("commit %s%d: %v", prefix, i, err)
+		}
 	}
 }
 
 func TestCommitAppendsHistoryAndSeq(t *testing.T) {
-	s := newSession("s", nil, nil)
+	s := newTestSession(t, "s")
 	commitN(t, s, "m", 3)
 	snap := s.Snapshot()
 	if snap.Seq != 3 {
@@ -38,7 +41,7 @@ func TestCommitAppendsHistoryAndSeq(t *testing.T) {
 }
 
 func TestReplayOnlyAfterSince(t *testing.T) {
-	s := newSession("s", nil, nil)
+	s := newTestSession(t, "s")
 	commitN(t, s, "m", 5)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -61,7 +64,7 @@ func TestReplayOnlyAfterSince(t *testing.T) {
 // seq, then commit new messages. Everything committed after the snapshot must
 // arrive with no gap and no overlap.
 func TestResubscribeContinuity(t *testing.T) {
-	s := newTestSession("s")
+	s := newTestSession(t, "s")
 	commitN(t, s, "base", 10)
 	snap := s.Snapshot()
 	if snap.Seq != 10 {
@@ -99,7 +102,7 @@ func TestResubscribeContinuity(t *testing.T) {
 }
 
 func TestResyncWhenBehindBuffer(t *testing.T) {
-	s := newSession("s", nil, nil)
+	s := newTestSession(t, "s")
 	commitN(t, s, "m", logEventsMax+5) // evicts the oldest entries
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -118,7 +121,7 @@ func TestResyncWhenBehindBuffer(t *testing.T) {
 // already finished still sees the terminal marker via replay, so it is not left
 // waiting for a live event it will never get.
 func TestLateSubscriberSeesTurnDone(t *testing.T) {
-	s := newSession("s", nil, nil)
+	s := newTestSession(t, "s")
 	s.commit(llm.UserMessage("hi"))
 	s.commit(llm.AssistantMessage("done", "", nil))
 	s.endTurn(api.Envelope{Kind: api.KindTurnDone, TurnID: 1})
@@ -141,7 +144,7 @@ func TestLateSubscriberSeesTurnDone(t *testing.T) {
 // TestLargeReplayDrains ensures a backlog larger than the channel buffer is
 // replayed to a draining subscriber rather than deadlocking.
 func TestLargeReplayDrains(t *testing.T) {
-	s := newSession("s", nil, nil)
+	s := newTestSession(t, "s")
 	commitN(t, s, "m", 200) // > subBuffer
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -175,8 +178,11 @@ func TestEnqueueRunsTurn(t *testing.T) {
 	nctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	st := NewStore(nctx)
-	s := st.Create(client)
+	st := NewStore(memPersister(t), nctx)
+	s, err := st.Create(client)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
 	s.Enqueue("hello")
 
 	deadline := time.After(5 * time.Second)
@@ -197,13 +203,11 @@ func TestEnqueueRunsTurn(t *testing.T) {
 	}
 }
 
-// TestSetProviderDefaultsToLocal verifies a fresh session resolves to a local
-// provider and can swap to a registered one without racing.
 // TestRunningAndQueueDepth covers the status-indicator primitives directly:
 // a fresh session is idle with an empty queue, and enqueued messages are
 // visible via QueueDepth without waiting for a turn to start.
 func TestRunningAndQueueDepth(t *testing.T) {
-	s := newTestSession("s")
+	s := newTestSession(t, "s")
 	if s.Running() {
 		t.Errorf("fresh session should not report a running turn")
 	}
@@ -219,8 +223,11 @@ func TestRunningAndQueueDepth(t *testing.T) {
 }
 
 func TestSetProviderDefaultsToLocal(t *testing.T) {
-	st := NewStore()
-	s := st.Create(nil)
+	st := NewStore(memPersister(t))
+	s, err := st.Create(nil)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
 
 	p := s.provider()
 	if _, ok := p.(*tools.Dispatcher); !ok {
@@ -234,11 +241,31 @@ func TestSetProviderDefaultsToLocal(t *testing.T) {
 	}
 }
 
-func newTestSession(id string) *Session {
-	return newSession(id, nil, nil)
+// newTestSession returns a Session backed by a real in-memory SQLite database,
+// so commit/Snapshot/From exercise the same persisted path the server runs
+// (DB-first writes, DB-backed reads) without touching disk.
+func newTestSession(t *testing.T, id string) *Session {
+	t.Helper()
+	d := memPersister(t)
+	rowID, err := d.CreateSession(time.Now().UnixMilli())
+	if err != nil {
+		t.Fatalf("create session row: %v", err)
+	}
+	return newSession(id, nil, nil, d, rowID, time.Now().UnixMilli())
+}
+
+// memPersister opens a fresh in-memory SQLite database as a Persister.
+func memPersister(t *testing.T) Persister {
+	t.Helper()
+	d, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open in-memory db: %v", err)
+	}
+	t.Cleanup(func() { d.Close() })
+	return d
 }
 func TestTrackToolRunsForReconnect(t *testing.T) {
-	s := newTestSession("s")
+	s := newTestSession(t, "s")
 
 	// No runs yet.
 	if got := s.Runs(); len(got) != 0 {
