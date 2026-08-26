@@ -3,8 +3,10 @@ package tools
 import (
 	"context"
 	"io"
+	"os/exec"
 	"strings"
 	"testing"
+	"time"
 )
 
 // run executes a tool via a Provider, reading its output stream to completion.
@@ -78,4 +80,102 @@ func TestShellRespectsCancellation(t *testing.T) {
 	// "(interrupt)" / EOF / "exit code" end-of-stream satisfies correctness.
 	b := make([]byte, 1)
 	_, _ = stream.Read(b)
+}
+
+// TestShellBackgroundDescendantDoesNotBlock is the regression test for the
+// hung-process bug. The command backgrounds a descendant that inherits the
+// output descriptor; the direct child finishes immediately. With the old pipe,
+// completion meant "every process that inherited the pipe has exited", so the
+// backgrounded descendant kept EOF from ever arriving and the agent loop hung
+// even after the command itself was done. With the file-backed stream,
+// completion is decided by the direct child exiting, so the stream must end
+// while the backgrounded process is still running.
+func TestShellBackgroundDescendantDoesNotBlock(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	stream, err := NewDispatcher().Run(ctx, "shell", []byte(`{"command":"sleep 5 & echo done"}`))
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	defer stream.Close()
+	defer exec.Command("pkill", "-f", "sleep 5").Run() // tidy any stray survivor
+
+	done := make(chan error, 1)
+	go func() {
+		_, rerr := io.ReadAll(stream)
+		done <- rerr
+	}()
+
+	// Must return long before the 5s backgrounded sleep exits. Under the pipe
+	// implementation this blocked until the survivor died; under the file
+	// implementation it returns when the direct child exits (~instantly).
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("read: %v", err)
+		}
+	case <-time.After(1500 * time.Millisecond):
+		t.Fatal("stream did not terminate: a backgrounded descendant kept the output open")
+	}
+}
+
+// TestShellCancelUnblocksStream verifies cancellation still terminates the
+// stream promptly, so a user can abort a hung or runaway command without the
+// agent loop waiting forever.
+func TestShellCancelUnblocksStream(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stream, err := NewDispatcher().Run(ctx, "shell", []byte(`{"command":"sleep 5"}`))
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	defer stream.Close()
+
+	done := make(chan error, 1)
+	go func() {
+		_, rerr := io.ReadAll(stream)
+		done <- rerr
+	}()
+	time.Sleep(200 * time.Millisecond)
+	cancel()
+
+	select {
+	case <-done:
+		// Stream terminated on cancel.
+	case <-time.After(3 * time.Second):
+		t.Fatal("stream did not terminate after cancel")
+	}
+}
+
+// TestShellStopKillsWholeTree verifies that cancelling a compound command stops
+// the shell AND its forked children, not just the direct child. The command
+// starts a foreground `sleep 5` as its real work; the process group must be
+// gone (no survivor) after cancel.
+func TestShellStopKillsWholeTree(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stream, err := NewDispatcher().Run(ctx, "shell", []byte(`{"command":"sleep 5"}`))
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	defer stream.Close()
+
+	done := make(chan error, 1)
+	go func() {
+		_, rerr := io.ReadAll(stream)
+		done <- rerr
+	}()
+	time.Sleep(200 * time.Millisecond)
+	cancel()
+
+	select {
+	case <-done:
+		// Stream terminated: the whole tree was killed and the stream closed.
+	case <-time.After(3 * time.Second):
+		t.Fatal("stream did not terminate after cancel")
+	}
+	time.Sleep(200 * time.Millisecond) // allow reparenting to settle
+	if out, err := exec.Command("pgrep", "-f", "^sleep 5$").Output(); err == nil {
+		t.Fatalf("survivor still running after cancel: %q", strings.TrimSpace(string(out)))
+	}
 }
