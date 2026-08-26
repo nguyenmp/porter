@@ -1898,3 +1898,121 @@ func TestCancelStopsRemoteExecTool(t *testing.T) {
 		t.Errorf("committed tool message not marked cancelled: %+v", toolMsg)
 	}
 }
+
+// TestCancelSilentToolThenRequeue guards the no-output-cancel regression end to
+// end: cancelling a tool that produced no output (sleep) must not wedge the
+// session. The committed cancelled tool message must carry content, because the
+// next user turn's LLM request includes it and providers (e.g. deepseek) reject
+// a role-"tool" message whose content field is missing — which would leave
+// every subsequent message unanswerable. The fake LLM below enforces exactly
+// that validation, so the test fails if the agent commits an empty cancelled
+// result.
+func TestCancelSilentToolThenRequeue(t *testing.T) {
+	var mu sync.Mutex
+	n := 0
+	srv := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Enforce the provider contract: every role-"tool" message must carry
+		// content. This is what real providers (deepseek via litellm) reject
+		// with a 400 when it is missing.
+		var req struct {
+			Messages []struct {
+				Role    string `json:"role"`
+				Content *string `json:"content"`
+			} `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		for _, m := range req.Messages {
+			if m.Role == "tool" && (m.Content == nil) {
+				t.Errorf("provider rejected: tool message missing content field")
+				http.Error(w, `{"error":{"message":"missing field content"}}`, http.StatusBadRequest)
+				return
+			}
+		}
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		mu.Lock()
+		n++
+		call := n
+		mu.Unlock()
+		if call == 1 {
+			fmt.Fprint(w,
+				`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","type":"function","function":{"name":"shell","arguments":"{\"command\":\"sleep 60\"}"}}]},"finish_reason":"tool_calls"}]}`+"\n\n"+
+					`data: [DONE]`+"\n")
+			return
+		}
+		fmt.Fprint(w,
+			`data: {"choices":[{"delta":{"content":"done"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`+"\n\n"+
+				`data: [DONE]`+"\n")
+	}))
+	defer exec.Command("pkill", "-f", "^sleep 60$").Run() // tidy any stray survivor
+
+	c := client.New(srv.URL)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	info, err := c.Create(ctx)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	if err := c.Append(ctx, info.ID, "first"); err != nil {
+		t.Fatalf("Append first: %v", err)
+	}
+
+	// Wait for the (silent) run to appear.
+	var callID string
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		rr, err := c.Runs(ctx, info.ID)
+		if err != nil {
+			t.Fatalf("Runs: %v", err)
+		}
+		if len(rr.Runs) > 0 {
+			callID = rr.Runs[0].CallID
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if callID == "" {
+		t.Fatal("tool never appeared on /runs")
+	}
+
+	// Cancel it: sleep 60 produces no output, so this is the empty-result case.
+	if err := c.Cancel(ctx, info.ID, callID); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+	deadline = time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		rr, err := c.Runs(ctx, info.ID)
+		if err != nil {
+			t.Fatalf("Runs: %v", err)
+		}
+		if len(rr.Runs) == 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	// The next queued message must still get answered: the cancelled tool
+	// message is committed with content, so the LLM request is well-formed.
+	if err := c.Append(ctx, info.ID, "second"); err != nil {
+		t.Fatalf("Append second: %v", err)
+	}
+	deadline = time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		h, err := c.History(ctx, info.ID)
+		if err != nil {
+			t.Fatalf("History: %v", err)
+		}
+		for _, m := range h.History {
+			if m.Role == "assistant" && m.Content == "done" {
+				return // second turn completed with a reply
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	h, _ := c.History(ctx, info.ID)
+	t.Fatalf("second turn never completed; history = %+v", h.History)
+}

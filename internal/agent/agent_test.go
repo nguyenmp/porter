@@ -425,3 +425,92 @@ func TestRunTurnCancelsRunningTool(t *testing.T) {
 		t.Errorf("turn text = %q, want empty (turn was cancelled before a reply)", res.Text)
 	}
 }
+
+// TestRunTurnCancelsSilentToolCommitsContent guards the empty-result trap: a
+// tool killed before it produced any output (sleep, a silent build) would
+// otherwise commit a role-"tool" message with empty content, and the next LLM
+// turn (which receives that message) would be rejected by providers that
+// require a content field on tool messages. The cancelled run must commit (and
+// emit) an explicit marker instead.
+func TestRunTurnCancelsSilentToolCommitsContent(t *testing.T) {
+	srv, _ := toolServer(t) // first request asks for a tool call, then a reply
+	defer srv.Close()
+
+	cfg := config.Config{BaseURL: srv.URL + "/v1", Model: "test", APIKey: "k"}
+	client := llm.NewClient(cfg, nil)
+
+	var mu sync.Mutex
+	var got []api.Envelope
+	var cancelFn func()
+	p := &cancelProvider{}
+	hooks := RunHooks{OnRunStarted: func(callID string, cancel func()) {
+		mu.Lock()
+		cancelFn = cancel
+		mu.Unlock()
+	}}
+
+	done := make(chan error, 1)
+	var res TurnResult
+	go func() {
+		r, err := RunTurn(context.Background(), client, []llm.ChatMessage{llm.UserMessage("run it")},
+			p, func(env api.Envelope) { got = append(got, env) }, nil, hooks)
+		res = r
+		done <- err
+	}()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		mu.Lock()
+		cf := cancelFn
+		mu.Unlock()
+		if cf != nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("cancel func never registered")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancelFn()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrToolCancelled) {
+			t.Fatalf("RunTurn error = %v, want ErrToolCancelled", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("RunTurn did not return after cancel")
+	}
+
+	// The committed tool message carries the "(cancelled)" marker so the next
+	// turn's LLM request is well-formed (non-empty content).
+	var toolMsg *llm.ChatMessage
+	for i := range res.History {
+		if res.History[i].Role == "tool" {
+			toolMsg = &res.History[i]
+		}
+	}
+	if toolMsg == nil {
+		t.Fatalf("no committed tool message; history = %+v", res.History)
+	}
+	if !toolMsg.Cancelled {
+		t.Errorf("committed tool message not marked cancelled: %+v", toolMsg)
+	}
+	if strings.TrimSpace(toolMsg.Content) == "" {
+		t.Errorf("cancelled silent tool committed empty content %q; a tool message must carry content for the next turn", toolMsg.Content)
+	}
+
+	// The tool_cancelled envelope reconciles to the same marker.
+	var sawCancelled bool
+	for _, env := range got {
+		if env.Kind == api.KindToolCancelled {
+			sawCancelled = true
+			if strings.TrimSpace(env.Result) == "" {
+				t.Errorf("tool_cancelled envelope result = %q, want non-empty marker", env.Result)
+			}
+		}
+	}
+	if !sawCancelled {
+		t.Errorf("missing tool_cancelled envelope; got %+v", got)
+	}
+}

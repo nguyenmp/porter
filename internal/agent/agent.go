@@ -229,10 +229,21 @@ func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage,
 			// (the local runner kills its process group; the remote runner
 			// closes its pipe), so we get here promptly.
 			if callCtx.Err() != nil {
-				if emit != nil {
-					emit(api.Envelope{Kind: api.KindToolCancelled, ToolCallID: c.ID, Name: c.Name, Arguments: c.Arguments, StartedAt: startedAt, FinishedAt: finishedAt, Result: result.String()})
+				// A tool killed before producing any output (sleep 30, a silent
+				// build) leaves an empty partial result. The committed tool
+				// message must still carry content: it is what the next LLM
+				// turn receives for this call, and most providers reject a
+				// role-"tool" message whose content field is missing. Fall back
+				// to an explicit marker so the model (and history) sees the run
+				// was aborted rather than a tool that returned nothing.
+				partial := result.String()
+				if strings.TrimSpace(partial) == "" {
+					partial = "(cancelled)"
 				}
-				m := llm.ToolResult(c.ID, result.String())
+				if emit != nil {
+					emit(api.Envelope{Kind: api.KindToolCancelled, ToolCallID: c.ID, Name: c.Name, Arguments: c.Arguments, StartedAt: startedAt, FinishedAt: finishedAt, Result: partial})
+				}
+				m := llm.ToolResult(c.ID, partial)
 				m.StartedAt = startedAt
 				m.FinishedAt = finishedAt
 				m.Cancelled = true
