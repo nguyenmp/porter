@@ -30,16 +30,6 @@ const logEventsMax = 256
 // turn's envelopes as an HTTP handler drains it.
 const subBuffer = 64
 
-// TurnMeta is the committed metadata for one completed turn: its token usage
-// and any error. It is stored alongside history so the view endpoint can render
-// usage without reading the bus log.
-type TurnMeta struct {
-	TurnID int64
-	Input  int
-	Output int
-	Error  string
-}
-
 // Store owns the live set of sessions. It serializes id allocation and lookup,
 // but each session serializes its own history writes. Sessions' schedules run on
 // the store's context, which should outlive any single request (the session
@@ -141,8 +131,8 @@ type Session struct {
 	js      tools.Provider
 	logSeq  uint64
 	turn    int64
+	running bool // a turn has started but its completion marker is not yet committed
 	history []llm.ChatMessage
-	turns   []TurnMeta
 	log     []api.Envelope
 	subs    []chan api.Envelope
 
@@ -263,7 +253,7 @@ func (s *Session) QueueDepth() int {
 func (s *Session) Running() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.turn > int64(len(s.turns))
+	return s.running
 }
 
 // Snapshot returns the authoritative committed history and the bus position to
@@ -275,14 +265,6 @@ func (s *Session) Snapshot() api.SessionHistory {
 		History: append([]llm.ChatMessage{}, s.history...),
 		Seq:     s.logSeq,
 	}
-}
-
-// Turns returns metadata for all completed turns (usage and errors). The slice
-// is a defensive copy.
-func (s *Session) Turns() []TurnMeta {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return append([]TurnMeta{}, s.turns...)
 }
 
 // commit appends m to the authoritative history, stamps it on the bus log with
@@ -315,19 +297,13 @@ func (s *Session) commitEnv(env api.Envelope) uint64 {
 }
 
 // endTurn logs and broadcasts a turn-completion marker so late subscribers see
-// it even if the turn finished before they connected. It also records the
-// turn's metadata (usage, error) so the view endpoint can render it without
-// reading the bus log.
+// it even if the turn finished before they connected, and clears the running
+// flag.
 func (s *Session) endTurn(env api.Envelope) {
 	s.mu.Lock()
 	s.logSeq++
 	env.Seq = s.logSeq
-	s.turns = append(s.turns, TurnMeta{
-		TurnID: env.TurnID,
-		Input:  env.Input,
-		Output: env.Output,
-		Error:  env.Error,
-	})
+	s.running = false
 	s.bufferLocked(env)
 	subs := s.subs
 	s.mu.Unlock()
@@ -510,6 +486,7 @@ func (s *Session) nextTurn() int64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.turn++
+	s.running = true
 	return s.turn
 }
 

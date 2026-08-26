@@ -129,12 +129,10 @@ type ToolRunInfo struct {
 }
 
 // viewData is passed to the view fragment template. Messages is the session's
-// committed history; Turns carries per-turn metadata (token usage, errors) for
-// rendering at the bottom of the view; Tools maps each tool call_id to its
-// name/arguments so tool results render with their call context.
+// committed history; Tools maps each tool call_id to its name/arguments so tool
+// results render with their call context.
 type viewData struct {
 	Messages []llm.ChatMessage
-	Turns    []session.TurnMeta
 	Tools    map[string]ToolRunInfo
 }
 
@@ -422,7 +420,6 @@ func (s *Server) handleView(w http.ResponseWriter, r *http.Request) {
 	}
 	render(w, "view.tmpl", viewData{
 		Messages: messages,
-		Turns:    ses.Turns(),
 		Tools:    tools,
 	})
 }

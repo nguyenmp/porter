@@ -29,10 +29,3 @@
 		</details>
 	{{end}}
 {{end}}
-{{if .Turns}}
-	<div class="turn-usage">
-	{{range .Turns}}
-		<span class="turn-meta">turn {{.TurnID}}: {{.Input}} in / {{.Output}} out{{if .Error}} — error: {{.Error}}{{end}}</span>
-	{{end}}
-	</div>
-{{end}}

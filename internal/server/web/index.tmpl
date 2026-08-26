@@ -829,11 +829,6 @@
         location.reload();
         return;
       case 'turn_completed':
-        const meta = document.createElement('div');
-        meta.className = 'turn-usage';
-        meta.innerHTML = '<span class="turn-meta">turn ' + env.turn_id + ': ' + env.input + ' in / ' + env.output + ' out' +
-                         (env.error ? ' — error: ' + escapeHTML(env.error) : '') + '</span>';
-        chat.appendChild(meta);
         currentAssistant = null;
         currentReasoning = null;
         // The running turn finished. Queue depth is left as-is: the server

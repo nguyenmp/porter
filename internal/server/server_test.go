@@ -1079,25 +1079,6 @@ func TestJSONAppendNoHXTrigger(t *testing.T) {
 	}
 }
 
-func TestViewShowsTokenUsage(t *testing.T) {
-	srv := newTestServer(t, plainLLM())
-	id, _, _ := runOneTurnID(t, srv.URL, "hello")
-
-	resp, err := http.Get(srv.URL + "/api/sessions/" + id + "/view")
-	if err != nil {
-		t.Fatalf("GET view: %v", err)
-	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-	s := string(body)
-	if !strings.Contains(s, "turn-usage") {
-		t.Errorf("view does not contain turn-usage section")
-	}
-	if !strings.Contains(s, "1 in / 2 out") {
-		t.Errorf("view does not show token usage '1 in / 2 out'; got: %s", s)
-	}
-}
-
 // readSSE reads Server-Sent Events from r, stopping once a turn_completed
 // envelope is assembled. It returns the parsed envelopes in order.
 func readSSE(t *testing.T, r io.Reader) []api.Envelope {
