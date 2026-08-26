@@ -195,6 +195,7 @@ func (s *Server) Handler() http.Handler {
 	r.Get(api.SessionRunsPath, s.handleRuns)
 	r.Get(api.SessionExecPath, s.handleExec)
 	r.Post(api.SessionExecResultPath, s.handleExecResult)
+	r.Post(api.SessionCancelPath, s.handleCancel)
 	return r
 }
 
@@ -397,6 +398,23 @@ func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+}
+
+// handleCancel cancels an in-flight tool run: the session stops the running
+// command (killing a local process group or signalling a remote execution
+// client) and ends the turn. It is the backend for the UI's Cancel button on a
+// running tool block.
+func (s *Server) handleCancel(w http.ResponseWriter, r *http.Request) {
+	ses, ok := s.store.Get(chi.URLParam(r, "id"))
+	if !ok {
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+	if err := ses.CancelRun(chi.URLParam(r, "call_id")); err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
 }
 
 // handleExecResult streams a client's tool output back to the in-flight call.

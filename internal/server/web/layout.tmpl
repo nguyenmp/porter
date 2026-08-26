@@ -36,6 +36,24 @@
 		.tool-call summary, .tool-result summary { cursor: pointer; font-size: 0.85em; color: #555; }
 		.tool-call pre, .tool-result pre { background: #1e1e1e; color: #d4d4d4; padding: 0.5rem; border-radius: 4px; overflow-x: auto; }
 		.tool-result pre { white-space: pre-wrap; }
+		/* The Cancel button on a running tool block: a small right-aligned
+		   control inside the result summary. It appears only while the tool is
+		   running (JS toggles hidden). */
+		.tool-result summary { display: flex; align-items: center; gap: 0.5rem; }
+		.tool-result-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+		.tool-cancel {
+			margin-left: auto;
+			flex-shrink: 0;
+			padding: 0.1rem 0.6rem;
+			border: 1px solid #c66;
+			border-radius: 4px;
+			background: #fff;
+			color: #b33;
+			font-size: 0.78em;
+			cursor: pointer;
+		}
+		.tool-cancel:hover { background: #fbe9e9; }
+		.tool-cancel:disabled { border-color: #ccc; color: #999; background: #f5f5f5; cursor: default; }
 		/* Markdown-rendered content */
 		.msg-content p { margin: 0.5em 0; }
 		.msg-content p:first-child { margin-top: 0; }

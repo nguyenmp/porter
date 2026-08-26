@@ -51,6 +51,16 @@ func (r *remoteProvider) Run(ctx context.Context, name string, args []byte) (io.
 		s.dropCall(callID, pw)
 		return nil, ctx.Err()
 	}
+	// If the run's context is cancelled (a user clicking Cancel in the UI), the
+	// agent's Read on pr must unblock even if the client never sends a result:
+	// close the write end so pr reads EOF. The session also pushes a
+	// Cancel=true request down the exec channel (see CancelRun) so the client
+	// actually stops its command; this close is what lets the agent stop
+	// waiting promptly regardless of the client's behavior.
+	go func() {
+		<-ctx.Done()
+		_ = pw.Close()
+	}()
 	return pr, nil
 }
 

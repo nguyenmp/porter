@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 
 	"porter/internal/api"
 )
@@ -72,6 +73,14 @@ func (c *Client) Append(ctx context.Context, id, content string) error {
 	return c.doJSON(ctx, http.MethodPost, c.path(api.SessionMessagesPath, id), body, nil)
 }
 
+// Cancel stops an in-flight tool run: the server kills the running command
+// (locally via its process group, remotely by signalling the execution client)
+// and ends the turn. It returns an error when the run is unknown, e.g. it
+// already finished.
+func (c *Client) Cancel(ctx context.Context, id, callID string) error {
+	return c.doJSON(ctx, http.MethodPost, c.path(api.SessionCancelPath, id, callID), nil, nil)
+}
+
 // Subscribe streams the session's event bus as NDJSON, calling onEvent for
 // every envelope until the connection ends, until until(env) reports true, or
 // until a resync is required (returned as ErrResync). onEvent may be nil.
@@ -114,8 +123,12 @@ func (c *Client) Subscribe(ctx context.Context, id string, since uint64, onEvent
 
 // ServeExec registers this client as the session's execution provider and
 // blocks, reading exec requests from the server and running each via dispatch.
-// It streams the output back to the server. It returns when the connection
-// ends (or ctx is cancelled); callers should retry to re-register.
+// It streams the output back to the server. Each request runs in its own
+// goroutine so the read loop stays free to receive a Cancel=true request while
+// a command is running (the agent runs tools sequentially, so at most one
+// command is in flight); cancelling aborts the running command's context,
+// which for the local dispatcher kills its process group. It returns when the
+// connection ends (or ctx is cancelled); callers should retry to re-register.
 func (c *Client) ServeExec(ctx context.Context, id string, dispatch func(ctx context.Context, name string, args []byte) (io.ReadCloser, error)) error {
 	u := c.path(api.SessionExecPath, id)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
@@ -131,21 +144,49 @@ func (c *Client) ServeExec(ctx context.Context, id string, dispatch func(ctx con
 		return c.statusError(resp)
 	}
 
+	// running tracks the cancel func of each command started on this
+	// connection, keyed by the server's call id.
+	var mu sync.Mutex
+	running := make(map[string]context.CancelFunc)
+
 	sc := bufio.NewScanner(resp.Body)
 	for sc.Scan() {
 		var er api.ExecRequest
 		if err := json.Unmarshal(sc.Bytes(), &er); err != nil {
 			return fmt.Errorf("decode exec request: %w", err)
 		}
-		stream, err := dispatch(ctx, er.Name, []byte(er.Arguments))
-		if err != nil {
-			// Can't start the tool; report it as the result so the agent sees
-			// an error rather than hanging.
-			_ = c.postExecResult(ctx, id, er.CallID, strings.NewReader("error: "+err.Error()))
+		if er.Cancel {
+			// The user cancelled a run on the server. Stop every command we're
+			// running — the agent runs tools one at a time, so this is the one
+			// the cancel targets.
+			mu.Lock()
+			for _, cancel := range running {
+				cancel()
+			}
+			mu.Unlock()
 			continue
 		}
-		_ = c.postExecResult(ctx, id, er.CallID, stream)
-		_ = stream.Close()
+		callCtx, cancel := context.WithCancel(ctx)
+		mu.Lock()
+		running[er.CallID] = cancel
+		mu.Unlock()
+		go func(callID string, name string, args string) {
+			defer func() {
+				mu.Lock()
+				delete(running, callID)
+				mu.Unlock()
+				cancel()
+			}()
+			stream, err := dispatch(callCtx, name, []byte(args))
+			if err != nil {
+				// Can't start the tool; report it as the result so the agent
+				// sees an error rather than hanging.
+				_ = c.postExecResult(ctx, id, callID, strings.NewReader("error: "+err.Error()))
+				return
+			}
+			_ = c.postExecResult(ctx, id, callID, stream)
+			_ = stream.Close()
+		}(er.CallID, er.Name, er.Arguments)
 	}
 	if err := sc.Err(); err != nil {
 		return err

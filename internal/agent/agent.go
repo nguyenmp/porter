@@ -6,6 +6,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"io"
 	"os"
 	"strings"
@@ -36,6 +37,24 @@ type TurnResult struct {
 	History []llm.ChatMessage
 }
 
+// ErrToolCancelled reports that a running tool was cancelled (e.g. by a user
+// clicking Cancel in the UI). RunTurn returns it after committing the partial
+// tool result (marked cancelled) and stopping the turn; the caller should end
+// the turn cleanly rather than surfacing it as a failure.
+var ErrToolCancelled = errors.New("tool call cancelled")
+
+// RunHooks carries optional callbacks RunTurn invokes as a turn progresses.
+type RunHooks struct {
+	// OnRunStarted is called with the model's tool-call id and the run's cancel
+	// function just before that tool starts. The cancel function aborts the
+	// running tool — for a local run it kills the command's process group; for
+	// a remote run it stops the wait on the stream and signals the connected
+	// execution client — so a caller (e.g. the session, wired to a UI Cancel
+	// button) can stop a runaway task. It is safe to call from any goroutine
+	// and is a no-op after the run ends.
+	OnRunStarted func(callID string, cancel func())
+}
+
 // RunTurn drives one conversation turn. It reads history and extends it so the
 // caller can keep it for the next turn. Everything the loop produces goes to
 // emit as an api.Envelope — live LLM events (KindLLM) and the system-side tool
@@ -45,8 +64,13 @@ type TurnResult struct {
 // final plain reply — is also handed to onMessage, so a caller that owns
 // conversation state can commit each message as it completes (rather than only
 // receiving the assembled history at the end). The loop does no rendering;
-// presentation is the caller's job.
-func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage, js tools.Provider, emit func(api.Envelope), onMessage func(llm.ChatMessage) error) (TurnResult, error) {
+// presentation is the caller's job. Optional hooks let the caller observe each
+// tool run as it starts and cancel it.
+func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage, js tools.Provider, emit func(api.Envelope), onMessage func(llm.ChatMessage) error, hooks ...RunHooks) (TurnResult, error) {
+	var h RunHooks
+	if len(hooks) > 0 {
+		h = hooks[0]
+	}
 	res := TurnResult{History: history}
 	// commit appends a finished message to the turn result and, when set,
 	// streams it out so callers can commit each message the moment it's done.
@@ -127,7 +151,20 @@ func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage,
 			return res, err
 		}
 		for _, c := range calls {
-			stream, err := js.Run(ctx, c.Name, []byte(c.Arguments))
+			// Each tool runs under its own context so it can be cancelled
+			// independently of the turn (a user clicking Cancel in the UI stops
+			// one runaway command without tearing down the whole session). The
+			// hook fires before the tool starts so the caller can register the
+			// cancel and no Cancel click can race ahead of it.
+			callCtx, callCancel := context.WithCancel(ctx)
+			// Release the per-call context when the turn ends. The defer runs
+			// after every callCtx.Err() check below, so those checks see only a
+			// user's cancellation (via the hook), never our own cleanup.
+			defer callCancel()
+			if h.OnRunStarted != nil {
+				h.OnRunStarted(c.ID, callCancel)
+			}
+			stream, err := js.Run(callCtx, c.Name, []byte(c.Arguments))
 			if err != nil {
 				// The tool never started; there is nothing to stream, so emit the
 				// terminal envelope directly (matching the old single-shot shape).
@@ -137,6 +174,11 @@ func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage,
 				}
 				if err := commit(llm.ToolResult(c.ID, result)); err != nil {
 					return res, err
+				}
+				if callCtx.Err() != nil {
+					// Cancelled while it was starting; don't feed the failure
+					// back to the model, just stop the turn.
+					return res, ErrToolCancelled
 				}
 				continue
 			}
@@ -178,6 +220,28 @@ func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage,
 			}
 			_ = stream.Close()
 			finishedAt := time.Now().UnixMilli()
+
+			// Cancelled while it ran: emit the terminal tool_cancelled envelope,
+			// commit the partial result marked cancelled so history is
+			// transparent, and stop the turn — the user asked to stop, so don't
+			// feed the partial output back to the model and keep spending
+			// tokens. The stream already ended because cancellation closed it
+			// (the local runner kills its process group; the remote runner
+			// closes its pipe), so we get here promptly.
+			if callCtx.Err() != nil {
+				if emit != nil {
+					emit(api.Envelope{Kind: api.KindToolCancelled, ToolCallID: c.ID, Name: c.Name, Arguments: c.Arguments, StartedAt: startedAt, FinishedAt: finishedAt, Result: result.String()})
+				}
+				m := llm.ToolResult(c.ID, result.String())
+				m.StartedAt = startedAt
+				m.FinishedAt = finishedAt
+				m.Cancelled = true
+				if err := commit(m); err != nil {
+					return res, err
+				}
+				return res, ErrToolCancelled
+			}
+
 			if emit != nil {
 				emit(api.Envelope{Kind: api.KindToolResult, ToolCallID: c.ID, Name: c.Name, Arguments: c.Arguments, StartedAt: startedAt, FinishedAt: finishedAt, Result: result.String()})
 			}

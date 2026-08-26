@@ -311,3 +311,59 @@ func TestTrackToolRunsForReconnect(t *testing.T) {
 		t.Errorf("Runs after no-ops = %+v, want still 1", s.Runs())
 	}
 }
+
+// TestCancelRunCancelsInFlightTool verifies the session's cancel endpoint: it
+// calls the run's cancel func (the agent's per-run context), and a subsequent
+// tool_cancelled envelope (which the agent emits) removes the run from the
+// in-flight set. Unknown call ids are rejected.
+func TestCancelRunCancelsInFlightTool(t *testing.T) {
+	s := newTestSession(t, "s")
+
+	// Register the run's cancel func (what the agent's OnRunStarted hook does)
+	// and the start marker (what trackToolRun does when the tool begins).
+	var cancelled bool
+	s.onRunStarted("call-1", func() { cancelled = true })
+	s.trackToolRun(api.Envelope{Kind: api.KindToolStarted, ToolCallID: "call-1", Name: "shell", Arguments: `{"command":"sleep 5"}`, StartedAt: 1000})
+	if len(s.Runs()) != 1 {
+		t.Fatalf("runs before cancel = %+v, want 1 in-flight", s.Runs())
+	}
+
+	if err := s.CancelRun("call-1"); err != nil {
+		t.Fatalf("CancelRun: %v", err)
+	}
+	if !cancelled {
+		t.Errorf("run's cancel func was not called")
+	}
+
+	// The agent responds to cancellation by emitting tool_cancelled, which
+	// removes the run from the in-flight set (like tool_result does).
+	s.trackToolRun(api.Envelope{Kind: api.KindToolCancelled, ToolCallID: "call-1"})
+	if got := s.Runs(); len(got) != 0 {
+		t.Errorf("runs after cancellation = %+v, want empty", got)
+	}
+
+	// Cancelling an unknown/finished run is an error (the UI hides the button
+	// once the run ends, so this is defensive).
+	if err := s.CancelRun("nope"); err == nil {
+		t.Errorf("CancelRun(unknown) error = nil, want error")
+	}
+}
+
+// TestToolStartKeepsRegisteredCancel covers the ordering race between the
+// agent's OnRunStarted hook (registers the cancel func) and the tool_started
+// envelope (fills in identity): the start marker must not wipe the cancel.
+func TestToolStartKeepsRegisteredCancel(t *testing.T) {
+	s := newTestSession(t, "s")
+
+	var cancelled bool
+	s.onRunStarted("call-1", func() { cancelled = true })
+	// The start marker arrives after onRunStarted; the cancel must survive it.
+	s.trackToolRun(api.Envelope{Kind: api.KindToolStarted, ToolCallID: "call-1", Name: "shell", Arguments: `{"command":"echo hi"}`, StartedAt: 1})
+
+	if err := s.CancelRun("call-1"); err != nil {
+		t.Fatalf("CancelRun: %v", err)
+	}
+	if !cancelled {
+		t.Errorf("cancel func lost between onRunStarted and tool_started")
+	}
+}

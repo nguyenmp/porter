@@ -28,7 +28,7 @@
 		<div id="sse-processor"
 		     hx-ext="sse"
 		     sse-connect="/api/sessions/{{.Session}}/stream?since={{.Seq}}"
-		     sse-swap="message_committed,llm,tool_started,tool_result,tool_result_delta,turn_completed"
+		     sse-swap="message_committed,llm,tool_started,tool_result,tool_result_delta,tool_cancelled,turn_completed"
 		     hx-swap="none"
 		     hx-on:htmx:sse-message="sseMessage(event)"
 		     hx-on:htmx:sse-open="onSSEOpen()"
@@ -377,8 +377,8 @@
   // createRun builds a fresh tool-run entry. State lives here, never on the
   // DOM elements (callEl/resultEl are views derived from this entry). status is
   // the run's lifecycle: streaming (call being typed) -> running (tool_started)
-  // -> done (tool_result). A run is registered in toolRuns under its id once
-  // the id is known.
+  // -> done (tool_result) or cancelled (tool_cancelled, from the user pressing
+  // Cancel). A run is registered in toolRuns under its id once the id is known.
   function createRun(callID, index) {
     const run = {
       callID: callID || '',
@@ -393,6 +393,10 @@
       callEl: null,
       resultEl: null,
       lastShown: null,
+      // cancelling is set optimistically while a Cancel POST is in flight, so
+      // the button reads "Stopping…" and the server's tool_cancelled envelope
+      // (or a terminal result) reconciles the authoritative state.
+      cancelling: false,
     };
     if (run.callID) toolRuns.set(run.callID, run);
     return run;
@@ -521,22 +525,38 @@
     if (!run.resultEl) {
       run.resultEl = document.createElement('details');
       run.resultEl.className = 'tool-result';
-      run.resultEl.innerHTML = '<summary class="tool-result-name"></summary><pre><code class="tool-result-body"></code></pre>';
+      // The summary holds the name/status text plus a Cancel button that is
+      // only visible while the run is running. A button inside <summary> is
+      // interactive; preventDefault stops its click from toggling the details.
+      run.resultEl.innerHTML = '<summary><span class="tool-result-name"></span>' +
+        '<button type="button" class="tool-cancel" title="Stop this command">Cancel</button></summary>' +
+        '<pre><code class="tool-result-body"></code></pre>';
       insertToolResult(run.resultEl);
+      run.resultEl.querySelector('.tool-cancel').addEventListener('click', function(e) {
+        e.preventDefault();
+        cancelRun(run);
+      });
     }
     return run.resultEl;
   }
 
   // Redraw a tool-result block from its run state: name + args snippet, then
   // the status — a server-derived duration once done, a live elapsed timer
-  // while running. textContent keeps the output safe without escaping.
+  // while running, "cancelled" when the user aborted the run. textContent keeps
+  // the output safe without escaping. The Cancel button is shown only while the
+  // run is actually running.
   function renderResult(run) {
     const el = run.resultEl;
     if (!el) return;
     const base = 'tool result: ' + (run.name || '') +
                  (run.args ? ' ' + argsSnippet(run.args) : '');
     let status;
-    if (run.status === 'done') {
+    if (run.status === 'cancelled') {
+      // The user stopped this run. No exit code (the process was killed), but
+      // the server-derived duration is still useful.
+      const dur = (run.finishedAt || 0) - (run.startedAt || 0);
+      status = 'cancelled' + (dur > 0 ? ' · ' + fmtDur(dur) : '');
+    } else if (run.status === 'done') {
       // The shell tool appends its exit status as the final line of output, so
       // a finished result shows exit_code: N (instead of 'done') plus the
       // server-derived duration.
@@ -554,6 +574,40 @@
     }
     el.querySelector('.tool-result-name').textContent = base + (status ? ' · ' + status : '');
     el.querySelector('.tool-result-body').textContent = run.result;
+    const cancelBtn = el.querySelector('.tool-cancel');
+    if (cancelBtn) {
+      cancelBtn.hidden = run.status !== 'running';
+      cancelBtn.disabled = !!run.cancelling;
+      cancelBtn.textContent = run.cancelling ? 'Stopping…' : 'Cancel';
+    }
+  }
+
+  // cancelRun stops a running tool by POSTing to the session's cancel endpoint.
+  // The server kills the command (locally via its process group, remotely by
+  // signalling the execution client) and ends the turn; the tool_cancelled
+  // envelope that follows reconciles the authoritative partial output and
+  // clocks. Optimistically switch the button to "Stopping…" so it can't be
+  // clicked twice while the request is in flight.
+  function cancelRun(run) {
+    const app = document.getElementById('app');
+    const sess = app ? app.dataset.session : null;
+    if (!sess || !run.callID || run.status !== 'running') return;
+    run.cancelling = true;
+    renderResult(run);
+    fetch('/api/sessions/' + encodeURIComponent(sess) + '/cancel/' + encodeURIComponent(run.callID), { method: 'POST' })
+      .then(function(resp) {
+        // A non-2xx (e.g. 404, the run already finished) is a rejection here
+        // because fetch resolves on any status.
+        if (!resp.ok) throw new Error('cancel rejected');
+      })
+      .catch(function() {
+        // The request failed (e.g. the run already finished). Revert to running;
+        // whichever terminal envelope arrives next settles the real state.
+        if (run.cancelling) {
+          run.cancelling = false;
+          renderResult(run);
+        }
+      });
   }
 
   // toolTimerTick updates the elapsed shown on every running block, touching the
@@ -617,7 +671,9 @@
         const now = data.now || Date.now();
         for (const r of data.runs) {
           const run = getRun(r.call_id);
-          if (run.status === 'done') continue; // already finished on this client
+          // Already finished/cancelled on this client, or a Cancel is in
+          // flight — don't resurrect a run the user just stopped.
+          if (run.status === 'done' || run.status === 'cancelled' || run.cancelling) continue;
           if (r.name) run.name = r.name;
           if (r.arguments) run.args = r.arguments;
           run.startedAt = r.started_at || run.startedAt || 0;
@@ -717,12 +773,13 @@
           if (run.resultEl) {
             break;
           }
-          run.status = 'done';
+          run.status = m.cancelled ? 'cancelled' : 'done';
           run.result = m.content;
           run.resultEl = document.createElement('details');
           run.resultEl.className = 'tool-result';
           const code = exitCodeLabel(m.content);
-          run.resultEl.innerHTML = '<summary>tool result' + (code ? ' · ' + code : '') + '</summary><pre><code>' + escapeHTML(m.content).replace(/\n/g, '<br>') + '</code></pre>';
+          const status = m.cancelled ? 'cancelled' : (code ? code : '');
+          run.resultEl.innerHTML = '<summary>tool result' + (status ? ' · ' + status : '') + '</summary><pre><code>' + escapeHTML(m.content).replace(/\n/g, '<br>') + '</code></pre>';
           // Position the replayed result right after its owning assistant
           // message, matching /view's history layout (live placement already
           // does this via insertToolResult).
@@ -804,6 +861,24 @@
         trRun.finishedAt = env.finished_at || 0;
         ensureResult(trRun);
         renderResult(trRun);
+        hadNewContent = true;
+        break;
+      case 'tool_cancelled':
+        // The user cancelled this run: reconcile the block to the server's
+        // authoritative partial output and clocks, mark it cancelled (terminal,
+        // like tool_result), and stop its elapsed timer. The turn ends here.
+        currentAssistant = null;
+        currentReasoning = null;
+        const tcRun = getRun(env.tool_call_id);
+        if (env.name) tcRun.name = env.name;
+        if (env.arguments) tcRun.args = env.arguments;
+        tcRun.result = env.result;
+        tcRun.status = 'cancelled';
+        tcRun.startedAt = env.started_at || tcRun.startedAt || 0;
+        tcRun.finishedAt = env.finished_at || 0;
+        tcRun.cancelling = false;
+        ensureResult(tcRun);
+        renderResult(tcRun);
         hadNewContent = true;
         break;
       case 'tool_result_delta':

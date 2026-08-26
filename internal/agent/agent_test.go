@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"porter/internal/api"
 	"porter/internal/config"
@@ -297,5 +299,129 @@ func TestRunTurnStreamsToolResultChunks(t *testing.T) {
 	}
 	if startedAt <= 0 || finishedAt < startedAt {
 		t.Errorf("committed message timing = start %d finish %d, want start>0 and finish>=start", startedAt, finishedAt)
+	}
+}
+
+// ctxStream is a tool-output stream that produces nothing until its context is
+// cancelled, then returns EOF — simulating a long-running tool the user aborts.
+type ctxStream struct {
+	ctx context.Context
+}
+
+func (s *ctxStream) Read(p []byte) (int, error) {
+	<-s.ctx.Done()
+	return 0, io.EOF
+}
+
+func (s *ctxStream) Close() error { return nil }
+
+// cancelProvider returns a stream that blocks until the run's context is
+// cancelled, and records the stream so the test can observe when it ended.
+type cancelProvider struct {
+	stream *ctxStream
+}
+
+func (p *cancelProvider) Defs() []llm.Tool { return tools.Defs() }
+
+func (p *cancelProvider) Run(ctx context.Context, name string, args []byte) (io.ReadCloser, error) {
+	p.stream = &ctxStream{ctx: ctx}
+	return p.stream, nil
+}
+
+// TestRunTurnCancelsRunningTool verifies the per-run cancellation hook: calling
+// the cancel function a hook received stops the turn, emits a tool_cancelled
+// envelope, and commits the partial tool result marked cancelled — instead of
+// feeding it back to the model and looping.
+func TestRunTurnCancelsRunningTool(t *testing.T) {
+	srv, _ := toolServer(t) // first request asks for a tool call, then a reply
+	defer srv.Close()
+
+	cfg := config.Config{BaseURL: srv.URL + "/v1", Model: "test", APIKey: "k"}
+	client := llm.NewClient(cfg, nil)
+
+	var mu sync.Mutex
+	var got []api.Envelope
+	var cancelFn func()
+	p := &cancelProvider{}
+	hooks := RunHooks{OnRunStarted: func(callID string, cancel func()) {
+		mu.Lock()
+		cancelFn = cancel
+		mu.Unlock()
+	}}
+
+	done := make(chan error, 1)
+	var res TurnResult
+	go func() {
+		r, err := RunTurn(context.Background(), client, []llm.ChatMessage{llm.UserMessage("run it")},
+			p, func(env api.Envelope) { got = append(got, env) }, nil, hooks)
+		res = r
+		done <- err
+	}()
+
+	// Wait until the tool started and the cancel func is registered.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		mu.Lock()
+		cf := cancelFn
+		mu.Unlock()
+		if cf != nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("cancel func never registered")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	cancelFn()
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrToolCancelled) {
+			t.Fatalf("RunTurn error = %v, want ErrToolCancelled", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("RunTurn did not return after cancel")
+	}
+
+	// The run was cancelled: a tool_cancelled envelope (terminal, like
+	// tool_result) went out, not a tool_result.
+	var sawStarted, sawCancelled bool
+	for _, env := range got {
+		if env.Kind == api.KindToolStarted {
+			sawStarted = true
+		}
+		if env.Kind == api.KindToolCancelled {
+			sawCancelled = true
+			if env.ToolCallID != "call_1" || env.Name != "shell" {
+				t.Errorf("tool_cancelled = %+v, want call_1/shell", env)
+			}
+			if env.StartedAt <= 0 || env.FinishedAt < env.StartedAt {
+				t.Errorf("tool_cancelled timing = start %d finish %d, want start>0 and finish>=start", env.StartedAt, env.FinishedAt)
+			}
+		}
+		if env.Kind == api.KindToolResult {
+			t.Errorf("normal tool_result should not be emitted for a cancelled run")
+		}
+	}
+	if !sawStarted {
+		t.Errorf("missing tool_started envelope")
+	}
+	if !sawCancelled {
+		t.Errorf("missing tool_cancelled envelope; got %+v", got)
+	}
+
+	// The committed history ends at the cancelled tool result (marked
+	// cancelled), and no final plain reply was produced — the turn stopped.
+	var toolMsg *llm.ChatMessage
+	for i := range res.History {
+		if res.History[i].Role == "tool" {
+			toolMsg = &res.History[i]
+		}
+	}
+	if toolMsg == nil || !toolMsg.Cancelled || toolMsg.ToolCallID != "call_1" {
+		t.Fatalf("committed tool message = %+v, want cancelled tool result for call_1", toolMsg)
+	}
+	if res.Text != "" {
+		t.Errorf("turn text = %q, want empty (turn was cancelled before a reply)", res.Text)
 	}
 }

@@ -36,14 +36,21 @@ const (
 	// SessionExecResultPath streams a tool call's output back to the server,
 	// after the client runs it: POST (streaming body).
 	SessionExecResultPath = "/api/sessions/{id}/exec/{call_id}"
+	// SessionCancelPath cancels an in-flight tool run, stopping the running
+	// command and ending the turn: POST.
+	SessionCancelPath = "/api/sessions/{id}/cancel/{call_id}"
 )
 
-// ExecRequest is one tool call the server pushes to a session's execution
-// provider.
+// ExecRequest is one message the server pushes to a session's execution
+// provider over its exec subscription. A normal request carries a tool call to
+// run (CallID/Name/Arguments); a cancellation request carries only Cancel=true
+// and tells the client to stop its currently running command (the agent runs
+// tools one at a time, so there is at most one).
 type ExecRequest struct {
 	CallID    string `json:"call_id"`
 	Name      string `json:"name"`
 	Arguments string `json:"arguments"`
+	Cancel    bool   `json:"cancel,omitempty"`
 }
 
 // SessionInfo is returned by POST /api/sessions. It carries the new session's
@@ -110,6 +117,13 @@ const (
 	// tools. The terminal KindToolResult then carries start/finish clocks so
 	// the final duration is server-derived.
 	KindToolStarted = "tool_started"
+	// KindToolCancelled reports that a running tool was aborted (e.g. the user
+	// clicked Cancel in the UI). It carries the partial output accumulated so
+	// far plus the server start/finish clocks, and is terminal like
+	// KindToolResult: the run leaves the in-flight set and the turn ends. The
+	// committed role-"tool" message still follows, marked cancelled, so history
+	// is transparent.
+	KindToolCancelled = "tool_cancelled"
 	// KindMessage marks a message the server just committed to history, stamped
 	// with its seq. This is what reconciles a subscriber with history.
 	KindMessage = "message_committed"

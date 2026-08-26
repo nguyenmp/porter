@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -20,6 +21,7 @@ import (
 	"porter/internal/client"
 	"porter/internal/codec"
 	"porter/internal/config"
+	"porter/internal/llm"
 	"porter/internal/tools"
 )
 
@@ -1614,5 +1616,285 @@ func TestRestartPersistsReasoning(t *testing.T) {
 		if !strings.Contains(s, want) {
 			t.Errorf("view after restart missing %q:\n%s", want, s)
 		}
+	}
+}
+
+// TestCancelStopsRunningTool is the end-to-end cancellation story: a
+// long-running local command appears on /runs, cancelling it via the HTTP
+// endpoint kills the process, emits tool_cancelled, removes the run, commits a
+// cancelled tool message, and ends the turn without the model being called
+// again.
+func TestCancelStopsRunningTool(t *testing.T) {
+	var mu sync.Mutex
+	n := 0
+	srv := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		mu.Lock()
+		n++
+		call := n
+		mu.Unlock()
+		if call == 1 {
+			fmt.Fprint(w,
+				`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","type":"function","function":{"name":"shell","arguments":"{\"command\":\"sleep 60\"}"}}]},"finish_reason":"tool_calls"}]}`+"\n\n"+
+					`data: [DONE]`+"\n")
+			return
+		}
+		// The turn must end on cancellation; a second model round-trip means the
+		// partial result was fed back instead of stopping.
+		t.Errorf("model was called again after cancellation")
+		fmt.Fprint(w,
+			`data: {"choices":[{"delta":{"content":"unexpected"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`+"\n\n"+
+				`data: [DONE]`+"\n")
+	}))
+	defer exec.Command("pkill", "-f", "^sleep 60$").Run() // tidy any stray survivor
+
+	c := client.New(srv.URL)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	info, err := c.Create(ctx)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// Subscribe to the bus so we can observe the terminal envelope kinds.
+	var busMu sync.Mutex
+	var envelopes []api.Envelope
+	subCtx, subCancel := context.WithCancel(context.Background())
+	defer subCancel()
+	subDone := make(chan struct{})
+	go func() {
+		defer close(subDone)
+		_ = c.Subscribe(subCtx, info.ID, info.Seq, func(env api.Envelope) {
+			busMu.Lock()
+			envelopes = append(envelopes, env)
+			busMu.Unlock()
+		}, func(env api.Envelope) bool { return env.Kind == api.KindTurnDone })
+	}()
+
+	if err := c.Append(ctx, info.ID, "run it"); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+
+	// Wait until the run is in-flight (it appears on /runs with the server clock).
+	var callID string
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		rr, err := c.Runs(ctx, info.ID)
+		if err != nil {
+			t.Fatalf("Runs: %v", err)
+		}
+		if len(rr.Runs) > 0 {
+			callID = rr.Runs[0].CallID
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if callID == "" {
+		t.Fatal("tool never appeared on /runs")
+	}
+
+	// Cancel it and wait for the turn to end.
+	if err := c.Cancel(ctx, info.ID, callID); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+	select {
+	case <-subDone:
+	case <-time.After(10 * time.Second):
+		t.Fatal("turn never completed after cancel")
+	}
+	subCancel()
+
+	// The bus carries tool_cancelled (not tool_result) for the cancelled run.
+	var sawCancelled bool
+	for _, env := range envelopes {
+		if env.Kind == api.KindToolCancelled && env.ToolCallID == callID {
+			sawCancelled = true
+		}
+		if env.Kind == api.KindToolResult && env.ToolCallID == callID {
+			t.Errorf("normal tool_result emitted for a cancelled run")
+		}
+	}
+	if !sawCancelled {
+		t.Errorf("bus missing tool_cancelled; got %+v", envelopes)
+	}
+
+	// The run left the in-flight set.
+	rr, err := c.Runs(ctx, info.ID)
+	if err != nil {
+		t.Fatalf("Runs: %v", err)
+	}
+	if len(rr.Runs) != 0 {
+		t.Errorf("runs after cancel = %+v, want empty", rr.Runs)
+	}
+
+	// History gained a committed tool message marked cancelled.
+	h, err := c.History(ctx, info.ID)
+	if err != nil {
+		t.Fatalf("History: %v", err)
+	}
+	var toolMsg *llm.ChatMessage
+	for i := range h.History {
+		if h.History[i].Role == "tool" {
+			toolMsg = &h.History[i]
+		}
+	}
+	if toolMsg == nil {
+		t.Fatalf("history missing committed tool message; history = %+v", h.History)
+	}
+	if !toolMsg.Cancelled {
+		t.Errorf("committed tool message not marked cancelled: %+v", toolMsg)
+	}
+
+	// No survivor process: the whole group (shell + sleep) was killed.
+	time.Sleep(100 * time.Millisecond)
+	if out, err := exec.Command("pgrep", "-f", "^sleep 60$").Output(); err == nil {
+		t.Errorf("sleep 60 survivor still running after cancel: %q", strings.TrimSpace(string(out)))
+	}
+
+	// The reload view renders the cancelled result with the label.
+	vres, err := http.Get(srv.URL + "/api/sessions/" + url.PathEscape(info.ID) + "/view")
+	if err != nil {
+		t.Fatalf("GET /view: %v", err)
+	}
+	vbody, _ := io.ReadAll(vres.Body)
+	vres.Body.Close()
+	if !strings.Contains(string(vbody), "cancelled") {
+		t.Errorf("/view after cancellation missing 'cancelled' label; body:\n%s", vbody)
+	}
+}
+
+// blockingStream is a tool-output stream that returns EOF only once its context
+// is cancelled, and closes done so a test can observe the client received the
+// cancel signal. It models a long-running command on the execution host.
+type blockingStream struct {
+	ctx  context.Context
+	done chan struct{}
+	once sync.Once
+}
+
+func (s *blockingStream) Read(p []byte) (int, error) {
+	<-s.ctx.Done()
+	s.once.Do(func() { close(s.done) })
+	return 0, io.EOF
+}
+
+func (s *blockingStream) Close() error { return nil }
+
+// TestCancelStopsRemoteExecTool verifies cancellation reaches a connected
+// execution client: the server tells the client to stop its running command
+// (its per-command context is cancelled on the client), then emits
+// tool_cancelled, removes the run, commits a cancelled tool message, and ends
+// the turn.
+func TestCancelStopsRemoteExecTool(t *testing.T) {
+	srv := newTestServer(t, toolThenReplyLLM())
+	c := client.New(srv.URL)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	info, err := c.Create(ctx)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// Register as the execution provider. The dispatch runs a command that
+	// blocks until the client cancels it (the server's Cancel signal), and
+	// records when that happens.
+	bs := &blockingStream{ctx: nil, done: make(chan struct{})}
+	dispatch := func(dctx context.Context, name string, args []byte) (io.ReadCloser, error) {
+		bs.ctx = dctx
+		return bs, nil
+	}
+	go func() { _ = c.ServeExec(ctx, info.ID, dispatch) }()
+	time.Sleep(100 * time.Millisecond)
+
+	// Subscribe to observe the terminal envelope kinds.
+	var busMu sync.Mutex
+	var envelopes []api.Envelope
+	subCtx, subCancel := context.WithCancel(context.Background())
+	defer subCancel()
+	subDone := make(chan struct{})
+	go func() {
+		defer close(subDone)
+		_ = c.Subscribe(subCtx, info.ID, info.Seq, func(env api.Envelope) {
+			busMu.Lock()
+			envelopes = append(envelopes, env)
+			busMu.Unlock()
+		}, func(env api.Envelope) bool { return env.Kind == api.KindTurnDone })
+	}()
+
+	if err := c.Append(ctx, info.ID, "run it"); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+
+	var callID string
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		rr, err := c.Runs(ctx, info.ID)
+		if err != nil {
+			t.Fatalf("Runs: %v", err)
+		}
+		if len(rr.Runs) > 0 {
+			callID = rr.Runs[0].CallID
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if callID == "" {
+		t.Fatal("tool never appeared on /runs")
+	}
+
+	if err := c.Cancel(ctx, info.ID, callID); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+
+	// The client must receive the cancel signal and stop its command.
+	select {
+	case <-bs.done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("execution client never saw the cancel signal")
+	}
+
+	// The turn ends and the run is reconciled as cancelled.
+	select {
+	case <-subDone:
+	case <-time.After(10 * time.Second):
+		t.Fatal("turn never completed after cancel")
+	}
+	subCancel()
+
+	var sawCancelled bool
+	for _, env := range envelopes {
+		if env.Kind == api.KindToolCancelled && env.ToolCallID == callID {
+			sawCancelled = true
+		}
+	}
+	if !sawCancelled {
+		t.Errorf("bus missing tool_cancelled; got %+v", envelopes)
+	}
+
+	rr, err := c.Runs(ctx, info.ID)
+	if err != nil {
+		t.Fatalf("Runs: %v", err)
+	}
+	if len(rr.Runs) != 0 {
+		t.Errorf("runs after cancel = %+v, want empty", rr.Runs)
+	}
+
+	h, err := c.History(ctx, info.ID)
+	if err != nil {
+		t.Fatalf("History: %v", err)
+	}
+	var toolMsg *llm.ChatMessage
+	for i := range h.History {
+		if h.History[i].Role == "tool" {
+			toolMsg = &h.History[i]
+		}
+	}
+	if toolMsg == nil {
+		t.Fatalf("history missing committed tool message; history = %+v", h.History)
+	}
+	if !toolMsg.Cancelled {
+		t.Errorf("committed tool message not marked cancelled: %+v", toolMsg)
 	}
 }

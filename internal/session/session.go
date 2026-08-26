@@ -9,6 +9,7 @@ package session
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"sort"
@@ -213,14 +214,16 @@ type Session struct {
 }
 
 // toolRun is the accumulated state of one in-flight tool execution: what was
-// called, when it started (server clock), and the partial output produced so
-// far.
+// called, when it started (server clock), the partial output produced so far,
+// and the cancel function that aborts it (wired to the agent's per-run context
+// when the run starts, so a Cancel in the UI can stop the running command).
 type toolRun struct {
 	callID    string
 	name      string
 	args      string
 	startedAt int64
 	output    strings.Builder
+	cancel    func()
 }
 
 func newSession(id string, client *llm.Client, js tools.Provider, persist Persister, dbID int64, createdAt int64) *Session {
@@ -289,9 +292,14 @@ func (s *Session) runTurn(ctx context.Context, content string) {
 	done := api.Envelope{Kind: api.KindTurnDone, TurnID: turnID}
 	res, err := agent.RunTurn(ctx, s.client, s.snapshot(), s.provider(), s.emitLive, func(m llm.ChatMessage) error {
 		return s.commit(m)
-	})
+	}, agent.RunHooks{OnRunStarted: s.onRunStarted})
 	if err != nil {
-		done.Error = err.Error()
+		// A tool cancelled by the user is a clean stop, not a failure: the
+		// partial result is already committed and the tool_cancelled envelope
+		// went out, so end the turn without an error marker.
+		if !errors.Is(err, agent.ErrToolCancelled) {
+			done.Error = err.Error()
+		}
 	} else {
 		done.Input = res.Usage.Input
 		done.Output = res.Usage.Output
@@ -467,12 +475,20 @@ func (s *Session) trackToolRun(env api.Envelope) {
 		if s.runs == nil {
 			s.runs = make(map[string]*toolRun)
 		}
-		s.runs[env.ToolCallID] = &toolRun{
+		// onRunStarted registered the run's cancel func before the tool began;
+		// keep it when the start marker (emitted after the tool starts) fills in
+		// the identity, so a Cancel click between registration and start is not
+		// lost.
+		run := &toolRun{
 			callID:    env.ToolCallID,
 			name:      env.Name,
 			args:      env.Arguments,
 			startedAt: env.StartedAt,
 		}
+		if existing, ok := s.runs[env.ToolCallID]; ok && existing.cancel != nil {
+			run.cancel = existing.cancel
+		}
+		s.runs[env.ToolCallID] = run
 		s.mu.Unlock()
 	case api.KindToolResultDelta:
 		if env.ToolCallID == "" {
@@ -483,11 +499,69 @@ func (s *Session) trackToolRun(env api.Envelope) {
 			r.output.WriteString(env.Delta)
 		}
 		s.mu.Unlock()
-	case api.KindToolResult:
+	case api.KindToolResult, api.KindToolCancelled:
+		// Both terminal kinds end the run: it leaves the in-flight set whether
+		// it finished normally or was cancelled.
 		s.mu.Lock()
 		delete(s.runs, env.ToolCallID)
 		s.mu.Unlock()
 	}
+}
+
+// onRunStarted is the agent's per-run-start hook: it records the run's cancel
+// function in the in-flight registry before the tool starts, so a user can
+// cancel it (the UI Cancel button) from the moment it is registered. The cancel
+// aborts the run's context, which for a local tool kills its process group and
+// for a remote tool stops the wait on the stream and signals the client.
+func (s *Session) onRunStarted(callID string, cancel func()) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.runs == nil {
+		s.runs = make(map[string]*toolRun)
+	}
+	r, ok := s.runs[callID]
+	if !ok {
+		r = &toolRun{callID: callID}
+		s.runs[callID] = r
+	}
+	r.cancel = cancel
+}
+
+// CancelRun cancels the in-flight tool run with the given call id. For a local
+// run this kills the command's process group; for a remote run it cancels the
+// agent's wait on the stream (closing the exec pipe) and tells the connected
+// execution client to stop its running command. It returns an error for an
+// unknown call id (the run already finished, or never existed).
+func (s *Session) CancelRun(callID string) error {
+	s.mu.Lock()
+	run, ok := s.runs[callID]
+	if !ok || run == nil {
+		s.mu.Unlock()
+		return fmt.Errorf("unknown run %q", callID)
+	}
+	cancel := run.cancel
+	// If a remote execution client is connected, it runs the command and must
+	// be told to stop it. The agent runs tools sequentially, so at most one
+	// command is in flight and a bare Cancel=true reaches it.
+	var execCh chan api.ExecRequest
+	if s.execCh != nil {
+		execCh = s.execCh
+	}
+	s.mu.Unlock()
+
+	if cancel != nil {
+		cancel()
+	}
+	if execCh != nil {
+		select {
+		case execCh <- api.ExecRequest{Cancel: true}:
+		default:
+			// Client's request buffer is full; the run ends anyway once the
+			// agent's stream closes (remoteProvider closes its pipe on cancel),
+			// so don't block a cancel on a slow client.
+		}
+	}
+	return nil
 }
 
 // Runs returns a snapshot of the session's in-flight tool runs, ordered by

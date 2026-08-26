@@ -61,6 +61,16 @@ We build and run through Docker so the pinned Go version is used for portable de
 
 The server owns conversation state, and since the SQLite-backed history roadmap item it persists every session — its creation time, full committed history (including tool timing, reasoning, and tool calls), and the bus position clients resume from — to a SQLite database at `porter.db` in the working directory. When running via `make server` (which mounts the repo at `/app`) or `porter-macos` from the repo, the file lands in the repo and is gitignored, exactly like `porter.log`. Because committed state lives in the database, sessions survive server restarts: a restarted server loads them back and the sidebar, `/view`, and SSE resume all keep working.
 
+### Cancelling a running task
+
+Long-running tools (tests, builds, `tail -f`) render live in the web UI with an
+elapsed timer, and each running tool block carries a **Cancel** button. Clicking
+it stops the command and ends the turn: a locally-run tool's whole process group
+is killed, a remotely-run tool's connected execution client is signalled to stop
+its command, and the partial output is committed to history marked *cancelled*
+so a reload (and the model, on the next turn) sees the run was aborted rather
+than completed. The backend surface is `POST /api/sessions/{id}/cancel/{call_id}`.
+
 ### Quiet REPL logs
 
 In the REPL the human-readable conversation goes to stdout while the structured JSONL event stream (plus progress lines) goes to stderr. When run interactively through a container, both land on the same terminal and the JSONL can get noisy. Set `PORTER_LOG=/path/to/porter.log` in `.env` to redirect that stream to a file instead — the REPL then only prints the conversation. When running via `make shell` (which mounts the repo at `/app`), a relative path like `porter.log` is written into the repo and gitignored.
