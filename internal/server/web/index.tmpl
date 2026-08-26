@@ -183,6 +183,10 @@
   // Remember which commit seqs we've rendered so a replay doesn't duplicate
   // messages that are already in the DOM.
   const renderedCommits = new Set();
+  // Failed turns (turn_completed with an error) are rendered into the chat as
+  // an error block. Turn-completion markers are also replayed on reconnect,
+  // so remember which marker seqs we've shown to avoid duplicating the block.
+  const renderedTurnErrors = new Set();
 
   // --- Reasoning blocks ---
   // Reasoning is collapsed by default to a single no-wrap row showing only the
@@ -911,6 +915,20 @@
         // many turns remain behind it), and between commits the current value
         // is accurate.
         turnRunning = false;
+        // A turn that failed (e.g. the LLM provider returned a 400 or a rate
+        // limit) surfaces its error in the chat so a silent failure is never
+        // mistaken for a finished turn that just had nothing to say. The
+        // marker is replayed on SSE reconnect, so dedup by seq like committed
+        // messages.
+        if (env.error && !(env.seq && renderedTurnErrors.has(env.seq))) {
+          if (env.seq) renderedTurnErrors.add(env.seq);
+          const errDiv = document.createElement('div');
+          errDiv.className = 'msg msg-error';
+          errDiv.innerHTML = '<span class="msg-role">error</span><div class="msg-content">' +
+            escapeHTML(env.error).replace(/\n/g, '<br>') + '</div>';
+          chat.appendChild(errDiv);
+          hadNewContent = true;
+        }
         updateStatus();
         hadNewContent = true;
         break;

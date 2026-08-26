@@ -2016,3 +2016,87 @@ func TestCancelSilentToolThenRequeue(t *testing.T) {
 	h, _ := c.History(ctx, info.ID)
 	t.Fatalf("second turn never completed; history = %+v", h.History)
 }
+
+// TestTurnErrorSurfacesOnBus verifies a failed turn (the LLM provider returns
+// an error, e.g. a 400) carries the underlying error on the turn_completed
+// envelope instead of silently completing: clients render the marker's Error
+// field to tell the user the turn failed rather than mistaking it for a turn
+// with nothing to say. No assistant reply is committed on a failed turn.
+func TestTurnErrorSurfacesOnBus(t *testing.T) {
+	srv := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The provider rejects the request outright (the model never runs).
+		http.Error(w, `{"error":{"message":"missing field content"}}`, http.StatusBadRequest)
+	}))
+	c := client.New(srv.URL)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	info, err := c.Create(ctx)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := c.Append(ctx, info.ID, "hello"); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+
+	var got []api.Envelope
+	if err := c.Subscribe(ctx, info.ID, info.Seq, func(env api.Envelope) { got = append(got, env) },
+		func(env api.Envelope) bool { return env.Kind == api.KindTurnDone }); err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+
+	var turnErr string
+	for _, env := range got {
+		if env.Kind == api.KindTurnDone {
+			turnErr = env.Error
+		}
+	}
+	if turnErr == "" {
+		t.Fatalf("turn_completed carried no error; got %+v", got)
+	}
+	if !strings.Contains(turnErr, "400") || !strings.Contains(turnErr, "missing field content") {
+		t.Errorf("turn error = %q, want the provider's 400 body", turnErr)
+	}
+
+	// The turn failed before producing a reply; no assistant message committed.
+	h, err := c.History(ctx, info.ID)
+	if err != nil {
+		t.Fatalf("History: %v", err)
+	}
+	for _, m := range h.History {
+		if m.Role == "assistant" {
+			t.Errorf("assistant message committed on a failed turn: %+v", m)
+		}
+	}
+}
+
+// TestIndexRendersTurnError verifies the chat page is wired to surface a failed
+// turn: the turn_completed SSE handler checks env.error, appends an error
+// message block (msg-error), and dedups it by seq so an SSE reconnect replay
+// doesn't duplicate the block.
+func TestIndexRendersTurnError(t *testing.T) {
+	srv := newTestServer(t, plainLLM())
+	c := client.New(srv.URL)
+	ctx := context.Background()
+	info, err := c.Create(ctx)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	resp, err := http.Get(srv.URL + "/?session=" + info.ID)
+	if err != nil {
+		t.Fatalf("GET /: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	s := string(body)
+	for _, want := range []string{
+		`env.error`,           // the turn_completed handler checks the error
+		`renderedTurnErrors`,  // dedup on reconnect replay
+		`msg-error`,           // the error block class (JS + CSS)
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("index missing %q", want)
+		}
+	}
+}

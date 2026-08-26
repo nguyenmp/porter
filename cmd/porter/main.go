@@ -74,6 +74,7 @@ func run(ctx context.Context, cfg config.ClientConfig, prompt string, out io.Wri
 		return err
 	}
 	enc := codec.NewEncoder(out)
+	var turnErr string
 	err = c.Subscribe(ctx, info.ID, info.Seq, func(env api.Envelope) {
 		switch env.Kind {
 		case api.KindLLM:
@@ -86,10 +87,18 @@ func run(ctx context.Context, cfg config.ClientConfig, prompt string, out io.Wri
 			// KindToolResult still carries the full record.
 			data, _ := json.Marshal(env)
 			_, _ = out.Write(append(data, '\n'))
+		case api.KindTurnDone:
+			// A turn that failed (the provider returned an error, e.g. a 400 or
+			// a rate limit) is reported to the caller rather than ending the
+			// stream looking like success.
+			turnErr = env.Error
 		}
 	}, func(env api.Envelope) bool { return env.Kind == api.KindTurnDone })
 	if err != nil {
 		return err
+	}
+	if turnErr != "" {
+		return fmt.Errorf("turn failed: %s", turnErr)
 	}
 	fmt.Fprintf(os.Stderr, "porter: stream complete in %s\n", time.Since(start).Round(time.Millisecond))
 	return nil

@@ -167,3 +167,19 @@ func TestLiveViewRendersCommittedAssistantWhenLiveMissed(t *testing.T) {
 		t.Errorf("live tool round missing tool call; got:\n%s", out.String())
 	}
 }
+
+// TestLiveViewRendersTurnError ensures a failed turn surfaces its error on the
+// human view and records it on the structured stream, instead of ending the
+// turn looking like a successful reply with no tokens.
+func TestLiveViewRendersTurnError(t *testing.T) {
+	var out, jsonl bytes.Buffer
+	v := &liveView{out: &out, jsonl: &jsonl}
+	v.emit(api.Envelope{Kind: api.KindTurnDone, TurnID: 1, Error: "server 400: missing field content"})
+
+	if !strings.Contains(out.String(), "error: server 400: missing field content") {
+		t.Errorf("turn error not shown on the human view; got:\n%s", out.String())
+	}
+	if !strings.Contains(jsonl.String(), `"kind":"turn_completed"`) || !strings.Contains(jsonl.String(), "missing field content") {
+		t.Errorf("turn error not recorded on the structured stream; got:\n%s", jsonl.String())
+	}
+}

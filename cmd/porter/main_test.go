@@ -53,3 +53,28 @@ func TestRunStreamsJSONL(t *testing.T) {
 		t.Errorf("raw SSE leaked through; got:\n%s", got)
 	}
 }
+// TestRunReportsTurnError verifies the one-shot CLI bubbles up a failed turn:
+// when the LLM provider rejects the request (e.g. a 400), run returns an error
+// carrying the provider's message instead of printing "stream complete" and
+// exiting zero as if the turn succeeded.
+func TestRunReportsTurnError(t *testing.T) {
+	llmSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"error":{"message":"missing field content"}}`, http.StatusBadRequest)
+	}))
+	s, err := server.New(config.Config{BaseURL: llmSrv.URL + "/v1", Model: "m", APIKey: "k"})
+	if err != nil {
+		t.Fatalf("server.New: %v", err)
+	}
+	srv := httptest.NewServer(s.Handler())
+	defer func() { srv.Close(); llmSrv.Close() }()
+
+	cfg := config.ClientConfig{ServerURL: srv.URL}
+	var out bytes.Buffer
+	err = run(context.Background(), cfg, "hey", &out)
+	if err == nil {
+		t.Fatal("run returned nil on a failed turn, want the provider error surfaced")
+	}
+	if !strings.Contains(err.Error(), "missing field content") {
+		t.Errorf("run error = %q, want the provider's message", err)
+	}
+}

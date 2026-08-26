@@ -160,6 +160,14 @@ func (v *liveView) emit(env api.Envelope) {
 	}
 	switch env.Kind {
 	case api.KindTurnDone:
+		// A turn that failed (e.g. the LLM provider returned an error) surfaces
+		// its error instead of looking like a finished turn with no reply: print
+		// it on the human view and record it on the structured stream.
+		if env.Error != "" {
+			fmt.Fprintf(v.out, "error: %s\n", env.Error)
+			writeJSONL(v.jsonl, env)
+			return
+		}
 		if env.Input > 0 || env.Output > 0 {
 			fmt.Fprintf(v.out, "(%d in, %d out tokens)\n", env.Input, env.Output)
 		}
