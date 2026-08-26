@@ -138,7 +138,7 @@ const (
 // fields are meaningful.
 type Envelope struct {
 	Kind    string           `json:"kind"`
-	Seq     uint64           `json:"seq,omitempty"`     // KindMessage
+	Seq     uint64           `json:"seq,omitempty"`     // KindMessage, KindTurnDone
 	Event   *codec.Event     `json:"event,omitempty"`   // KindLLM
 	Message *llm.ChatMessage `json:"message,omitempty"` // KindMessage
 	// MessageHTML is the server-rendered HTML for a committed assistant
