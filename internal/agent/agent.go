@@ -134,6 +134,12 @@ func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage,
 				break
 			}
 		}
+		// Flush any terminal events the stream did not deliver as a [DONE]
+		// marker (a provider that closes the SSE stream right after
+		// finish_reason — the usage chunk may arrive in a separate trailing
+		// chunk that we only reach by reading to EOF). Final is idempotent,
+		// so this is a no-op when [DONE] already finalized the decoder.
+		dec.Final()
 		body.Close()
 
 		res.Usage.Input += usage.Input

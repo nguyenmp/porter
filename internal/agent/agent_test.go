@@ -514,3 +514,65 @@ func TestRunTurnCancelsSilentToolCommitsContent(t *testing.T) {
 		t.Errorf("missing tool_cancelled envelope; got %+v", got)
 	}
 }
+
+// usageAfterFinishServer serves a plain reply in the OpenAI-compatible shape:
+// usage arrives in a separate chunk AFTER the finish_reason chunk (with empty
+// choices). When withDone is false it omits the [DONE] marker, exercising the
+// EOF path that Final() must flush.
+func usageAfterFinishServer(t *testing.T, withDone bool) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprintf(w,
+			`data: {"choices":[{"delta":{"content":"done"},"finish_reason":null}]}`+"\n\n"+
+				`data: {"choices":[{"delta":{},"finish_reason":"stop"}]}`+"\n\n"+
+				`data: {"choices":[],"usage":{"prompt_tokens":2,"completion_tokens":3}}`+"\n\n")
+		if withDone {
+			fmt.Fprint(w, `data: [DONE]`+"\n")
+		}
+	}))
+	return srv
+}
+
+// TestRunTurnUsageArrivesAfterFinishReason reproduces the exact bug: because
+// the decoder stopped at finish_reason it never read the trailing usage chunk,
+// so usage came back 0/0. After the fix the loop keeps reading to [DONE] and
+// the separate usage chunk is captured.
+func TestRunTurnUsageArrivesAfterFinishReason(t *testing.T) {
+	srv := usageAfterFinishServer(t, true)
+	defer srv.Close()
+
+	cfg := config.Config{BaseURL: srv.URL + "/v1", Model: "test", APIKey: "k"}
+	client := llm.NewClient(cfg, nil)
+	res, err := RunTurn(context.Background(), client, []llm.ChatMessage{llm.UserMessage("hi")}, tools.NewDispatcher(), nil, nil)
+	if err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+	if res.Text != "done" {
+		t.Errorf("final text = %q, want %q", res.Text, "done")
+	}
+	if res.Usage.Input != 2 || res.Usage.Output != 3 {
+		t.Errorf("usage = %+v, want 2 in / 3 out", res.Usage)
+	}
+}
+
+// TestRunTurnUsageFlushedOnEOFWithoutDone covers a provider that closes the
+// SSE stream after the usage chunk without a [DONE] marker: Final() must flush
+// the terminal events (and the usage) so the turn still records its tokens.
+func TestRunTurnUsageFlushedOnEOFWithoutDone(t *testing.T) {
+	srv := usageAfterFinishServer(t, false) // no [DONE]: EOF path -> dec.Final()
+	defer srv.Close()
+
+	cfg := config.Config{BaseURL: srv.URL + "/v1", Model: "test", APIKey: "k"}
+	client := llm.NewClient(cfg, nil)
+	res, err := RunTurn(context.Background(), client, []llm.ChatMessage{llm.UserMessage("hi")}, tools.NewDispatcher(), nil, nil)
+	if err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+	if res.Text != "done" {
+		t.Errorf("final text = %q, want %q", res.Text, "done")
+	}
+	if res.Usage.Input != 2 || res.Usage.Output != 3 {
+		t.Errorf("usage = %+v, want 2 in / 3 out (Final must flush the trailing usage chunk)", res.Usage)
+	}
+}

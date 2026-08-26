@@ -155,3 +155,94 @@ func TestDecoderRejectsMalformedJSON(t *testing.T) {
 		t.Fatal("expected error for malformed JSON")
 	}
 }
+
+// TestDecoderConsumesTrailingUsageChunk reproduces the real OpenAI/OpenAI-
+// compatible streaming shape: usage arrives in a separate chunk AFTER the
+// finish_reason chunk, with empty choices. The decoder must keep reading past
+// finish_reason (not return done there) so the usage is captured before [DONE].
+func TestDecoderConsumesTrailingUsageChunk(t *testing.T) {
+	got, err := feed(t,
+		`data: {"choices":[{"delta":{"content":"Hi"},"finish_reason":null}]}`,
+		`data: {"choices":[{"delta":{},"finish_reason":"stop"}]}`,
+		`data: {"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":20}}`,
+		`data: [DONE]`,
+	)
+	if err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	for _, want := range []string{
+		`"type":"message"`, `"content":"Hi"`,
+		`"type":"usage"`, `"input_tokens":10`, `"output_tokens":20`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("output missing %q; got:\n%s", want, got)
+		}
+	}
+}
+
+// TestDecoderFinishReasonDoesNotStopStream pins the contract that Process only
+// reports done at [DONE], not at finish_reason: a usage-only chunk can still
+// follow a finish_reason chunk.
+func TestDecoderFinishReasonDoesNotStopStream(t *testing.T) {
+	dec := NewDecoder(nil)
+	done, err := dec.Process(`data: {"choices":[{"delta":{},"finish_reason":"stop"}]}`)
+	if err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	if done {
+		t.Fatal("Process must not report done at finish_reason; usage may follow in a separate chunk")
+	}
+	done, err = dec.Process(`data: {"choices":[],"usage":{"prompt_tokens":1,"completion_tokens":2}}`)
+	if err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	if done {
+		t.Fatal("Process must not report done on a usage-only chunk; [DONE] is still to come")
+	}
+	done, err = dec.Process(`data: [DONE]`)
+	if err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	if !done {
+		t.Fatal("Process must report done at [DONE]")
+	}
+}
+
+// TestDecoderFinalFlushesWithoutDone covers the EOF path: a stream that ends
+// (EOF/close) without a [DONE] marker. Final() must flush the terminal events,
+// including usage consumed in a trailing chunk, and must be idempotent.
+func TestDecoderFinalFlushesWithoutDone(t *testing.T) {
+	var buf bytes.Buffer
+	dec := NewDecoder(NewEncoder(&buf))
+	for _, line := range []string{
+		`data: {"choices":[{"delta":{"content":"yo"},"finish_reason":null}]}`,
+		`data: {"choices":[{"delta":{},"finish_reason":"stop"}]}`,
+		`data: {"choices":[],"usage":{"prompt_tokens":3,"completion_tokens":4}}`,
+	} {
+		done, err := dec.Process(line)
+		if err != nil {
+			t.Fatalf("Process: %v", err)
+		}
+		if done {
+			t.Fatalf("Process reported done before [DONE]")
+		}
+	}
+	if !dec.Final() {
+		t.Fatal("Final reported not done")
+	}
+	got := buf.String()
+	for _, want := range []string{
+		`"type":"message"`, `"content":"yo"`,
+		`"type":"usage"`, `"input_tokens":3`, `"output_tokens":4`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("output missing %q; got:\n%s", want, got)
+		}
+	}
+	// Final is idempotent: a second call must not duplicate events.
+	before := buf.String()
+	dec.Final()
+	if after := buf.String(); after != before {
+		t.Errorf("Final duplicated events; got:\n%s\nwant:\n%s", after, before)
+	}
+}

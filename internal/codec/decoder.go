@@ -69,6 +69,13 @@ type Decoder struct {
 	inTokens  int
 	outTokens int
 
+	// finalized guards the one-time emission of the terminal events
+	// (TypeMessage, TypeToolCall, TypeUsage). A stream may end by a [DONE]
+	// marker or by EOF; both paths must emit them exactly once, and a
+	// finish_reason must not emit them early (the usage chunk is still to
+	// come).
+	finalized bool
+
 	// toolCalls accumulates streamed tool-call fragments keyed by their stream
 	// index, so a call split across deltas reassembles into one.
 	toolCalls map[int]*ToolCall
@@ -99,15 +106,19 @@ func (d *Decoder) emit(ev Event) error {
 
 // Process consumes one raw SSE `data:` line (with the marker still attached, as
 // produced by llm.SSELines) and emits any Events it implies. It returns true
-// once the stream is complete (`[DONE]` or a terminal finish_reason), at which
-// point callers should stop feeding lines.
+// once the stream is complete — that is, at the `[DONE]` marker — at which
+// point callers should stop feeding lines. A terminal finish_reason does NOT
+// end the stream: OpenAI-compatible APIs send the usage totals in a separate
+// chunk after the finish_reason chunk (with empty choices), so Process keeps
+// consuming past finish_reason to pick that usage up. Callers that reach EOF
+// without a [DONE] marker should call Final() to flush the terminal events.
 func (d *Decoder) Process(line string) (bool, error) {
 	payload, done, err := payloadOf(line)
 	if err != nil {
 		return true, fmt.Errorf("parse sse line: %w", err)
 	}
 	if done {
-		return d.emitFinal(), nil
+		return d.finalize(), nil
 	}
 
 	var c chunk
@@ -120,7 +131,6 @@ func (d *Decoder) Process(line string) (bool, error) {
 		d.outTokens = c.Usage.CompletionTokens
 	}
 
-	finished := false
 	for _, choice := range c.Choices {
 		if c := choice.Delta.Content; c != "" {
 			d.full.WriteString(c)
@@ -139,19 +149,26 @@ func (d *Decoder) Process(line string) (bool, error) {
 				return false, err
 			}
 		}
-		if choice.FinishReason != nil {
-			finished = true
-		}
 	}
 
-	if finished {
-		return d.emitFinal(), nil
-	}
 	return false, nil
 }
 
-// emitFinal writes the accumulated message and usage events and reports done.
-func (d *Decoder) emitFinal() bool {
+// Final flushes the accumulated message, tool-call, and usage events for a
+// stream that ended without a [DONE] marker (EOF or transport close). It is
+// safe to call after [DONE] too: finalize runs exactly once, so callers can
+// always invoke Final() after their read loop without double-emitting.
+func (d *Decoder) Final() bool {
+	return d.finalize()
+}
+
+// finalize writes the accumulated message, tool-call, and usage events exactly
+// once and reports done.
+func (d *Decoder) finalize() bool {
+	if d.finalized {
+		return true
+	}
+	d.finalized = true
 	_ = d.emit(Event{Type: TypeMessage, Role: "assistant", Content: d.full.String(), Reasoning: d.reasoning.String()})
 	for _, call := range d.completedToolCalls() {
 		_ = d.emit(Event{Type: TypeToolCall, Index: call.Index, ToolCallID: call.ID, Name: call.Name, Arguments: call.Arguments})
