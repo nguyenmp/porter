@@ -200,8 +200,18 @@ type Session struct {
 	logSeq  uint64
 	turn    int64
 	running bool // a turn has started but its completion marker is not yet committed
-	log     []api.Envelope
-	subs    []chan api.Envelope
+	// totalCached/totalUncached/totalOutput are the session's accumulated
+	// token usage across completed turns, kept in memory and rebuilt from
+	// the persister at startup (a restarted server has no in-flight turns,
+	// so every persisted query came from a completed turn). This is what
+	// the web UI shows as the session total below the input box; a running
+	// turn's usage joins only when its completion marker commits, on the
+	// same write that broadcasts the marker's authoritative session total.
+	totalCached   int
+	totalUncached int
+	totalOutput   int
+	log           []api.Envelope
+	subs          []chan api.Envelope
 
 	// Execution provider connection state.
 	execCh    chan api.ExecRequest
@@ -335,6 +345,16 @@ func (s *Session) ID() string { return s.id }
 // as a "N queued" indicator.
 func (s *Session) QueueDepth() int {
 	return len(s.queue)
+}
+
+// Totals returns the session's accumulated token usage across completed turns
+// (cached/uncached input and output). It seeds the web UI's session-total line
+// at page render; live turn_completed markers carry the authoritative updated
+// totals, so this is only the starting point, not the live source of truth.
+func (s *Session) Totals() (cached, uncached, output int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.totalCached, s.totalUncached, s.totalOutput
 }
 
 // Running reports whether a turn is currently in progress: one has started (its
@@ -516,6 +536,14 @@ func (s *Session) rebuildFromPersisted(ps db.Session) {
 		}
 		s.bufferLocked(env)
 	}
+	// No turns are in flight at startup, so every persisted query belongs to a
+	// completed turn: sum it into the running session total so the session
+	// total survives restarts.
+	for _, q := range ps.Queries {
+		s.totalCached += q.CachedInput
+		s.totalUncached += q.UncachedInput
+		s.totalOutput += q.Output
+	}
 }
 
 // endTurn logs and broadcasts a turn-completion marker so late subscribers see
@@ -526,6 +554,17 @@ func (s *Session) endTurn(env api.Envelope) {
 	s.mu.Lock()
 	s.logSeq++
 	env.Seq = s.logSeq
+	// A completed turn's usage joins the session running total, and the new
+	// total rides on the completion marker: events are ordered, so a client
+	// that always sets (never adds) its session-total display from the marker's
+	// totals converges on the true session total even across replays, and the
+	// baseline rendered at page load can never be double-counted.
+	s.totalCached += env.CachedInput
+	s.totalUncached += env.UncachedInput
+	s.totalOutput += env.Output
+	env.TotalCachedInput = s.totalCached
+	env.TotalUncachedInput = s.totalUncached
+	env.TotalOutput = s.totalOutput
 	s.running = false
 	s.bufferLocked(env)
 	subs := s.subs

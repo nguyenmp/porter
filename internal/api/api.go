@@ -161,10 +161,20 @@ type Envelope struct {
 	// CachedInput/UncachedInput are the turn's prompt-token split (cache hits
 	// vs misses); Output is its completion tokens. Total input is their sum,
 	// derived where display needs it. KindTurnDone.
-	CachedInput   int    `json:"cached_input,omitempty"`
-	UncachedInput int    `json:"uncached_input,omitempty"`
-	Output        int    `json:"output,omitempty"` // KindTurnDone
-	Error         string `json:"error,omitempty"`  // KindTurnDone
+	CachedInput   int `json:"cached_input,omitempty"`
+	UncachedInput int `json:"uncached_input,omitempty"`
+	Output        int `json:"output,omitempty"` // KindTurnDone
+	// TotalCachedInput/TotalUncachedInput/TotalOutput are the session's running
+	// token totals — the sum over every completed turn, not just this one — so
+	// a client can show a session total below the input box without re-deriving
+	// it. The value is authoritative at the marker's bus position: events are
+	// ordered, so a client that always sets its total from these fields
+	// converges on the true session total even across replays (setting, never
+	// adding, so the page-load baseline can't be double-counted). KindTurnDone.
+	TotalCachedInput   int    `json:"total_cached_input,omitempty"`
+	TotalUncachedInput int    `json:"total_uncached_input,omitempty"`
+	TotalOutput        int    `json:"total_output,omitempty"` // KindTurnDone
+	Error              string `json:"error,omitempty"`        // KindTurnDone
 	// Queue is the number of turns still waiting in the server's queue behind
 	// the message this envelope commits. It is set on user KindMessage
 	// envelopes (the server reports, at each turn start, how many messages are

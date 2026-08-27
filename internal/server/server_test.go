@@ -2267,3 +2267,139 @@ func TestTurnCacheSplitRendersInView(t *testing.T) {
 		}
 	}
 }
+
+// runTurnDoneSeq appends a user message to the given session and subscribes
+// from `since` until the turn completes, returning the turn_completed envelope
+// and the highest bus seq observed. Passing the returned seq as the next turn's
+// `since` skips the previous turn's completion marker — a fixed `since` would
+// replay it and stop on the wrong turn.
+func runTurnDoneSeq(t *testing.T, c *client.Client, id string, since uint64) (api.Envelope, uint64) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := c.Append(ctx, id, "run it"); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	var done api.Envelope
+	var last uint64
+	if err := c.Subscribe(ctx, id, since, func(env api.Envelope) {
+		if env.Seq > last {
+			last = env.Seq
+		}
+	}, func(env api.Envelope) bool {
+		if env.Kind == api.KindTurnDone {
+			done = env
+			return true
+		}
+		return false
+	}); err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	if done.Kind != api.KindTurnDone {
+		t.Fatalf("no turn_completed observed")
+	}
+	return done, last
+}
+
+// TestTurnDoneCarriesSessionTotals verifies the session total accumulates
+// across turns and rides on each turn_completed marker, so the web client can
+// show a session total below the input box by setting (never adding) from the
+// marker's totals. Each cacheSplit turn is 7 cached + 3 miss in, 3 out; two
+// turns total 14 cached + 6 miss in, 6 out.
+func TestTurnDoneCarriesSessionTotals(t *testing.T) {
+	srv := newTestServer(t, cacheSplitLLM())
+	c := client.New(srv.URL)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	info, err := c.Create(ctx)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// A fresh session has no usage: the page renders the session-total element
+	// hidden, and the live handler is wired to the marker's total fields.
+	resp0, err := http.Get(srv.URL + "/?session=" + info.ID)
+	if err != nil {
+		t.Fatalf("GET / (empty): %v", err)
+	}
+	body0, _ := io.ReadAll(resp0.Body)
+	resp0.Body.Close()
+	for _, want := range []string{
+		`id="session-total"`,     // the element exists so JS can unhide it
+		`hidden`,                 // zero totals -> hidden at render
+		`env.total_cached_input`, // the live handler reads the marker totals
+		`session-total`,          // the element + JS + CSS class
+	} {
+		if !strings.Contains(string(body0), want) {
+			t.Errorf("empty index missing %q:\n%s", want, body0)
+		}
+	}
+
+	d1, since := runTurnDoneSeq(t, c, info.ID, info.Seq)
+	if d1.TotalCachedInput != 7 || d1.TotalUncachedInput != 3 || d1.TotalOutput != 3 {
+		t.Errorf("turn 1 session total = %d cached/%d miss/%d out, want 7/3/3", d1.TotalCachedInput, d1.TotalUncachedInput, d1.TotalOutput)
+	}
+
+	d2, _ := runTurnDoneSeq(t, c, info.ID, since)
+	if d2.TotalCachedInput != 14 || d2.TotalUncachedInput != 6 || d2.TotalOutput != 6 {
+		t.Errorf("turn 2 session total = %d cached/%d miss/%d out, want 14/6/6", d2.TotalCachedInput, d2.TotalUncachedInput, d2.TotalOutput)
+	}
+
+	// The page seeds the session-total line from the session's running totals.
+	resp, err := http.Get(srv.URL + "/?session=" + info.ID)
+	if err != nil {
+		t.Fatalf("GET /: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	for _, want := range []string{
+		`id="session-total"`,
+		`(14 cached &#43; 6 miss in, 6 out tokens)`,
+	} {
+		if !strings.Contains(string(body), want) {
+			t.Errorf("index missing %q:\n%s", want, body)
+		}
+	}
+}
+
+// TestSessionTotalsSurviveRestartViaPage verifies the session total is rebuilt
+// from the persisted query rows on a restart — the same guarantee as the
+// per-turn token lines — so the page renders the accumulated session total even
+// though turn_completed markers are live-only.
+func TestSessionTotalsSurviveRestartViaPage(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "porter.db")
+
+	// Server 1: run two cacheSplit turns (7 cached + 3 miss in, 3 out each).
+	srv1, ts1 := startServerDB(t, dbPath, cacheSplitLLM())
+	c1 := client.New(ts1.URL)
+	ctx1, cancel1 := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel1()
+	info, err := c1.Create(ctx1)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	since := info.Seq
+	for i := 0; i < 2; i++ {
+		_, since = runTurnDoneSeq(t, c1, info.ID, since)
+	}
+	srv1.Close() // stop schedulers + close the database: the process "restarts"
+
+	// Server 2 on the same database: the page must rebuild the session total
+	// from the persisted queries.
+	_, ts2 := startServerDB(t, dbPath, plainLLM())
+	defer ts2.Close()
+	resp, err := http.Get(ts2.URL + "/?session=" + info.ID)
+	if err != nil {
+		t.Fatalf("GET /: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	for _, want := range []string{
+		`id="session-total"`,
+		`(14 cached &#43; 6 miss in, 6 out tokens)`,
+	} {
+		if !strings.Contains(string(body), want) {
+			t.Errorf("index after restart missing %q:\n%s", want, body)
+		}
+	}
+}

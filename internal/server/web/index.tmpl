@@ -41,6 +41,11 @@
 			<input type="text" name="content" placeholder="Type a message…" autocomplete="off" autofocus>
 			<button type="submit">Send</button>
 		</form>
+		{{/* Session total below the input box: seeded at page render from the
+		     session's accumulated completed-turn usage, then updated in place by
+		     the turn_completed SSE handler from the marker's authoritative
+		     totals. Hidden until the session has any usage. */}}
+		<div class="session-total" id="session-total" {{if and (eq .TotalCached 0) (eq .TotalUncached 0) (eq .TotalOutput 0)}}hidden{{end}}>{{tokenLine .TotalCached .TotalUncached .TotalOutput}}</div>
 		{{else}}
 		<div class="empty-state">
 			<p>No session selected.</p>
@@ -974,6 +979,20 @@
           tokDiv.textContent = tokenLine(env.cached_input || 0, env.uncached_input || 0, env.output || 0);
           chat.appendChild(tokDiv);
           hadNewContent = true;
+        }
+        // The session total below the input box is authoritative on the
+        // completion marker: set (never add) from the carried totals, so an
+        // SSE reconnect replay or an overlap with the page-load baseline can
+        // never double-count. Events are ordered, so the last marker processed
+        // always carries the newest total. Not "new content" for scroll
+        // purposes — it updates in place outside the chat scroll area.
+        const totalEl = document.getElementById('session-total');
+        if (totalEl) {
+          const hasTotals = env.total_cached_input > 0 || env.total_uncached_input > 0 || env.total_output > 0;
+          totalEl.hidden = !hasTotals;
+          if (hasTotals) {
+            totalEl.textContent = tokenLine(env.total_cached_input || 0, env.total_uncached_input || 0, env.total_output || 0);
+          }
         }
         updateStatus();
         hadNewContent = true;

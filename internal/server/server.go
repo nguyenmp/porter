@@ -132,6 +132,13 @@ type pageData struct {
 	// state before the SSE stream catches it up.
 	Running bool
 	Queue   int
+	// TotalCached/TotalUncached/TotalOutput seed the session-total line below
+	// the input box at page render. They are the session's accumulated usage
+	// across completed turns; live turn_completed markers carry the
+	// authoritative updated totals, which the client sets (never adds) from.
+	TotalCached   int
+	TotalUncached int
+	TotalOutput   int
 }
 
 // ToolRunInfo carries the display details of one tool call for the view,
@@ -552,11 +559,15 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "session not found", http.StatusNotFound)
 		return
 	}
+	cached, uncached, output := ses.Totals()
 	render(w, "layout.tmpl", pageData{
-		Title:   "porter",
-		Session: sessID,
-		Seq:     ses.Snapshot().Seq,
-		Running: ses.Running(),
-		Queue:   ses.QueueDepth(),
+		Title:         "porter",
+		Session:       sessID,
+		Seq:           ses.Snapshot().Seq,
+		Running:       ses.Running(),
+		Queue:         ses.QueueDepth(),
+		TotalCached:   cached,
+		TotalUncached: uncached,
+		TotalOutput:   output,
 	})
 }
