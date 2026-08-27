@@ -3,13 +3,15 @@ package tools
 import (
 	"context"
 	"io"
+	"os"
 	"os/exec"
 	"strings"
 	"testing"
 	"time"
+
+	"porter/internal/api"
 )
 
-// run executes a tool via a Provider, reading its output stream to completion.
 func run(ctx context.Context, p Provider, name string, args []byte) (string, error) {
 	stream, err := p.Run(ctx, name, args)
 	if err != nil {
@@ -177,5 +179,65 @@ func TestShellStopKillsWholeTree(t *testing.T) {
 	time.Sleep(200 * time.Millisecond) // allow reparenting to settle
 	if out, err := exec.Command("pgrep", "-f", "^sleep 5$").Output(); err == nil {
 		t.Fatalf("survivor still running after cancel: %q", strings.TrimSpace(string(out)))
+	}
+}
+
+// TestLoadSkillReturnsSkillBody verifies the load_skill tool reads a discovered
+// skill's SKILL.md and streams it back with the conventional exit-status line.
+func TestLoadSkillReturnsSkillBody(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/SKILL.md"
+	if err := os.WriteFile(path, []byte("# my skill\n\ninstructions here\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	d := NewDispatcherWithSkills([]api.Skill{{Name: "my-skill", Description: "desc", Path: path}})
+
+	// The tool is declared to the model when skills are present.
+	defs := d.Defs()
+	if len(defs) != 2 {
+		t.Fatalf("Defs = %d tools, want shell + load_skill", len(defs))
+	}
+	if defs[1].Function.Name != "load_skill" {
+		t.Errorf("second tool = %q, want load_skill", defs[1].Function.Name)
+	}
+	if !strings.Contains(defs[1].Function.Description, "my-skill: desc") {
+		t.Errorf("load_skill description missing skill metadata: %q", defs[1].Function.Description)
+	}
+
+	res, err := run(context.Background(), d, "load_skill", []byte(`{"name":"my-skill"}`))
+	if err != nil {
+		t.Fatalf("Run load_skill: %v", err)
+	}
+	if !strings.Contains(res, "# my skill") || !strings.Contains(res, "instructions here") {
+		t.Errorf("load_skill result = %q, want the skill body", res)
+	}
+	if !strings.Contains(res, "exit code: 0") {
+		t.Errorf("load_skill result missing exit-status line: %q", res)
+	}
+}
+
+// TestLoadSkillUnknownSkill verifies an unknown skill name is reported as an
+// error rather than silently returning nothing.
+func TestLoadSkillUnknownSkill(t *testing.T) {
+	d := NewDispatcher()
+	if _, err := run(context.Background(), d, "load_skill", []byte(`{"name":"nope"}`)); err == nil {
+		t.Fatal("expected error for unknown skill")
+	}
+}
+
+// TestDispatcherWithoutSkillsExposesShellOnly verifies a dispatcher with no
+// skills does not declare load_skill (a provider can't serve it).
+func TestDispatcherWithoutSkillsExposesShellOnly(t *testing.T) {
+	defs := NewDispatcher().Defs()
+	if len(defs) != 1 || defs[0].Function.Name != "shell" {
+		t.Errorf("Defs without skills = %+v, want just shell", defs)
+	}
+}
+
+// TestDispatcherEnvironmentEmpty verifies a local dispatcher reports no
+// environment context (discovery is the connected client's job).
+func TestDispatcherEnvironmentEmpty(t *testing.T) {
+	if got := NewDispatcher().Environment(); got != "" {
+		t.Errorf("Dispatcher.Environment() = %q, want empty", got)
 	}
 }

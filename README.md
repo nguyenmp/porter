@@ -33,6 +33,24 @@ A tree of turns. Each turn has a single parent and can fork into many children.
   - Conversation → sync the DB + network calls
   - Filesystem → sync via git check pointing on a working branch
   - Processes are not sync'ed
+### Execution context & skills
+
+- The execution provider reports where it runs — system (so the model knows to
+  use curl vs wget, or macOS BSD vs GNU userland), working directory, files
+  there, and the skills it can load — when it connects. The server injects this
+  as a system-message prefix on every request, so the model knows where commands
+  will run without guessing.
+- Skills live at `<root>/.agents/skills/*/SKILL.md` or
+  `<root>/.*/skills/*/SKILL.md` (any hidden dir's skills subdir), found under
+  the repo root (`git rev-parse --show-toplevel`) or the user root (`~/`),
+  deduplicated by name (repo wins). They are exposed to the model as a single
+  **load_skill** tool whose description lists every skill; calling it returns
+  the full SKILL.md body.
+- Provider status is real-time: an `exec_status` bus envelope and
+  `GET /api/sessions/{id}/exec/status` show whether a remote provider is
+  connected (and where it runs). Connecting a new provider swaps it in; each
+  change commits a short role-`system` notice so the model knows the environment
+  changed.
 
 ### Cost & metrics
 
@@ -167,7 +185,7 @@ Build order:
 - Forks / resume
 - Memory
 - TODO
-- Skills
+- [x] Skills (discovery + load_skill)
 - Auth
 - Share / link (conversation, fork, turn)
 - Chat with a subagent after it finishes

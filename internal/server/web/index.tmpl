@@ -28,7 +28,7 @@
 		<div id="sse-processor"
 		     hx-ext="sse"
 		     sse-connect="/api/sessions/{{.Session}}/stream?since={{.Seq}}"
-		     sse-swap="message_committed,llm,tool_started,tool_result,tool_result_delta,tool_cancelled,turn_completed"
+		     sse-swap="message_committed,llm,tool_started,tool_result,tool_result_delta,tool_cancelled,turn_completed,exec_status"
 		     hx-swap="none"
 		     hx-on:htmx:sse-message="sseMessage(event)"
 		     hx-on:htmx:sse-open="onSSEOpen()"
@@ -113,7 +113,10 @@
   // null = connecting (before the first open/error); true/false = open/closed.
   let sseConnected = null;
   let turnRunning = statusEl ? statusEl.dataset.running === 'true' : false;
-  let queueDepth = statusEl ? (parseInt(statusEl.dataset.queue, 10) || 0) : 0;
+	let queueDepth = statusEl ? (parseInt(statusEl.dataset.queue, 10) || 0) : 0;
+	// execProvider is the session's current execution provider, refreshed live
+	// by exec_status envelopes (null until the first one arrives).
+	let execProvider = null;
 
   function updateStatus() {
     if (!statusEl) return;
@@ -130,6 +133,11 @@
     } else if (queueDepth > 0) {
       text = queueDepth + ' queued';
       cls = 'status-run';
+    } else if (execProvider && execProvider.kind === 'remote') {
+      // A remote execution provider is connected; surface it (with its cwd) so
+      // the user knows where commands actually run.
+      text = 'exec: ' + (execProvider.context && execProvider.context.cwd ? execProvider.context.cwd : 'remote');
+      cls = 'status-ok';
     } else {
       text = 'connected';
       cls = 'status-ok';
@@ -800,7 +808,17 @@
           queueDepth = env.queue || 0;
           updateStatus();
           hadNewContent = true;
-        } else if (m.role === 'assistant') {
+		} else if (m.role === 'system') {
+		  // A committed system message (e.g. an execution-provider change
+		  // notice) renders as a dim status block, matching /view.
+		  currentAssistant = null;
+		  currentReasoning = null;
+		  const sysDiv = document.createElement('div');
+		  sysDiv.className = 'msg msg-system';
+		  sysDiv.innerHTML = '<span class="msg-role">exec</span><div class="msg-content">' + escapeHTML(m.content).replace(/\n/g, '<br>') + '</div>';
+		  chat.appendChild(sysDiv);
+		  hadNewContent = true;
+		} else if (m.role === 'assistant') {
           finalizeAssistant(m, env.message_html);
           hadNewContent = true;
         } else if (m.role === 'tool') {
@@ -937,7 +955,17 @@
         renderResult(trdRun);
         hadNewContent = true;
         break;
-      case 'resync':
+		case 'exec_status':
+		  // The session's execution provider changed (connected, disconnected, or
+		  // swapped in). Update the sidebar status line with a live hint; the
+		  // committed system notice carries the human-readable text.
+		  const es = env.exec_status;
+		  if (es) {
+		    execProvider = es;
+		    updateStatus();
+		  }
+		  break;
+	      case 'resync':
         // The server closed the stream because we fell too far behind its
         // replay buffer. Reload so the page reconnects with a fresh seq
         // instead of looping forever on the stale `since`.

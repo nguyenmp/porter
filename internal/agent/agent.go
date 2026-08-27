@@ -154,7 +154,15 @@ func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage,
 			}
 		}
 
-		body, err := client.Stream(ctx, res.History, js.Defs())
+		// Inject the execution provider's environment context (system, working
+		// directory, files, skills) as a system-message prefix. It is read fresh
+		// each request so a provider swap mid-turn is reflected immediately; the
+		// context is small and static per provider, so repeating it costs little.
+		msgs := res.History
+		if env := js.Environment(); env != "" {
+			msgs = append([]llm.ChatMessage{llm.SystemMessage(env)}, msgs...)
+		}
+		body, err := client.Stream(ctx, msgs, js.Defs())
 		if err != nil {
 			// The request itself failed (e.g. a provider error): report it as a
 			// failed query before ending the turn.

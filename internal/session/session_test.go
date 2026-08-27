@@ -429,3 +429,131 @@ func TestDeriveTurnsAggregatesQueries(t *testing.T) {
 func agentQuery(idx, cached, uncached, output int, err error) agent.Query {
 	return agent.Query{Idx: idx, CachedInput: cached, UncachedInput: uncached, Output: output, Err: err}
 }
+
+// TestExecStatusReflectsProvider verifies the provider status transitions with
+// registration: local when no client is connected, remote (with the reported
+// context) once one registers, and local again after it unregisters.
+func TestExecStatusReflectsProvider(t *testing.T) {
+	s := newTestSession(t, "s")
+	if st := s.ExecStatus(); st.Connected || st.Kind != "local" {
+		t.Errorf("fresh status = %+v, want local/disconnected", st)
+	}
+
+	s.SetExecContext(api.ExecContext{System: "linux/amd64", CWD: "/work", Files: []string{"README.md"}})
+	ch := make(chan api.ExecRequest, 1)
+	s.RegisterExec(ch)
+
+	st := s.ExecStatus()
+	if !st.Connected || st.Kind != "remote" {
+		t.Errorf("registered status = %+v, want remote/connected", st)
+	}
+	if st.Context == nil || st.Context.CWD != "/work" {
+		t.Errorf("registered status context = %+v, want the reported cwd", st.Context)
+	}
+
+	s.UnregisterExec()
+	if st := s.ExecStatus(); st.Connected || st.Kind != "local" {
+		t.Errorf("after unregister status = %+v, want local/disconnected", st)
+	}
+}
+
+// TestProviderChangeCommitsSystemNotices verifies that registering and
+// unregistering an execution provider commits short role-"system" messages, so
+// the model sees the environment change on its next turn.
+func TestProviderChangeCommitsSystemNotices(t *testing.T) {
+	s := newTestSession(t, "s")
+	s.SetExecContext(api.ExecContext{System: "linux/amd64", CWD: "/work"})
+	s.RegisterExec(make(chan api.ExecRequest, 1))
+	s.UnregisterExec()
+
+	snap := s.Snapshot()
+	if len(snap.History) != 2 {
+		t.Fatalf("history = %+v, want 2 system notices", snap.History)
+	}
+	if snap.History[0].Role != "system" || !strings.Contains(snap.History[0].Content, "execution provider connected") || !strings.Contains(snap.History[0].Content, "/work") {
+		t.Errorf("connect notice = %+v", snap.History[0])
+	}
+	if snap.History[1].Role != "system" || !strings.Contains(snap.History[1].Content, "disconnected") {
+		t.Errorf("disconnect notice = %+v", snap.History[1])
+	}
+}
+
+// TestProviderChangePublishesStatus verifies the exec_status envelope is
+// published on register and unregister, so clients get real-time status.
+func TestProviderChangePublishesStatus(t *testing.T) {
+	s := newTestSession(t, "s")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stream := s.From(ctx, 0)
+
+	done := make(chan struct{})
+	var kinds []string
+	var statuses []api.ExecStatus
+	go func() {
+		defer close(done)
+		for env := range stream {
+			if env.Kind == api.KindExecStatus && env.ExecStatus != nil {
+				kinds = append(kinds, env.Kind)
+				statuses = append(statuses, *env.ExecStatus)
+			}
+		}
+	}()
+
+	s.RegisterExec(make(chan api.ExecRequest, 1))
+	s.UnregisterExec()
+
+	// Give the publish goroutine a moment, then stop the stream.
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+	<-done
+
+	if len(statuses) < 2 {
+		t.Fatalf("got %d exec_status envelopes %v, want >= 2", len(statuses), kinds)
+	}
+	if !statuses[0].Connected || statuses[0].Kind != "remote" {
+		t.Errorf("first status = %+v, want remote", statuses[0])
+	}
+	if statuses[len(statuses)-1].Connected || statuses[len(statuses)-1].Kind != "local" {
+		t.Errorf("last status = %+v, want local", statuses[len(statuses)-1])
+	}
+}
+
+// TestRemoteProviderDefsAndEnvironmentFromContext verifies the session's remote
+// provider exposes the client's reported context: load_skill appears when
+// skills are registered, and Environment returns the context system message.
+func TestRemoteProviderDefsAndEnvironmentFromContext(t *testing.T) {
+	s := newTestSession(t, "s")
+
+	// No context yet: remote provider (once registered) exposes only shell and
+	// no environment.
+	s.RegisterExec(make(chan api.ExecRequest, 1))
+	p := s.provider()
+	if len(p.Defs()) != 1 {
+		t.Errorf("Defs with no context = %d tools, want 1 (shell)", len(p.Defs()))
+	}
+	if env := p.Environment(); env != "" {
+		t.Errorf("Environment with no context = %q, want empty", env)
+	}
+	s.UnregisterExec()
+
+	// With a skill reported, the same provider exposes load_skill and a context
+	// system message mentioning the skill and cwd.
+	s.SetExecContext(api.ExecContext{
+		System: "linux/amd64",
+		CWD:    "/work",
+		Files:  []string{"README.md"},
+		Skills: []api.Skill{{Name: "my-skill", Description: "does things", Path: "/work/skills/my-skill/SKILL.md"}},
+	})
+	s.RegisterExec(make(chan api.ExecRequest, 1))
+	p = s.provider()
+	defs := p.Defs()
+	if len(defs) != 2 || defs[1].Function.Name != "load_skill" {
+		t.Errorf("Defs with skills = %+v, want shell + load_skill", defs)
+	}
+	env := p.Environment()
+	for _, want := range []string{"linux/amd64", "/work", "README.md", "my-skill: does things"} {
+		if !strings.Contains(env, want) {
+			t.Errorf("Environment missing %q:\n%s", want, env)
+		}
+	}
+}

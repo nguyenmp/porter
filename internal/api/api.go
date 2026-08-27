@@ -39,6 +39,12 @@ const (
 	// SessionCancelPath cancels an in-flight tool run, stopping the running
 	// command and ending the turn: POST.
 	SessionCancelPath = "/api/sessions/{id}/cancel/{call_id}"
+	// SessionExecContextPath registers the environment context of the connected
+	// execution provider (system, working directory, files, skills): POST.
+	SessionExecContextPath = "/api/sessions/{id}/exec/context"
+	// SessionExecStatusPath returns the session's current execution provider
+	// status (connected/local + its reported context): GET.
+	SessionExecStatusPath = "/api/sessions/{id}/exec/status"
 )
 
 // ExecRequest is one message the server pushes to a session's execution
@@ -133,6 +139,10 @@ const (
 	// KindResync tells a subscriber its `since` is too old to bridge to live;
 	// it must refetch history and resubscribe. No further lines follow.
 	KindResync = "resync"
+	// KindExecStatus broadcasts the session's current execution provider
+	// status (connected/local + its reported context) whenever it changes. It
+	// comes from our system, not the model.
+	KindExecStatus = "exec_status"
 )
 
 // Envelope is a single NDJSON line on a session's event bus. Kind selects which
@@ -180,7 +190,11 @@ type Envelope struct {
 	// envelopes (the server reports, at each turn start, how many messages are
 	// queued after it) so the web client can show a live queue-depth indicator
 	// without polling.
-	Queue int `json:"queue,omitempty"` // KindMessage (user)
+	// ExecStatus is the session's current execution provider status, published
+	// whenever it changes (a client connected, disconnected, or swapped in).
+	// KindExecStatus.
+	ExecStatus *ExecStatus `json:"exec_status,omitempty"` // KindExecStatus
+	Queue      int         `json:"queue,omitempty"`       // KindMessage (user)
 }
 
 // SessionSummary is one row of the session list (GET /api/sessions). ID and
@@ -197,4 +211,36 @@ type SessionSummary struct {
 // sidebar) renders these instead of keeping its own registry.
 type SessionsResponse struct {
 	Sessions []SessionSummary `json:"sessions"`
+}
+
+// Skill is the metadata for one discovered skill, as reported by an execution
+// provider. Name and Description are what the model sees in the load_skill
+// tool; Path is where the provider reads the full SKILL.md body from when the
+// model asks to load it. It is never shown to the model.
+type Skill struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Path        string `json:"path"`
+}
+
+// ExecContext is the environment an execution provider reports when it
+// connects: what system it runs on, the working directory, files there, and
+// the skills it can load. The server injects it into the model's context and
+// exposes a load_skill tool backed by the reported skills, so the model knows
+// where commands will run and what skills exist without guessing.
+type ExecContext struct {
+	System string   `json:"system"`
+	CWD    string   `json:"cwd"`
+	Files  []string `json:"files"`
+	Skills []Skill  `json:"skills"`
+}
+
+// ExecStatus describes a session's current execution provider. Connected
+// reports whether a remote execution client is registered; Kind is "remote"
+// when one is, else "local". Context is the environment the connected provider
+// reported, set only while it is connected.
+type ExecStatus struct {
+	Connected bool         `json:"connected"`
+	Kind      string       `json:"kind"`
+	Context   *ExecContext `json:"context,omitempty"`
 }

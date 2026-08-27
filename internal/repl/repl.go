@@ -22,6 +22,7 @@ import (
 	"porter/internal/client"
 	"porter/internal/codec"
 	"porter/internal/config"
+	"porter/internal/exec"
 	"porter/internal/llm"
 	"porter/internal/tools"
 )
@@ -53,12 +54,29 @@ func Run(ctx context.Context, cfg config.ClientConfig, in io.Reader, out, jsonl 
 	}
 
 	fmt.Fprintf(out, "session %s\n", info.ID)
+
+	// Discover the environment this client runs in (system, working directory,
+	// files, skills) so it can report it to the server as the session's
+	// execution provider: the server injects it into the model and exposes
+	// load_skill for the discovered skills. Skills live in the repo or user
+	// roots (e.g. .agents/skills/*/SKILL.md); the data can go stale if skills
+	// are edited after connecting, which is fine here.
+	env, err := exec.Discover("")
+	if err != nil {
+		return fmt.Errorf("discover execution environment: %w", err)
+	}
+	fmt.Fprintf(jsonl, "execution provider: %s @ %s (%d skills)\n", env.System, env.CWD, len(env.Skills))
+
 	// Act as the session's execution provider: hold the exec connection open and
-	// run any shell tool calls the agent sends on this host, streaming the
-	// output back. Re-register on reconnect until the session ends.
-	dispatcher := tools.NewDispatcher()
+	// run the shell and load_skill tool calls the agent sends on this host,
+	// streaming the output back. Register the context on every (re)connect, so
+	// a new provider that swaps in brings its own environment and skills.
+	dispatcher := tools.NewDispatcherWithSkills(env.Skills)
 	go func() {
 		for {
+			if err := c.PostExecContext(ctx, info.ID, env); err != nil && ctx.Err() == nil {
+				fmt.Fprintf(jsonl, "execution provider: context register failed: %v\n", err)
+			}
 			if err := c.ServeExec(ctx, info.ID, dispatcher.Run); err != nil {
 				if ctx.Err() != nil {
 					return
@@ -225,6 +243,10 @@ func (v *liveView) emit(env api.Envelope) {
 					Reasoning: m.Reasoning,
 				})
 			}
+		case "system":
+			// A committed system message (e.g. an execution-provider change
+			// notice) renders dimmed so the user sees the environment change.
+			renderMessage(v.out, m)
 		}
 	}
 }
@@ -246,6 +268,8 @@ func renderMessage(w io.Writer, m llm.ChatMessage) {
 		for _, c := range m.ToolCalls {
 			writeDimmed(w, dim, "\n> "+c.Function.Name+": "+c.Function.Arguments+"\n")
 		}
+	case "system":
+		writeDimmed(w, dim, "\n[sys] "+m.Content+"\n")
 	}
 }
 

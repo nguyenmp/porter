@@ -67,18 +67,24 @@ func TestRunStreamsMultiTurn(t *testing.T) {
 
 	cfg := config.ClientConfig{ServerURL: srv.URL}
 	var out, jsonl bytes.Buffer
-	// Two turns: first "hello", then "again". History should grow 1 -> 3.
+	// Two turns: first "hello", then "again". The REPL is the session's
+	// execution provider, so every request sees the injected environment
+	// context (1 system message) plus the committed provider-connect notice
+	// (1 system message): first turn = 3 messages, second = 5.
 	err := Run(context.Background(), cfg, strings.NewReader("hello\nagain\nquit\n"), &out, &jsonl)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 
 	got := out.String()
-	if !strings.Contains(got, "reply 1") {
-		t.Errorf("first turn should see 1 message; got:\n%s", got)
-	}
 	if !strings.Contains(got, "reply 3") {
-		t.Errorf("second turn should see 3 messages (history grew); got:\n%s", got)
+		t.Errorf("first turn should see 3 messages (context + connect notice + user); got:\n%s", got)
+	}
+	if !strings.Contains(got, "reply 5") {
+		t.Errorf("second turn should see 5 messages (history grew); got:\n%s", got)
+	}
+	if !strings.Contains(got, "execution provider connected:") {
+		t.Errorf("committed provider-connect notice missing from the view; got:\n%s", got)
 	}
 	if !strings.Contains(got, "(4 in, 5 out tokens)") {
 		t.Errorf("missing token line; got:\n%s", got)

@@ -22,6 +22,11 @@
 					</details>
 				{{end}}
 			</div>
+		{{else if eq $m.Role "system"}}
+			<div class="msg msg-system">
+				<span class="msg-role">exec</span>
+				<div class="msg-content">{{nl2br $m.Content}}</div>
+			</div>
 		{{else if eq $m.Role "tool"}}
 			{{$t := index $.Tools $m.ToolCallID}}
 			{{$code := toolExitCode $m.Content}}

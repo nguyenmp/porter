@@ -32,6 +32,12 @@
 		.msg-assistant { background: #f5f5f5; }
 		.msg-error { background: #fdecea; border: 1px solid #f5c2c2; }
 		.msg-error .msg-role { color: #b33; }
+		/* System messages (e.g. execution-provider change notices) render as a
+		   dim status line so the user sees the environment change without it
+		   reading as conversation content. */
+		.msg-system { background: transparent; padding: 0.15rem 0.5rem; }
+		.msg-system .msg-role { color: #999; font-weight: normal; }
+		.msg-system .msg-content { color: #888; font-size: 0.8em; white-space: pre-wrap; }
 		/* Per-turn token count rendered after a completed turn (mirrors the
 		   REPL's "(N in, M out tokens)" line): small and dim so it reads as
 		   metadata under the final message, not part of the conversation. */

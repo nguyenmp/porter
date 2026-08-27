@@ -254,3 +254,22 @@ func (c *Client) statusError(resp *http.Response) error {
 	_, _ = buf.ReadFrom(http.MaxBytesReader(nil, resp.Body, 4096))
 	return fmt.Errorf("server %s: %s", resp.Status, strings.TrimSpace(buf.String()))
 }
+
+// PostExecContext registers the caller's environment context with the session,
+// so the server can inject it into the model and expose load_skill for the
+// reported skills. It is called when the caller connects as the session's
+// execution provider.
+func (c *Client) PostExecContext(ctx context.Context, id string, execCtx api.ExecContext) error {
+	body, err := json.Marshal(execCtx)
+	if err != nil {
+		return fmt.Errorf("marshal exec context: %w", err)
+	}
+	return c.doJSON(ctx, http.MethodPost, c.path(api.SessionExecContextPath, id), body, nil)
+}
+
+// ExecStatus returns the session's current execution provider status.
+func (c *Client) ExecStatus(ctx context.Context, id string) (api.ExecStatus, error) {
+	var out api.ExecStatus
+	err := c.doJSON(ctx, http.MethodGet, c.path(api.SessionExecStatusPath, id), nil, &out)
+	return out, err
+}

@@ -220,6 +220,8 @@ type fakeToolProvider struct {
 
 func (p *fakeToolProvider) Defs() []llm.Tool { return tools.Defs() }
 
+func (p *fakeToolProvider) Environment() string { return "" }
+
 func (p *fakeToolProvider) Run(ctx context.Context, name string, args []byte) (io.ReadCloser, error) {
 	return &chunkStream{chunks: p.chunks}, nil
 }
@@ -322,6 +324,8 @@ type cancelProvider struct {
 }
 
 func (p *cancelProvider) Defs() []llm.Tool { return tools.Defs() }
+
+func (p *cancelProvider) Environment() string { return "" }
 
 func (p *cancelProvider) Run(ctx context.Context, name string, args []byte) (io.ReadCloser, error) {
 	p.stream = &ctxStream{ctx: ctx}
@@ -696,5 +700,47 @@ func TestRunTurnCarriesCacheSplit(t *testing.T) {
 	}
 	if q := queries[0]; q.CachedInput != 7 || q.UncachedInput != 3 || q.Output != 3 || q.Err != nil {
 		t.Errorf("reported query = %+v, want 7 cached + 3 miss in, 3 out, no error", q)
+	}
+}
+
+// envProvider wraps a Dispatcher and reports a fixed environment context, so a
+// test can verify RunTurn injects it as the first (system) message.
+type envProvider struct {
+	*tools.Dispatcher
+	env string
+}
+
+func (p *envProvider) Environment() string { return p.env }
+
+// TestRunTurnInjectsEnvironmentContext verifies the execution provider's
+// environment context is prepended as a system message to every request.
+func TestRunTurnInjectsEnvironmentContext(t *testing.T) {
+	srv, snapshot := toolServer(t)
+	defer srv.Close()
+
+	cfg := config.Config{BaseURL: srv.URL + "/v1", Model: "test", APIKey: "k"}
+	client := llm.NewClient(cfg, nil)
+	provider := &envProvider{Dispatcher: tools.NewDispatcher(), env: "You are running on: linux/amd64\nWorking directory: /work"}
+
+	_, err := RunTurn(context.Background(), client, []llm.ChatMessage{llm.UserMessage("run it")}, provider, nil, nil)
+	if err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+
+	captured, _ := snapshot()
+	if len(captured) != 2 {
+		t.Fatalf("expected 2 requests, got %d", len(captured))
+	}
+	for i, msgs := range captured {
+		if len(msgs) < 2 {
+			t.Fatalf("request %d has %d messages, want >= 2 (context + history)", i, len(msgs))
+		}
+		var first llm.ChatMessage
+		if err := json.Unmarshal(msgs[0], &first); err != nil {
+			t.Fatalf("unmarshal first message: %v", err)
+		}
+		if first.Role != "system" || !strings.Contains(first.Content, "/work") {
+			t.Errorf("request %d first message = %+v, want the injected system context", i, first)
+		}
 	}
 }

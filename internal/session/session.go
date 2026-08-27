@@ -217,6 +217,11 @@ type Session struct {
 	execCh    chan api.ExecRequest
 	execCalls map[string]*execCall
 	execSeq   int
+	// execCtx is the environment context the connected execution client
+	// reported (system, working directory, files, skills). It drives both the
+	// model context the remote provider injects and the load_skill tool
+	// definitions it exposes. Nil until a client registers one.
+	execCtx *api.ExecContext
 
 	// In-flight tool runs keyed by call_id. The agent's live envelopes are
 	// recorded here (started/delta/result) so a client that connects or

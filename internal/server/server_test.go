@@ -2403,3 +2403,192 @@ func TestSessionTotalsSurviveRestartViaPage(t *testing.T) {
 		}
 	}
 }
+
+// TestExecContextAndStatus verifies the exec-context registration endpoint and
+// the status endpoint: status is local before a provider connects, remote (with
+// the reported context) once it does, and local again after it disconnects.
+func TestExecContextAndStatus(t *testing.T) {
+	srv := newTestServer(t, plainLLM())
+	c := client.New(srv.URL)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	info, err := c.Create(ctx)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	execCtx := api.ExecContext{System: "linux/amd64", CWD: "/work", Files: []string{"README.md"}}
+	if err := c.PostExecContext(ctx, info.ID, execCtx); err != nil {
+		t.Fatalf("PostExecContext: %v", err)
+	}
+
+	// No provider connected yet: status is local (context not yet active).
+	st, err := c.ExecStatus(ctx, info.ID)
+	if err != nil {
+		t.Fatalf("ExecStatus: %v", err)
+	}
+	if st.Connected || st.Kind != "local" {
+		t.Errorf("status before connect = %+v, want local/disconnected", st)
+	}
+
+	// Connect as the execution provider under its own context so we can cancel
+	// the exec subscription without killing the status queries below.
+	execCtx2, execCancel := context.WithCancel(ctx)
+	go func() { _ = c.ServeExec(execCtx2, info.ID, tools.NewDispatcher().Run) }()
+	time.Sleep(150 * time.Millisecond)
+
+	st, err = c.ExecStatus(ctx, info.ID)
+	if err != nil {
+		t.Fatalf("ExecStatus after connect: %v", err)
+	}
+	if !st.Connected || st.Kind != "remote" {
+		t.Errorf("status after connect = %+v, want remote/connected", st)
+	}
+	if st.Context == nil || st.Context.CWD != "/work" || st.Context.System != "linux/amd64" {
+		t.Errorf("status context = %+v, want the reported context", st.Context)
+	}
+
+	// Disconnect (cancel the exec subscription): back to local.
+	execCancel()
+	time.Sleep(150 * time.Millisecond)
+	st, err = c.ExecStatus(ctx, info.ID)
+	if err != nil {
+		t.Fatalf("ExecStatus after disconnect: %v", err)
+	}
+	if st.Connected || st.Kind != "local" {
+		t.Errorf("status after disconnect = %+v, want local/disconnected", st)
+	}
+}
+
+// capturingLLM records each request's messages and tools, then replies plainly.
+func capturingLLM(captured *[][]json.RawMessage, toolsSeen *[]bool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Messages []json.RawMessage `json:"messages"`
+			Tools    []json.RawMessage `json:"tools"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			return
+		}
+		*captured = append(*captured, req.Messages)
+		*toolsSeen = append(*toolsSeen, len(req.Tools) > 0)
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w,
+			`data: {"choices":[{"delta":{"content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":2}}`+"\n\n"+
+				`data: [DONE]`+"\n")
+	}
+}
+
+// TestExecProviderContextInjectedIntoModel is the end-to-end path: an execution
+// provider registers its context (with a skill), and the server injects it as a
+// system message and exposes load_skill to the model.
+func TestExecProviderContextInjectedIntoModel(t *testing.T) {
+	var captured [][]json.RawMessage
+	var toolsSeen []bool
+	srv := newTestServer(t, capturingLLM(&captured, &toolsSeen))
+	c := client.New(srv.URL)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	info, err := c.Create(ctx)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	execCtx := api.ExecContext{
+		System: "linux/arm64",
+		CWD:    "/work",
+		Files:  []string{"README.md", "main.go"},
+		Skills: []api.Skill{{Name: "my-skill", Description: "does things", Path: "/work/.agents/skills/my-skill/SKILL.md"}},
+	}
+	if err := c.PostExecContext(ctx, info.ID, execCtx); err != nil {
+		t.Fatalf("PostExecContext: %v", err)
+	}
+	go func() { _ = c.ServeExec(ctx, info.ID, tools.NewDispatcher().Run) }()
+	time.Sleep(150 * time.Millisecond)
+
+	if err := c.Append(ctx, info.ID, "hi"); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	done := false
+	if err := c.Subscribe(ctx, info.ID, info.Seq, nil, func(env api.Envelope) bool {
+		if env.Kind == api.KindTurnDone {
+			done = true
+			return true
+		}
+		return false
+	}); err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	if !done {
+		t.Fatal("no turn_completed observed")
+	}
+
+	if len(captured) == 0 {
+		t.Fatal("no LLM request captured")
+	}
+	var first llm.ChatMessage
+	if err := json.Unmarshal(captured[0][0], &first); err != nil {
+		t.Fatalf("unmarshal first message: %v", err)
+	}
+	if first.Role != "system" {
+		t.Errorf("first message role = %q, want system (injected context)", first.Role)
+	}
+	for _, want := range []string{"/work", "README.md", "my-skill: does things"} {
+		if !strings.Contains(first.Content, want) {
+			t.Errorf("injected context missing %q:\n%s", want, first.Content)
+		}
+	}
+	if !toolsSeen[0] {
+		t.Error("model was not offered any tools")
+	}
+}
+
+// TestWebRendersExecStatusAndSystemNotices verifies the web UI surfaces the new
+// execution-provider pieces: the SSE stream subscribes to exec_status, and /view
+// renders committed role-"system" provider notices as a dim block.
+func TestWebRendersExecStatusAndSystemNotices(t *testing.T) {
+	srv := newTestServer(t, plainLLM())
+	c := client.New(srv.URL)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	info, err := c.Create(ctx)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	// Register an exec provider with context, so a connect notice is committed.
+	execCtx := api.ExecContext{System: "linux/amd64", CWD: "/work"}
+	if err := c.PostExecContext(ctx, info.ID, execCtx); err != nil {
+		t.Fatalf("PostExecContext: %v", err)
+	}
+	go func() { _ = c.ServeExec(ctx, info.ID, tools.NewDispatcher().Run) }()
+	time.Sleep(150 * time.Millisecond)
+	// Disconnect to keep the server from holding a connection at cleanup.
+	cancel()
+	time.Sleep(150 * time.Millisecond)
+
+	// Index page: the SSE processor must subscribe to exec_status.
+	resp, err := http.Get(srv.URL + "/?session=" + info.ID)
+	if err != nil {
+		t.Fatalf("GET /: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if !strings.Contains(string(body), "exec_status") {
+		t.Errorf("index missing exec_status in the SSE stream; got:\n%s", string(body)[:400])
+	}
+
+	// /view: the committed provider notice renders as a system block.
+	resp, err = http.Get(srv.URL + "/api/sessions/" + info.ID + "/view")
+	if err != nil {
+		t.Fatalf("GET /view: %v", err)
+	}
+	vbody, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	v := string(vbody)
+	if !strings.Contains(v, "msg-system") || !strings.Contains(v, "execution provider connected") {
+		t.Errorf("/view missing the system notice; got:\n%s", v[:600])
+	}
+}

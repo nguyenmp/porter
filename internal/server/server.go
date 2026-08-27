@@ -239,6 +239,8 @@ func (s *Server) Handler() http.Handler {
 	r.Get(api.SessionExecPath, s.handleExec)
 	r.Post(api.SessionExecResultPath, s.handleExecResult)
 	r.Post(api.SessionCancelPath, s.handleCancel)
+	r.Post(api.SessionExecContextPath, s.handleExecContext)
+	r.Get(api.SessionExecStatusPath, s.handleExecStatus)
 	return r
 }
 
@@ -472,6 +474,38 @@ func (s *Server) handleExecResult(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusOK)
+}
+
+// handleExecContext registers the environment context of the connected
+// execution provider (system, working directory, files, skills). The REPL
+// posts it when it connects so the session can inject it into the model
+// and expose load_skill for the reported skills.
+func (s *Server) handleExecContext(w http.ResponseWriter, r *http.Request) {
+	ses, ok := s.store.Get(chi.URLParam(r, "id"))
+	if !ok {
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+	var ctx api.ExecContext
+	if err := json.NewDecoder(r.Body).Decode(&ctx); err != nil {
+		http.Error(w, "invalid exec context: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	ses.SetExecContext(ctx)
+	w.WriteHeader(http.StatusOK)
+}
+
+// handleExecStatus returns the session's current execution provider status,
+// so a client can show which provider is active (and swap in a new one)
+// without polling the event bus.
+func (s *Server) handleExecStatus(w http.ResponseWriter, r *http.Request) {
+	ses, ok := s.store.Get(chi.URLParam(r, "id"))
+	if !ok {
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(ses.ExecStatus())
 }
 
 // render executes the named template with the given data and writes the result

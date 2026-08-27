@@ -1,0 +1,157 @@
+package exec
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"porter/internal/api"
+)
+
+// writeSkill creates a skill at root/<dir>/skills/<name>/SKILL.md and returns
+// its path.
+func writeSkill(t *testing.T, root, hiddenDir, name, body string) string {
+	t.Helper()
+	dir := filepath.Join(root, hiddenDir, "skills", name)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", dir, err)
+	}
+	p := filepath.Join(dir, "SKILL.md")
+	if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+		t.Fatalf("write %s: %v", p, err)
+	}
+	return p
+}
+
+// findSkillsIn runs FindSkills with cwd in repo, overriding the user-home root
+// via HOME so global skills resolve to home.
+func findSkillsIn(t *testing.T, repo, home string) []api.Skill {
+	t.Helper()
+	t.Setenv("HOME", home)
+	return FindSkills(repo)
+}
+
+func TestFindSkillsDiscoversRepoAndGlobal(t *testing.T) {
+	repo := t.TempDir()
+	home := t.TempDir()
+
+	// Repo skills via the two patterns.
+	writeSkill(t, repo, ".agents", "repo-skill", "# repo skill\n\nDo the repo thing.\n")
+	writeSkill(t, repo, ".claude", "claude-skill", "# claude skill\n\nDo the claude thing.\n")
+	// A global skill in the user root.
+	writeSkill(t, home, ".agents", "global-skill", "# global skill\n\nDo the global thing.\n")
+	// A duplicate name: repo wins over global.
+	writeSkill(t, repo, ".agents", "dup", "---\nname: dup\n---\n# repo dup\n\nrepo version\n")
+	writeSkill(t, home, ".agents", "dup", "# global dup\n\nglobal version\n")
+
+	skills := findSkillsIn(t, repo, home)
+	names := map[string]string{}
+	for _, s := range skills {
+		names[s.Name] = s.Path
+	}
+	for _, want := range []string{"repo-skill", "claude-skill", "global-skill", "dup"} {
+		if _, ok := names[want]; !ok {
+			t.Errorf("missing skill %q in %+v", want, names)
+		}
+	}
+	// The dedup picks the repo (more specific) copy of "dup".
+	dupPath := filepath.Join(repo, ".agents", "skills", "dup", "SKILL.md")
+	if names["dup"] != dupPath {
+		t.Errorf("dup skill path = %q, want repo copy %q", names["dup"], dupPath)
+	}
+	// The repo skill's description comes from its first non-heading line.
+	for _, s := range skills {
+		if s.Name == "repo-skill" && s.Description != "Do the repo thing." {
+			t.Errorf("repo-skill description = %q, want first line", s.Description)
+		}
+	}
+}
+
+func TestFindSkillsSkipsDotAndDotDot(t *testing.T) {
+	root := t.TempDir()
+	home := t.TempDir()
+	// A skills dir in the parent of root must NOT be found (the `.*` glob
+	// matches `..`).
+	parent := filepath.Dir(root)
+	writeSkill(t, parent, ".agents", "parent-skill", "# parent skill\n")
+
+	skills := findSkillsIn(t, root, home)
+	for _, s := range skills {
+		if s.Name == "parent-skill" {
+			t.Errorf("found parent-dir skill %q at %q; should be out of scope", s.Name, s.Path)
+		}
+	}
+}
+
+func TestParseFrontmatter(t *testing.T) {
+	fm, ok := parseFrontmatter("---\nname: foo\ndescription: \"Does the foo\"\n---\nbody\n")
+	if !ok {
+		t.Fatal("expected frontmatter")
+	}
+	if fm["name"] != "foo" || fm["description"] != "Does the foo" {
+		t.Errorf("frontmatter = %+v, want name=foo, description=Does the foo", fm)
+	}
+
+	if _, ok := parseFrontmatter("no frontmatter\n"); ok {
+		t.Error("expected no frontmatter")
+	}
+}
+
+func TestSystemMessageRendersSections(t *testing.T) {
+	c := api.ExecContext{
+		System: "linux/amd64",
+		CWD:    "/work",
+		Files:  []string{"README.md", "main.go"},
+		Skills: []api.Skill{{Name: "foo", Description: "does foo"}},
+	}
+	msg := SystemMessage(c)
+	for _, want := range []string{
+		"You are running on: linux/amd64",
+		"Working directory: /work",
+		"README.md",
+		"main.go",
+		"foo: does foo",
+	} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("system message missing %q:\n%s", want, msg)
+		}
+	}
+
+	// Empty context yields an empty message.
+	if got := SystemMessage(api.ExecContext{}); got != "" {
+		t.Errorf("empty context message = %q, want empty", got)
+	}
+}
+
+func TestDiscoverListsCWD(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("# hi"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(dir, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ctx, err := Discover(dir)
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	if ctx.CWD != dir {
+		t.Errorf("CWD = %q, want %q", ctx.CWD, dir)
+	}
+	if ctx.System == "" {
+		t.Error("System empty")
+	}
+	var sawReadme, sawSub bool
+	for _, f := range ctx.Files {
+		if f == "README.md" {
+			sawReadme = true
+		}
+		if f == "sub/" {
+			sawSub = true
+		}
+	}
+	if !sawReadme || !sawSub {
+		t.Errorf("files = %v, want README.md and sub/", ctx.Files)
+	}
+}

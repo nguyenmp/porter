@@ -78,3 +78,10 @@ func ToolResult(id, result string) ChatMessage {
 func UserMessage(content string) ChatMessage {
 	return ChatMessage{Role: "user", Content: content}
 }
+
+// SystemMessage builds a role-"system" message carrying environment or
+// instruction context (e.g. the execution provider's system, working
+// directory, and available skills).
+func SystemMessage(content string) ChatMessage {
+	return ChatMessage{Role: "system", Content: content}
+}
