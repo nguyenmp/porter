@@ -184,13 +184,29 @@
   // messages that are already in the DOM.
   const renderedCommits = new Set();
   // Failed turns (turn_completed with an error) are rendered into the chat as
-  // an error block. Turn-completion markers are also replayed on reconnect,
-  // so remember which marker seqs we've shown to avoid duplicating the block.
+  // an error block; successful turns render their per-turn token totals (the
+  // REPL's "(N in, M out tokens)" line). Each outcome is identified by the
+  // turn's user-message seq (env.turn_seq), the same identity /view renders as
+  // data-turn-seq on load, so the DOM check in turnOutcomeRendered covers both
+  // sources. These sets are a backstop for elements that leave the DOM (e.g. a
+  // /view innerHTML swap) — the marker replays on SSE reconnect, so we must
+  // never draw a turn's outcome twice.
   const renderedTurnErrors = new Set();
-  // Successful turns report their per-turn token totals (the REPL's "(N in,
-  // M out tokens)" line). Like errors, the completion marker replays on
-  // reconnect, so dedup the rendered token line by seq too.
   const renderedTurnTokens = new Set();
+
+  // A turn's outcome (error block or token line) is rendered once per turn,
+  // keyed by the turn's user-message seq. /view renders past outcomes with
+  // data-turn-seq on load; live-rendered elements carry the same tag, so one
+  // DOM check covers both sources plus SSE reconnect replays.
+  function turnOutcomeRendered(kind, tseq) {
+    if (!tseq) return false;
+    if (chat && chat.querySelector('[data-turn-seq="' + tseq + '"]')) return true;
+    return (kind === 'error' ? renderedTurnErrors : renderedTurnTokens).has(tseq);
+  }
+  function markTurnOutcomeRendered(kind, tseq) {
+    if (!tseq) return;
+    (kind === 'error' ? renderedTurnErrors : renderedTurnTokens).add(tseq);
+  }
 
   // --- Reasoning blocks ---
   // Reasoning is collapsed by default to a single no-wrap row showing only the
@@ -919,27 +935,31 @@
         // many turns remain behind it), and between commits the current value
         // is accurate.
         turnRunning = false;
-        // A turn that failed (e.g. the LLM provider returned a 400 or a rate
-        // limit) surfaces its error in the chat so a silent failure is never
-        // mistaken for a finished turn that just had nothing to say. The
-        // marker is replayed on SSE reconnect, so dedup by seq like committed
-        // messages.
-        if (env.error && !(env.seq && renderedTurnErrors.has(env.seq))) {
-          if (env.seq) renderedTurnErrors.add(env.seq);
+        // A completed turn's outcome — an error block, or the token usage line
+        // — is keyed by the turn's user-message seq (env.turn_seq), the same
+        // identity /view renders as data-turn-seq. Dedup against both /view's
+        // render and our own so an SSE reconnect replay (the marker replays
+        // from the page's fixed `since`) never duplicates it. A turn that
+        // failed (e.g. the LLM provider returned a 400 or a rate limit)
+        // surfaces its error so a silent failure is never mistaken for a
+        // finished turn that just had nothing to say; a successful turn
+        // reports its per-turn token totals, mirroring the REPL's "(N in,
+        // M out tokens)" line.
+        const tseq = env.turn_seq;
+        if (env.error && !turnOutcomeRendered('error', tseq)) {
+          markTurnOutcomeRendered('error', tseq);
           const errDiv = document.createElement('div');
           errDiv.className = 'msg msg-error';
+          if (tseq) errDiv.dataset.turnSeq = tseq;
           errDiv.innerHTML = '<span class="msg-role">error</span><div class="msg-content">' +
             escapeHTML(env.error).replace(/\n/g, '<br>') + '</div>';
           chat.appendChild(errDiv);
           hadNewContent = true;
-        } else if ((env.input > 0 || env.output > 0) && !(env.seq && renderedTurnTokens.has(env.seq))) {
-          // A successful turn reports its per-turn token totals, mirroring the
-          // REPL's "(N in, M out tokens)" line, so the web UI surfaces the
-          // usage the bus now carries. Dedup by seq like errors (the marker
-          // replays on reconnect).
-          if (env.seq) renderedTurnTokens.add(env.seq);
+        } else if ((env.input > 0 || env.output > 0) && !turnOutcomeRendered('token', tseq)) {
+          markTurnOutcomeRendered('token', tseq);
           const tokDiv = document.createElement('div');
           tokDiv.className = 'token-line';
+          if (tseq) tokDiv.dataset.turnSeq = tseq;
           tokDiv.textContent = '(' + env.input + ' in, ' + env.output + ' out tokens)';
           chat.appendChild(tokDiv);
           hadNewContent = true;

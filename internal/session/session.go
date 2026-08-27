@@ -45,8 +45,13 @@ type Persister interface {
 	CreateSession(createdAt int64) (int64, error)
 	// AppendMessage writes one committed message with its bus position (seq).
 	AppendMessage(sessionID int64, m db.Message) error
+	// AppendQuery writes one per-request usage/error record, independent of the
+	// message stream (a failed request produces no message). It is what lets a
+	// reload rebuild per-turn token totals and failed-turn errors.
+	AppendQuery(sessionID int64, q db.Query) error
 	// LoadSession returns a session's full persisted state: its creation time,
-	// every committed message in seq order, and the highest seq written.
+	// every committed message in seq order, every query record, and the highest
+	// seq written.
 	LoadSession(id int64) (db.Session, error)
 	// ListSessions returns every session, newest first, with the raw content of
 	// each session's first user message (the sidebar preview source).
@@ -282,17 +287,24 @@ func (s *Session) runTurn(ctx context.Context, content string) {
 	// queue, so QueueDepth is exactly the backlog).
 	msg := llm.UserMessage(content)
 	env := api.Envelope{Kind: api.KindMessage, Message: &msg, Queue: s.QueueDepth()}
-	if err := s.commitEnv(env); err != nil {
+	turnSeq, err := s.commitEnv(env)
+	if err != nil {
 		// The turn never started: its user message could not be persisted.
 		// Report the failure on the bus and move on to the next queued message.
 		s.endTurn(api.Envelope{Kind: api.KindTurnDone, TurnID: turnID, Error: err.Error()})
 		return
 	}
+	// The user message's bus seq is the turn's identity: every query of this
+	// turn is persisted under it, and turn_completed carries it so a live
+	// client can dedup the turn's outcome against what /view already rendered.
 
-	done := api.Envelope{Kind: api.KindTurnDone, TurnID: turnID}
+	done := api.Envelope{Kind: api.KindTurnDone, TurnID: turnID, TurnSeq: turnSeq}
+	// Persist each request's usage/error as the agent produces it (the query's
+	// origin), so turns are rebuildable from the database on a reload.
+	onQuery := func(q agent.Query) error { return s.commitQuery(turnSeq, q) }
 	res, err := agent.RunTurn(ctx, s.client, s.snapshot(), s.provider(), s.emitLive, func(m llm.ChatMessage) error {
 		return s.commit(m)
-	}, agent.RunHooks{OnRunStarted: s.onRunStarted})
+	}, agent.RunHooks{OnRunStarted: s.onRunStarted, OnQuery: onQuery})
 	if err != nil {
 		// A tool cancelled by the user is a clean stop, not a failure: the
 		// partial result is already committed and the tool_cancelled envelope
@@ -366,6 +378,60 @@ func (s *Session) loadMessages() ([]llm.ChatMessage, uint64) {
 	return msgs, ps.MaxSeq
 }
 
+// Turn is a derived partition of a session's message stream: one user message
+// plus every message and query that follow it until the next user message (or
+// the end of history). Turns are not stored — they are computed from the
+// persisted messages and queries. Input/Output are the sum of the turn's
+// queries' usage; Error is set when any of its queries failed (a failed query
+// ends the turn, so at most one error per turn, on its final query).
+type Turn struct {
+	UserSeq uint64 // bus seq of the user message that started the turn
+	Input   int
+	Output  int
+	Error   string
+}
+
+// Persisted returns the session's full persisted state (messages with their
+// bus seqs, query records, max seq) in a single read. It backs the /view
+// render, which needs per-message seqs to place turn footers.
+func (s *Session) Persisted() (db.Session, error) {
+	return s.persist.LoadSession(s.dbID)
+}
+
+// DeriveTurns partitions a persisted session into its turns, in stream order.
+// Each turn begins at a user message and runs to the next user message;
+// usage is summed across the turn's queries and the first failed query's error
+// marks the turn. A user message with no queries still opens a turn (e.g. one
+// that failed before any request ran), so callers can place a footer — the
+// turn simply has nothing to show.
+func DeriveTurns(ps db.Session) []Turn {
+	byUser := make(map[uint64]*Turn, len(ps.Queries))
+	for _, q := range ps.Queries {
+		t := byUser[q.TurnSeq]
+		if t == nil {
+			t = &Turn{UserSeq: q.TurnSeq}
+			byUser[q.TurnSeq] = t
+		}
+		t.Input += q.Input
+		t.Output += q.Output
+		if t.Error == "" && q.Error != "" {
+			t.Error = q.Error
+		}
+	}
+	var out []Turn
+	for _, m := range ps.Messages {
+		if m.Role != "user" {
+			continue
+		}
+		t := byUser[m.Seq]
+		if t == nil {
+			t = &Turn{UserSeq: m.Seq}
+		}
+		out = append(out, *t)
+	}
+	return out
+}
+
 // commit writes m to the persister first (fail-fast: a message that cannot be
 // persisted aborts the turn), then stamps it on the bus log with the next
 // position and publishes it to every subscriber. For assistant messages it also
@@ -377,12 +443,15 @@ func (s *Session) commit(m llm.ChatMessage) error {
 	if m.Role == "assistant" && m.Content != "" {
 		env.MessageHTML = render.Markdown(m.Content)
 	}
-	return s.commitEnv(env)
+	_, err := s.commitEnv(env)
+	return err
 }
 
 // commitEnv is the tail of commit: stamp the envelope with the next bus
 // position, write its message to the persister, log it for replay, and
-// broadcast it to every subscriber. Splitting it out lets turn start commit a
+// broadcast it to every subscriber. It returns the assigned bus position,
+// which is what identifies the committed message (and, for a turn's opening
+// user message, the turn itself). Splitting it out lets turn start commit a
 // user message with extra metadata (the queue depth) without duplicating the
 // plumbing.
 //
@@ -391,7 +460,7 @@ func (s *Session) commit(m llm.ChatMessage) error {
 // reserved seq is skipped, which is harmless since seqs are monotonic). The
 // scheduler goroutine is the session's single writer, so logSeq is only ever
 // touched here, in endTurn, and at startup load.
-func (s *Session) commitEnv(env api.Envelope) error {
+func (s *Session) commitEnv(env api.Envelope) (uint64, error) {
 	s.mu.Lock()
 	s.logSeq++
 	next := s.logSeq
@@ -399,7 +468,7 @@ func (s *Session) commitEnv(env api.Envelope) error {
 	s.mu.Unlock()
 
 	if err := s.persist.AppendMessage(s.dbID, db.Message{Seq: next, ChatMessage: *env.Message}); err != nil {
-		return fmt.Errorf("persist message: %w", err)
+		return 0, fmt.Errorf("persist message: %w", err)
 	}
 
 	s.mu.Lock()
@@ -407,6 +476,21 @@ func (s *Session) commitEnv(env api.Envelope) error {
 	subs := s.subs
 	s.mu.Unlock()
 	s.sendTo(subs, env)
+	return next, nil
+}
+
+// commitQuery persists one request's usage/error under the given turn, at the
+// query's origin. It is the OnQuery hook the agent is given; a persist failure
+// aborts the turn (fail-fast, like a message that cannot be persisted), since
+// the database must never fall behind what the bus has told subscribers.
+func (s *Session) commitQuery(turnSeq uint64, q agent.Query) error {
+	row := db.Query{TurnSeq: turnSeq, Idx: q.Idx, Input: q.Input, Output: q.Output}
+	if q.Err != nil {
+		row.Error = q.Err.Error()
+	}
+	if err := s.persist.AppendQuery(s.dbID, row); err != nil {
+		return fmt.Errorf("persist query: %w", err)
+	}
 	return nil
 }
 

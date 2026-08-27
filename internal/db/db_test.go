@@ -222,6 +222,36 @@ func TestPersistsAcrossReopen(t *testing.T) {
 // TestMigratesFromV1 verifies an existing v1 database (schema without the
 // `cancelled` column) is migrated to v2 on open: the column is added, existing
 // rows survive, and their cancelled flag reads false.
+func TestQueryRoundTrip(t *testing.T) {
+	d := openTemp(t)
+	id, err := d.CreateSession(100)
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	want := []Query{
+		{TurnSeq: 1, Idx: 0, Input: 2, Output: 3},
+		{TurnSeq: 1, Idx: 1, Input: 4, Output: 5},
+		{TurnSeq: 8, Idx: 0, Input: 0, Output: 0, Error: "boom"},
+	}
+	for _, q := range want {
+		if err := d.AppendQuery(id, q); err != nil {
+			t.Fatalf("AppendQuery(%+v): %v", q, err)
+		}
+	}
+	got, err := d.LoadSession(id)
+	if err != nil {
+		t.Fatalf("LoadSession: %v", err)
+	}
+	if len(got.Queries) != len(want) {
+		t.Fatalf("queries = %+v, want %d rows", got.Queries, len(want))
+	}
+	for i, w := range want {
+		if got.Queries[i] != w {
+			t.Errorf("queries[%d] = %+v, want %+v", i, got.Queries[i], w)
+		}
+	}
+}
+
 func TestMigratesFromV1(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "porter.db")
 
@@ -292,5 +322,16 @@ func TestMigratesFromV1(t *testing.T) {
 	}
 	if !got.Messages[1].Cancelled {
 		t.Errorf("cancelled flag did not round-trip after migration")
+	}
+	// The v3 migration added the queries table; it must exist and be writable.
+	if err := d.AppendQuery(id, Query{TurnSeq: 1, Idx: 0, Input: 1, Output: 1}); err != nil {
+		t.Fatalf("AppendQuery after v1->v3 migration: %v", err)
+	}
+	got, err = d.LoadSession(id)
+	if err != nil {
+		t.Fatalf("LoadSession after query write: %v", err)
+	}
+	if len(got.Queries) != 1 || got.Queries[0].TurnSeq != 1 {
+		t.Errorf("queries after migration = %+v, want one row for turn 1", got.Queries)
 	}
 }

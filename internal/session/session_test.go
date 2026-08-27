@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
+	"porter/internal/agent"
 	"porter/internal/api"
 	"porter/internal/config"
 	"porter/internal/db"
@@ -366,4 +368,63 @@ func TestToolStartKeepsRegisteredCancel(t *testing.T) {
 	if !cancelled {
 		t.Errorf("cancel func lost between onRunStarted and tool_started")
 	}
+}
+
+// TestDeriveTurnsAggregatesQueries verifies the derived-turn model: usage is
+// stored per query (the origin) and Turns sums each turn's queries, while a
+// failed query's error marks its turn. Two turns, the first with two queries
+// (one of which failed), the second with one successful query.
+func TestDeriveTurnsAggregatesQueries(t *testing.T) {
+	s := newTestSession(t, "s")
+
+	// Turn 1: user message, then two queries — one succeeds (usage), one fails.
+	commitN(t, s, "turn", 1)
+	ps, err := s.Persisted()
+	if err != nil {
+		t.Fatalf("Persisted: %v", err)
+	}
+	turn1 := ps.Messages[0].Seq
+
+	if err := s.commitQuery(turn1, agentQuery(0, 2, 3, nil)); err != nil {
+		t.Fatalf("commitQuery turn1 q0: %v", err)
+	}
+	if err := s.commitQuery(turn1, agentQuery(1, 4, 5, fmt.Errorf("rate limit"))); err != nil {
+		t.Fatalf("commitQuery turn1 q1: %v", err)
+	}
+
+	// Turn 2: user message, one successful query.
+	commitN(t, s, "turn", 1)
+	ps, err = s.Persisted()
+	if err != nil {
+		t.Fatalf("Persisted: %v", err)
+	}
+	turn2 := ps.Messages[len(ps.Messages)-1].Seq
+	if err := s.commitQuery(turn2, agentQuery(0, 8, 13, nil)); err != nil {
+		t.Fatalf("commitQuery turn2 q0: %v", err)
+	}
+
+	ps, err = s.Persisted()
+	if err != nil {
+		t.Fatalf("Persisted: %v", err)
+	}
+	turns := DeriveTurns(ps)
+	if len(turns) != 2 {
+		t.Fatalf("turns = %+v, want 2", turns)
+	}
+	// Turn 1: usage sums across its two queries; the failed query marks it.
+	if turns[0].UserSeq != turn1 || turns[0].Input != 6 || turns[0].Output != 8 {
+		t.Errorf("turn 1 = %+v, want user %d, usage 6/8", turns[0], turn1)
+	}
+	if !strings.Contains(turns[0].Error, "rate limit") {
+		t.Errorf("turn 1 error = %q, want the failed query's error", turns[0].Error)
+	}
+	// Turn 2: just its one query's usage, no error.
+	if turns[1].UserSeq != turn2 || turns[1].Input != 8 || turns[1].Output != 13 || turns[1].Error != "" {
+		t.Errorf("turn 2 = %+v, want user %d, usage 8/13, no error", turns[1], turn2)
+	}
+}
+
+// agentQuery builds an agent.Query for commitQuery.
+func agentQuery(idx, input, output int, err error) agent.Query {
+	return agent.Query{Idx: idx, Input: input, Output: output, Err: err}
 }

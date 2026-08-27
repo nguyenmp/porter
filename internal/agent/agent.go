@@ -25,6 +25,23 @@ type Usage struct {
 	Output int
 }
 
+// Query reports the outcome of one model request — a single agent loop
+// iteration (one LLM stream). It is the origin of token usage and request
+// failures: the caller persists it so per-turn totals and failed-turn errors
+// survive a reload, and the per-turn Usage is just the sum over a turn's
+// queries.
+type Query struct {
+	// Idx is the request's zero-based position within its turn (the agent runs
+	// requests sequentially, so 0 is the first request of the turn).
+	Idx int
+	// Input/Output are this single request's token totals.
+	Input  int
+	Output int
+	// Err is set when the request itself failed (e.g. a provider error), which
+	// ends the turn immediately.
+	Err error
+}
+
 // TurnResult is what one RunTurn call produced.
 type TurnResult struct {
 	// Text is the final human-visible assistant reply, empty until the model
@@ -53,6 +70,13 @@ type RunHooks struct {
 	// button) can stop a runaway task. It is safe to call from any goroutine
 	// and is a no-op after the run ends.
 	OnRunStarted func(callID string, cancel func())
+	// OnQuery is called once per model request, on both success and failure,
+	// with the request's token usage and (on failure) the error that ended the
+	// turn. It lets a caller that owns persistence record each request at its
+	// origin, so per-turn totals and failed-turn errors can be rebuilt on a
+	// reload instead of only living on the live bus. A returned error aborts
+	// the turn, mirroring how a failing onMessage aborts it.
+	OnQuery func(Query) error
 }
 
 // RunTurn drives one conversation turn. It reads history and extends it so the
@@ -87,7 +111,7 @@ func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage,
 		return nil
 	}
 
-	for {
+	for i := 0; ; i++ {
 		var reply strings.Builder
 		var reasoning string
 		var calls []codec.ToolCall
@@ -122,12 +146,22 @@ func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage,
 
 		body, err := client.Stream(ctx, res.History, js.Defs())
 		if err != nil {
+			// The request itself failed (e.g. a provider error): report it as a
+			// failed query before ending the turn.
+			if qerr := h.reportQuery(Query{Idx: i, Err: err}); qerr != nil {
+				return res, qerr
+			}
 			return res, err
 		}
 		for line := range llm.SSELines(body) {
 			done, err := dec.Process(line)
 			if err != nil {
 				body.Close()
+				// A request that failed mid-stream is still a failed query:
+				// report the partial usage and the error before ending.
+				if qerr := h.reportQuery(Query{Idx: i, Input: usage.Input, Output: usage.Output, Err: err}); qerr != nil {
+					return res, qerr
+				}
 				return res, err
 			}
 			if done {
@@ -144,6 +178,13 @@ func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage,
 
 		res.Usage.Input += usage.Input
 		res.Usage.Output += usage.Output
+		// The request succeeded: report its usage so the caller can persist it
+		// at the query's origin. Turns are derived (not stored) as the sum
+		// over their queries, so this single record is what makes per-turn
+		// totals rebuildable on a reload.
+		if qerr := h.reportQuery(Query{Idx: i, Input: usage.Input, Output: usage.Output}); qerr != nil {
+			return res, qerr
+		}
 
 		if len(calls) == 0 {
 			res.Text = reply.String()
@@ -274,6 +315,17 @@ func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage,
 			}
 		}
 	}
+}
+
+// reportQuery hands one request's outcome to the OnQuery hook (if any),
+// returning the hook's error. It is called on every exit from the request
+// phase — success and both failure paths — so the caller persists each request
+// exactly once, at its origin.
+func (h RunHooks) reportQuery(q Query) error {
+	if h.OnQuery == nil {
+		return nil
+	}
+	return h.OnQuery(q)
 }
 
 // toLLMCalls converts the codec-level tool calls into llm messages.

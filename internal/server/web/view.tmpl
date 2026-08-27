@@ -1,31 +1,43 @@
-{{range .Messages}}
-	{{if eq .Role "user"}}
-		<div class="msg msg-user">
-			<span class="msg-role">user</span>
-			<div class="msg-content">{{nl2br .Content}}</div>
-		</div>
-	{{else if eq .Role "assistant"}}
-		{{if .Reasoning}}
-			<div class="reasoning" data-reasoning="{{.Reasoning}}"></div>
+{{range .Items}}
+	{{if .Message}}
+		{{$m := .Message}}
+		{{if eq $m.Role "user"}}
+			<div class="msg msg-user">
+				<span class="msg-role">user</span>
+				<div class="msg-content">{{nl2br $m.Content}}</div>
+			</div>
+		{{else if eq $m.Role "assistant"}}
+			{{if $m.Reasoning}}
+				<div class="reasoning" data-reasoning="{{$m.Reasoning}}"></div>
+			{{end}}
+			<div class="msg msg-assistant">
+				<span class="msg-role">assistant</span>
+				{{if $m.Content}}
+					<div class="msg-content">{{renderMarkdown $m.Content}}</div>
+				{{end}}
+				{{range $m.ToolCalls}}
+					<details class="tool-call">
+						<summary>tool call: {{.Function.Name}}{{if .Function.Arguments}} {{argsSnippet .Function.Arguments}}{{end}}</summary>
+						<pre><code>{{.Function.Arguments}}</code></pre>
+					</details>
+				{{end}}
+			</div>
+		{{else if eq $m.Role "tool"}}
+			{{$t := index $.Tools $m.ToolCallID}}
+			{{$code := toolExitCode $m.Content}}
+			<details class="tool-result">
+				<summary title="{{if $t.Name}}{{clock $m.StartedAt}} – {{clock $m.FinishedAt}}{{end}}">tool result: {{$t.Name}}{{if $t.Arguments}} {{argsSnippet $t.Arguments}}{{end}}{{if $m.Cancelled}} · cancelled{{if $m.StartedAt}} · {{dur $m.StartedAt $m.FinishedAt}}{{end}}{{else}}{{if $code}} · {{$code}}{{end}}{{if $m.StartedAt}} · {{dur $m.StartedAt $m.FinishedAt}}{{end}}{{end}}</summary>
+				<pre><code>{{nl2br $m.Content}}</code></pre>
+			</details>
 		{{end}}
-		<div class="msg msg-assistant">
-			<span class="msg-role">assistant</span>
-			{{if .Content}}
-				<div class="msg-content">{{renderMarkdown .Content}}</div>
-			{{end}}
-			{{range .ToolCalls}}
-				<details class="tool-call">
-					<summary>tool call: {{.Function.Name}}{{if .Function.Arguments}} {{argsSnippet .Function.Arguments}}{{end}}</summary>
-					<pre><code>{{.Function.Arguments}}</code></pre>
-				</details>
-			{{end}}
-		</div>
-	{{else if eq .Role "tool"}}
-		{{$t := index $.Tools .ToolCallID}}
-		{{$code := toolExitCode .Content}}
-		<details class="tool-result">
-			<summary title="{{if $t.Name}}{{clock .StartedAt}} – {{clock .FinishedAt}}{{end}}">tool result: {{$t.Name}}{{if $t.Arguments}} {{argsSnippet $t.Arguments}}{{end}}{{if .Cancelled}} · cancelled{{if .StartedAt}} · {{dur .StartedAt .FinishedAt}}{{end}}{{else}}{{if $code}} · {{$code}}{{end}}{{if .StartedAt}} · {{dur .StartedAt .FinishedAt}}{{end}}{{end}}</summary>
-			<pre><code>{{nl2br .Content}}</code></pre>
-		</details>
+	{{else if .Footer}}
+		{{if .Footer.Error}}
+			<div class="msg msg-error" data-turn-seq="{{.Footer.UserSeq}}">
+				<span class="msg-role">error</span>
+				<div class="msg-content">{{nl2br .Footer.Error}}</div>
+			</div>
+		{{else if or .Footer.Input .Footer.Output}}
+			<div class="token-line" data-turn-seq="{{.Footer.UserSeq}}">({{.Footer.Input}} in, {{.Footer.Output}} out tokens)</div>
+		{{end}}
 	{{end}}
 {{end}}

@@ -1916,7 +1916,7 @@ func TestCancelSilentToolThenRequeue(t *testing.T) {
 		// with a 400 when it is missing.
 		var req struct {
 			Messages []struct {
-				Role    string `json:"role"`
+				Role    string  `json:"role"`
 				Content *string `json:"content"`
 			} `json:"messages"`
 		}
@@ -2091,12 +2091,120 @@ func TestIndexRendersTurnError(t *testing.T) {
 	body, _ := io.ReadAll(resp.Body)
 	s := string(body)
 	for _, want := range []string{
-		`env.error`,           // the turn_completed handler checks the error
-		`renderedTurnErrors`,  // dedup on reconnect replay
-		`msg-error`,           // the error block class (JS + CSS)
+		`env.error`,          // the turn_completed handler checks the error
+		`renderedTurnErrors`, // dedup on reconnect replay
+		`msg-error`,          // the error block class (JS + CSS)
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("index missing %q", want)
+		}
+	}
+}
+
+// TestTurnUsageSurvivesRestartViaView is the persistence proof for the query
+// model: a tool turn's per-request usage is persisted (one query row per model
+// request), so after a restart — when the live bus no longer holds the
+// turn_completed marker — /view still renders the "(N in, M out tokens)" line
+// in the same place the live stream drew it.
+func TestTurnUsageSurvivesRestartViaView(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "porter.db")
+
+	// Server 1: run a tool turn. The tool call has no usage; the final reply
+	// has usage 1/1, so the derived turn total is 1 in / 1 out.
+	srv1, ts1 := startServerDB(t, dbPath, toolThenReplyLLM())
+	c1 := client.New(ts1.URL)
+	ctx1, cancel1 := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel1()
+	info, err := c1.Create(ctx1)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := c1.Append(ctx1, info.ID, "run it"); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	var done api.Envelope
+	if err := c1.Subscribe(ctx1, info.ID, info.Seq, func(env api.Envelope) {
+		if env.Kind == api.KindTurnDone {
+			done = env
+		}
+	}, func(env api.Envelope) bool { return env.Kind == api.KindTurnDone }); err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	// The live marker carries the summed usage and the turn's user-message seq
+	// (the identity /view tags its footers with, so the live client can dedup).
+	if done.Input != 1 || done.Output != 1 {
+		t.Errorf("turn_completed usage = %d/%d, want 1/1", done.Input, done.Output)
+	}
+	if done.TurnSeq == 0 {
+		t.Errorf("turn_completed turn_seq = 0, want the user message's seq")
+	}
+	srv1.Close() // stop schedulers + close the database: the process "restarts"
+
+	// Server 2 on the same database: /view must derive the token line from the
+	// persisted queries — the bus no longer has the completion marker.
+	_, ts2 := startServerDB(t, dbPath, plainLLM())
+	defer ts2.Close()
+	resp, err := http.Get(ts2.URL + "/api/sessions/" + info.ID + "/view")
+	if err != nil {
+		t.Fatalf("GET view: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	view := string(body)
+	for _, want := range []string{
+		`(1 in, 1 out tokens)`, // the turn's aggregated usage
+		`token-line`,           // the metadata class
+		`data-turn-seq="`,      // the dedup identity the live client checks
+	} {
+		if !strings.Contains(view, want) {
+			t.Errorf("view after restart missing %q:\n%s", want, view)
+		}
+	}
+}
+
+// TestTurnErrorSurvivesRestartViaView verifies a failed turn's error is
+// persisted on its query row, so /view renders the error block after a restart
+// exactly where the live stream did — the same reload guarantee as token
+// usage, for the query that failed.
+func TestTurnErrorSurvivesRestartViaView(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "porter.db")
+
+	srv1, ts1 := startServerDB(t, dbPath, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"error":{"message":"missing field content"}}`, http.StatusBadRequest)
+	}))
+	c1 := client.New(ts1.URL)
+	ctx1, cancel1 := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel1()
+	info, err := c1.Create(ctx1)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := c1.Append(ctx1, info.ID, "hello"); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	if err := c1.Subscribe(ctx1, info.ID, info.Seq, nil, func(env api.Envelope) bool {
+		return env.Kind == api.KindTurnDone
+	}); err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	srv1.Close() // restart
+
+	_, ts2 := startServerDB(t, dbPath, plainLLM())
+	defer ts2.Close()
+	resp, err := http.Get(ts2.URL + "/api/sessions/" + info.ID + "/view")
+	if err != nil {
+		t.Fatalf("GET view: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	view := string(body)
+	for _, want := range []string{
+		`msg-error`,             // the error block class
+		`missing field content`, // the persisted provider error
+		`data-turn-seq="`,       // the dedup identity
+	} {
+		if !strings.Contains(view, want) {
+			t.Errorf("view after restart missing %q:\n%s", want, view)
 		}
 	}
 }

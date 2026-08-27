@@ -576,3 +576,78 @@ func TestRunTurnUsageFlushedOnEOFWithoutDone(t *testing.T) {
 		t.Errorf("usage = %+v, want 2 in / 3 out (Final must flush the trailing usage chunk)", res.Usage)
 	}
 }
+
+// TestRunTurnReportsEachQuery verifies the OnQuery hook fires once per model
+// request, at the query's origin, with that request's usage. A tool-calling
+// turn spans two queries: the tool call (the fixture sends no usage) and the
+// final reply (usage 2/3). The summed turn usage still aggregates the same way.
+func TestRunTurnReportsEachQuery(t *testing.T) {
+	srv, _ := toolServer(t)
+	defer srv.Close()
+
+	cfg := config.Config{BaseURL: srv.URL + "/v1", Model: "test", APIKey: "k"}
+	client := llm.NewClient(cfg, nil)
+	var mu sync.Mutex
+	var queries []Query
+	hooks := RunHooks{OnQuery: func(q Query) error {
+		mu.Lock()
+		defer mu.Unlock()
+		queries = append(queries, q)
+		return nil
+	}}
+
+	res, err := RunTurn(context.Background(), client, []llm.ChatMessage{llm.UserMessage("run it")}, tools.NewDispatcher(), nil, nil, hooks)
+	if err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(queries) != 2 {
+		t.Fatalf("OnQuery calls = %+v, want 2 (one per request)", queries)
+	}
+	if queries[0].Idx != 0 || queries[0].Input != 0 || queries[0].Output != 0 || queries[0].Err != nil {
+		t.Errorf("query 0 = %+v, want idx 0, no usage, no error", queries[0])
+	}
+	if queries[1].Idx != 1 || queries[1].Input != 2 || queries[1].Output != 3 || queries[1].Err != nil {
+		t.Errorf("query 1 = %+v, want idx 1, usage 2/3, no error", queries[1])
+	}
+	if res.Usage.Input != 2 || res.Usage.Output != 3 {
+		t.Errorf("turn usage = %+v, want 2/3", res.Usage)
+	}
+}
+
+// TestRunTurnReportsFailedQuery verifies OnQuery is called with the error when
+// a request fails (e.g. a provider 400), so the failure is persisted at the
+// query's origin rather than only surfacing on the turn_completed marker.
+func TestRunTurnReportsFailedQuery(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"error":{"message":"boom"}}`, http.StatusBadRequest)
+	}))
+	defer srv.Close()
+
+	cfg := config.Config{BaseURL: srv.URL + "/v1", Model: "test", APIKey: "k"}
+	client := llm.NewClient(cfg, nil)
+	var mu sync.Mutex
+	var queries []Query
+	hooks := RunHooks{OnQuery: func(q Query) error {
+		mu.Lock()
+		defer mu.Unlock()
+		queries = append(queries, q)
+		return nil
+	}}
+
+	_, err := RunTurn(context.Background(), client, []llm.ChatMessage{llm.UserMessage("hi")}, tools.NewDispatcher(), nil, nil, hooks)
+	if err == nil {
+		t.Fatal("RunTurn returned nil error on a failed request")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(queries) != 1 {
+		t.Fatalf("OnQuery calls = %+v, want 1", queries)
+	}
+	if queries[0].Err == nil || !strings.Contains(queries[0].Err.Error(), "boom") {
+		t.Errorf("query error = %v, want the provider's 'boom'", queries[0].Err)
+	}
+}

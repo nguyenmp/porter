@@ -129,12 +129,34 @@ type ToolRunInfo struct {
 	Arguments string
 }
 
-// viewData is passed to the view fragment template. Messages is the session's
-// committed history; Tools maps each tool call_id to its name/arguments so tool
-// results render with their call context.
+// viewFooter is one turn's outcome for the view: the aggregated token usage
+// and, when any of the turn's queries failed, the error. It is rendered after
+// the turn's final message, matching where the live client appends it on
+// turn_completed. UserSeq (the turn's user-message seq) tags the element so
+// the live client can dedup its own render against what /view produced.
+type viewFooter struct {
+	UserSeq uint64
+	Input   int
+	Output  int
+	Error   string
+}
+
+// viewItem is one element of the rendered history: either a committed message
+// or a turn footer placed after the turn's final message. Precomputing the
+// interleaving on the server keeps the template a simple flat range and
+// guarantees a reload renders the turn outcomes in the same positions the live
+// stream does.
+type viewItem struct {
+	Message *llm.ChatMessage
+	Footer  *viewFooter
+}
+
+// viewData is passed to the view fragment template. Items is the session's
+// committed history interleaved with turn footers; Tools maps each tool
+// call_id to its name/arguments so tool results render with their call context.
 type viewData struct {
-	Messages []llm.ChatMessage
-	Tools    map[string]ToolRunInfo
+	Items []viewItem
+	Tools map[string]ToolRunInfo
 }
 
 // Server owns the LLM client and all sessions.
@@ -444,24 +466,58 @@ func render(w http.ResponseWriter, name string, data any) {
 }
 
 // handleView renders a session's committed history as an HTML fragment. This is
-// the target of the page's HTMX polling: every second the chat div issues
-// hx-get to this endpoint and swaps the returned innerHTML.
+// the target of the page's initial load: the chat div issues hx-get to this
+// endpoint and swaps the returned innerHTML. Each turn's outcome (token usage,
+// or an error) is derived from the persisted query records and interleaved
+// after the turn's final message, so a full reload renders the same token and
+// error lines the live stream produces — including after a server restart,
+// when the live bus no longer holds the turn-completion markers.
 func (s *Server) handleView(w http.ResponseWriter, r *http.Request) {
 	ses, ok := s.store.Get(chi.URLParam(r, "id"))
 	if !ok {
 		http.Error(w, "session not found", http.StatusNotFound)
 		return
 	}
-	messages := ses.Snapshot().History
-	tools := make(map[string]ToolRunInfo, len(messages))
-	for _, m := range messages {
+	ps, err := ses.Persisted()
+	if err != nil {
+		log.Printf("load session %s for view: %v", ses.ID(), err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	turns := session.DeriveTurns(ps)
+	turnByUser := make(map[uint64]session.Turn, len(turns))
+	for _, t := range turns {
+		turnByUser[t.UserSeq] = t
+	}
+	tools := make(map[string]ToolRunInfo, len(ps.Messages))
+	items := make([]viewItem, 0, len(ps.Messages)+len(turns))
+	var curTurn uint64 // the user-message seq of the turn currently open
+	for i, m := range ps.Messages {
+		if m.Role == "user" {
+			curTurn = m.Seq
+		}
+		cm := m.ChatMessage
+		items = append(items, viewItem{Message: &cm})
 		for _, c := range m.ToolCalls {
 			tools[c.ID] = ToolRunInfo{Name: c.Function.Name, Arguments: c.Function.Arguments}
 		}
+		// A turn ends at the last message before the next user message (or the
+		// final message of history); render its footer there so a reload places
+		// it exactly where the live turn_completed marker would.
+		if i == len(ps.Messages)-1 || ps.Messages[i+1].Role == "user" {
+			if t, ok := turnByUser[curTurn]; ok && (t.Input > 0 || t.Output > 0 || t.Error != "") {
+				items = append(items, viewItem{Footer: &viewFooter{
+					UserSeq: t.UserSeq,
+					Input:   t.Input,
+					Output:  t.Output,
+					Error:   t.Error,
+				}})
+			}
+		}
 	}
 	render(w, "view.tmpl", viewData{
-		Messages: messages,
-		Tools:    tools,
+		Items: items,
+		Tools: tools,
 	})
 }
 

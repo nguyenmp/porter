@@ -22,7 +22,7 @@ var ErrNotFound = errors.New("db: session not found")
 
 // schemaVersion is the current schema revision, tracked in PRAGMA user_version.
 // Bump it and extend migrate when the schema changes.
-const schemaVersion = 2
+const schemaVersion = 3
 
 // DB wraps the SQLite database handle. It deliberately uses a single
 // connection: pragmas like foreign_keys are per-connection, and a single
@@ -117,6 +117,33 @@ CREATE INDEX IF NOT EXISTS idx_sessions_created ON sessions(created_at DESC, id 
 			return fmt.Errorf("set user_version: %w", err)
 		}
 	}
+	if v < 3 {
+		// v3: per-request usage/error records (queries). One row per model
+		// request — the origin of token usage and request failures. Turns are
+		// derived (not stored) by grouping queries under the user message that
+		// started them; a successful query carries its tokens, a failed one its
+		// error. This is what lets a reload render the REPL-style "(N in, M out
+		// tokens)" line and failed-turn errors from persisted data instead of
+		// only from the live bus.
+		const ddl = `
+CREATE TABLE IF NOT EXISTS queries (
+	session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+	turn_seq   INTEGER NOT NULL,
+	idx        INTEGER NOT NULL,
+	input      INTEGER NOT NULL DEFAULT 0,
+	output     INTEGER NOT NULL DEFAULT 0,
+	error      TEXT    NOT NULL DEFAULT '',
+	PRIMARY KEY (session_id, turn_seq, idx)
+);
+CREATE INDEX IF NOT EXISTS idx_queries_turn ON queries(session_id, turn_seq);
+`
+		if _, err := d.db.Exec(ddl); err != nil {
+			return fmt.Errorf("apply schema v3: %w", err)
+		}
+		if _, err := d.db.Exec("PRAGMA user_version=3"); err != nil {
+			return fmt.Errorf("set user_version: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -128,13 +155,29 @@ type Message struct {
 	llm.ChatMessage
 }
 
-// Session is the full persisted state of one session: its creation time and all
-// committed messages in seq order. MaxSeq is the highest seq written, which is
-// where a restarted session resumes its bus position.
+// Query is one model request as stored: its token usage and, when the request
+// failed, the error. TurnSeq is the bus position of the user message that
+// started the turn the request belongs to; Idx is the request's zero-based
+// position within that turn (the agent runs requests sequentially). A failed
+// request carries no message of its own, so queries are keyed by
+// (turn, idx) rather than by a message.
+type Query struct {
+	TurnSeq uint64
+	Idx     int
+	Input   int
+	Output  int
+	Error   string
+}
+
+// Session is the full persisted state of one session: its creation time, all
+// committed messages in seq order, and every per-request usage/error record.
+// MaxSeq is the highest seq written, which is where a restarted session resumes
+// its bus position.
 type Session struct {
 	ID        int64
 	CreatedAt int64
 	Messages  []Message
+	Queries   []Query
 	MaxSeq    uint64
 }
 
@@ -187,6 +230,21 @@ func (d *DB) AppendMessage(sessionID int64, m Message) error {
 	return nil
 }
 
+// AppendQuery writes one per-request usage/error record. It is independent of
+// the message stream: a successful request also produced an assistant message
+// (written separately), while a failed request produced none.
+func (d *DB) AppendQuery(sessionID int64, q Query) error {
+	_, err := d.db.Exec(
+		`INSERT INTO queries (session_id, turn_seq, idx, input, output, error)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+		sessionID, q.TurnSeq, q.Idx, q.Input, q.Output, q.Error,
+	)
+	if err != nil {
+		return fmt.Errorf("insert query: %w", err)
+	}
+	return nil
+}
+
 // LoadSession returns a session's full persisted state, or ErrNotFound if the
 // session does not exist.
 func (d *DB) LoadSession(id int64) (Session, error) {
@@ -204,17 +262,18 @@ func (d *DB) LoadSession(id int64) (Session, error) {
 	if err != nil {
 		return Session{}, fmt.Errorf("load messages for %d: %w", id, err)
 	}
-	defer rows.Close()
 	for rows.Next() {
 		var m Message
 		var calls string
 		var cancelled int
 		if err := rows.Scan(&m.Seq, &m.Role, &m.Content, &m.Reasoning, &m.ToolCallID, &calls, &m.StartedAt, &m.FinishedAt, &cancelled); err != nil {
+			rows.Close()
 			return Session{}, fmt.Errorf("scan message: %w", err)
 		}
 		m.Cancelled = cancelled != 0
 		if calls != "" {
 			if err := json.Unmarshal([]byte(calls), &m.ToolCalls); err != nil {
+				rows.Close()
 				return Session{}, fmt.Errorf("decode tool calls for seq %d: %w", m.Seq, err)
 			}
 		}
@@ -224,7 +283,29 @@ func (d *DB) LoadSession(id int64) (Session, error) {
 		}
 	}
 	if err := rows.Err(); err != nil {
+		rows.Close()
 		return Session{}, fmt.Errorf("iterate messages: %w", err)
+	}
+	// The database uses a single connection, so close the messages result
+	// before issuing the queries query (a second query cannot start while a
+	// result set is still open on the one connection).
+	rows.Close()
+	qrows, err := d.db.Query(
+		`SELECT turn_seq, idx, input, output, error
+		 FROM queries WHERE session_id = ? ORDER BY turn_seq ASC, idx ASC`, id)
+	if err != nil {
+		return Session{}, fmt.Errorf("load queries for %d: %w", id, err)
+	}
+	defer qrows.Close()
+	for qrows.Next() {
+		var q Query
+		if err := qrows.Scan(&q.TurnSeq, &q.Idx, &q.Input, &q.Output, &q.Error); err != nil {
+			return Session{}, fmt.Errorf("scan query: %w", err)
+		}
+		s.Queries = append(s.Queries, q)
+	}
+	if err := qrows.Err(); err != nil {
+		return Session{}, fmt.Errorf("iterate queries: %w", err)
 	}
 	return s, nil
 }

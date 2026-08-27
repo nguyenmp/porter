@@ -156,6 +156,7 @@ type Envelope struct {
 	StartedAt   int64  `json:"started_at,omitempty"`   // KindToolStarted, KindToolResult
 	FinishedAt  int64  `json:"finished_at,omitempty"`  // KindToolResult
 	TurnID      int64  `json:"turn_id,omitempty"`      // KindTurnDone
+	TurnSeq     uint64 `json:"turn_seq,omitempty"`     // KindTurnDone (the user message seq that started the turn)
 	Input       int    `json:"input,omitempty"`        // KindTurnDone
 	Output      int    `json:"output,omitempty"`       // KindTurnDone
 	Error       string `json:"error,omitempty"`        // KindTurnDone
