@@ -22,7 +22,7 @@ var ErrNotFound = errors.New("db: session not found")
 
 // schemaVersion is the current schema revision, tracked in PRAGMA user_version.
 // Bump it and extend migrate when the schema changes.
-const schemaVersion = 3
+const schemaVersion = 4
 
 // DB wraps the SQLite database handle. It deliberately uses a single
 // connection: pragmas like foreign_keys are per-connection, and a single
@@ -144,6 +144,29 @@ CREATE INDEX IF NOT EXISTS idx_queries_turn ON queries(session_id, turn_seq);
 			return fmt.Errorf("set user_version: %w", err)
 		}
 	}
+	if v < 4 {
+		// v4: split input tokens into cached vs uncached. The provider reports
+		// how many prompt tokens were served from cache
+		// (prompt_tokens_details.cached_tokens); storing the split explicitly
+		// (instead of a single input total) is what lets cost display price
+		// cache hits differently from misses. Old rows are backfilled as
+		// all-uncached — the split was not recorded before v4, so treating
+		// their input as fresh is the honest default. The input column is
+		// dropped so the split is the one source of truth (the total is
+		// derived as cached + uncached, never stored redundantly).
+		const ddl = `
+ALTER TABLE queries ADD COLUMN cached_input INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE queries ADD COLUMN uncached_input INTEGER NOT NULL DEFAULT 0;
+UPDATE queries SET uncached_input = input;
+ALTER TABLE queries DROP COLUMN input;
+`
+		if _, err := d.db.Exec(ddl); err != nil {
+			return fmt.Errorf("apply schema v4: %w", err)
+		}
+		if _, err := d.db.Exec("PRAGMA user_version=4"); err != nil {
+			return fmt.Errorf("set user_version: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -162,11 +185,12 @@ type Message struct {
 // request carries no message of its own, so queries are keyed by
 // (turn, idx) rather than by a message.
 type Query struct {
-	TurnSeq uint64
-	Idx     int
-	Input   int
-	Output  int
-	Error   string
+	TurnSeq       uint64
+	Idx           int
+	CachedInput   int
+	UncachedInput int
+	Output        int
+	Error         string
 }
 
 // Session is the full persisted state of one session: its creation time, all
@@ -235,9 +259,9 @@ func (d *DB) AppendMessage(sessionID int64, m Message) error {
 // (written separately), while a failed request produced none.
 func (d *DB) AppendQuery(sessionID int64, q Query) error {
 	_, err := d.db.Exec(
-		`INSERT INTO queries (session_id, turn_seq, idx, input, output, error)
-		 VALUES (?, ?, ?, ?, ?, ?)`,
-		sessionID, q.TurnSeq, q.Idx, q.Input, q.Output, q.Error,
+		`INSERT INTO queries (session_id, turn_seq, idx, cached_input, uncached_input, output, error)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		sessionID, q.TurnSeq, q.Idx, q.CachedInput, q.UncachedInput, q.Output, q.Error,
 	)
 	if err != nil {
 		return fmt.Errorf("insert query: %w", err)
@@ -291,7 +315,7 @@ func (d *DB) LoadSession(id int64) (Session, error) {
 	// result set is still open on the one connection).
 	rows.Close()
 	qrows, err := d.db.Query(
-		`SELECT turn_seq, idx, input, output, error
+		`SELECT turn_seq, idx, cached_input, uncached_input, output, error
 		 FROM queries WHERE session_id = ? ORDER BY turn_seq ASC, idx ASC`, id)
 	if err != nil {
 		return Session{}, fmt.Errorf("load queries for %d: %w", id, err)
@@ -299,7 +323,7 @@ func (d *DB) LoadSession(id int64) (Session, error) {
 	defer qrows.Close()
 	for qrows.Next() {
 		var q Query
-		if err := qrows.Scan(&q.TurnSeq, &q.Idx, &q.Input, &q.Output, &q.Error); err != nil {
+		if err := qrows.Scan(&q.TurnSeq, &q.Idx, &q.CachedInput, &q.UncachedInput, &q.Output, &q.Error); err != nil {
 			return Session{}, fmt.Errorf("scan query: %w", err)
 		}
 		s.Queries = append(s.Queries, q)

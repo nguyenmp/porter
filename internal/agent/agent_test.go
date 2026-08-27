@@ -97,7 +97,7 @@ func TestRunTurnExecutesToolAndLoops(t *testing.T) {
 	if res.Text != "done" {
 		t.Errorf("final text = %q, want %q", res.Text, "done")
 	}
-	if res.Usage.Input != 2 || res.Usage.Output != 3 {
+	if res.Usage.UncachedInput != 2 || res.Usage.CachedInput != 0 || res.Usage.Output != 3 {
 		t.Errorf("usage = %+v, want 2 in / 3 out", res.Usage)
 	}
 
@@ -551,7 +551,7 @@ func TestRunTurnUsageArrivesAfterFinishReason(t *testing.T) {
 	if res.Text != "done" {
 		t.Errorf("final text = %q, want %q", res.Text, "done")
 	}
-	if res.Usage.Input != 2 || res.Usage.Output != 3 {
+	if res.Usage.UncachedInput != 2 || res.Usage.CachedInput != 0 || res.Usage.Output != 3 {
 		t.Errorf("usage = %+v, want 2 in / 3 out", res.Usage)
 	}
 }
@@ -572,7 +572,7 @@ func TestRunTurnUsageFlushedOnEOFWithoutDone(t *testing.T) {
 	if res.Text != "done" {
 		t.Errorf("final text = %q, want %q", res.Text, "done")
 	}
-	if res.Usage.Input != 2 || res.Usage.Output != 3 {
+	if res.Usage.UncachedInput != 2 || res.Usage.CachedInput != 0 || res.Usage.Output != 3 {
 		t.Errorf("usage = %+v, want 2 in / 3 out (Final must flush the trailing usage chunk)", res.Usage)
 	}
 }
@@ -606,13 +606,13 @@ func TestRunTurnReportsEachQuery(t *testing.T) {
 	if len(queries) != 2 {
 		t.Fatalf("OnQuery calls = %+v, want 2 (one per request)", queries)
 	}
-	if queries[0].Idx != 0 || queries[0].Input != 0 || queries[0].Output != 0 || queries[0].Err != nil {
+	if queries[0].Idx != 0 || queries[0].CachedInput != 0 || queries[0].UncachedInput != 0 || queries[0].Output != 0 || queries[0].Err != nil {
 		t.Errorf("query 0 = %+v, want idx 0, no usage, no error", queries[0])
 	}
-	if queries[1].Idx != 1 || queries[1].Input != 2 || queries[1].Output != 3 || queries[1].Err != nil {
+	if queries[1].Idx != 1 || queries[1].CachedInput != 0 || queries[1].UncachedInput != 2 || queries[1].Output != 3 || queries[1].Err != nil {
 		t.Errorf("query 1 = %+v, want idx 1, usage 2/3, no error", queries[1])
 	}
-	if res.Usage.Input != 2 || res.Usage.Output != 3 {
+	if res.Usage.UncachedInput != 2 || res.Usage.CachedInput != 0 || res.Usage.Output != 3 {
 		t.Errorf("turn usage = %+v, want 2/3", res.Usage)
 	}
 }
@@ -649,5 +649,52 @@ func TestRunTurnReportsFailedQuery(t *testing.T) {
 	}
 	if queries[0].Err == nil || !strings.Contains(queries[0].Err.Error(), "boom") {
 		t.Errorf("query error = %v, want the provider's 'boom'", queries[0].Err)
+	}
+}
+
+// cacheSplitServer serves a plain reply whose usage reports a cache split:
+// prompt_tokens_details.cached_tokens = 7 of 10 prompt tokens were cache hits.
+func cacheSplitServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprintf(w,
+			`data: {"choices":[{"delta":{"content":"done"},"finish_reason":null}]}`+"\n\n"+
+				`data: {"choices":[{"delta":{},"finish_reason":"stop"}]}`+"\n\n"+
+				`data: {"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":3,"prompt_tokens_details":{"cached_tokens":7}}}`+"\n\n"+
+				`data: [DONE]`+"\n")
+	}))
+	return srv
+}
+
+// TestRunTurnCarriesCacheSplit verifies the explicit CachedInput/UncachedInput
+// split survives the whole agent loop: the codec parses it, the turn Usage sums
+// it, and the OnQuery report persists it as the query's source of truth.
+func TestRunTurnCarriesCacheSplit(t *testing.T) {
+	srv := cacheSplitServer(t)
+	defer srv.Close()
+
+	cfg := config.Config{BaseURL: srv.URL + "/v1", Model: "test", APIKey: "k"}
+	client := llm.NewClient(cfg, nil)
+	var queries []Query
+	hooks := RunHooks{OnQuery: func(q Query) error {
+		queries = append(queries, q)
+		return nil
+	}}
+	res, err := RunTurn(context.Background(), client, []llm.ChatMessage{llm.UserMessage("hi")}, tools.NewDispatcher(), nil, nil, hooks)
+	if err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+	if res.Usage.CachedInput != 7 || res.Usage.UncachedInput != 3 || res.Usage.Output != 3 {
+		t.Errorf("turn usage = %+v, want 7 cached + 3 miss in, 3 out", res.Usage)
+	}
+	if res.Usage.Input() != 10 {
+		t.Errorf("derived total input = %d, want 10", res.Usage.Input())
+	}
+	if len(queries) != 1 {
+		t.Fatalf("OnQuery calls = %+v, want 1", queries)
+	}
+	if q := queries[0]; q.CachedInput != 7 || q.UncachedInput != 3 || q.Output != 3 || q.Err != nil {
+		t.Errorf("reported query = %+v, want 7 cached + 3 miss in, 3 out, no error", q)
 	}
 }

@@ -229,9 +229,10 @@ func TestQueryRoundTrip(t *testing.T) {
 		t.Fatalf("CreateSession: %v", err)
 	}
 	want := []Query{
-		{TurnSeq: 1, Idx: 0, Input: 2, Output: 3},
-		{TurnSeq: 1, Idx: 1, Input: 4, Output: 5},
-		{TurnSeq: 8, Idx: 0, Input: 0, Output: 0, Error: "boom"},
+		{TurnSeq: 1, Idx: 0, UncachedInput: 2, Output: 3},
+		// A provider-reported cache split round-trips: 1 cached + 3 miss in.
+		{TurnSeq: 1, Idx: 1, CachedInput: 1, UncachedInput: 3, Output: 5},
+		{TurnSeq: 8, Idx: 0, CachedInput: 0, UncachedInput: 0, Output: 0, Error: "boom"},
 	}
 	for _, q := range want {
 		if err := d.AppendQuery(id, q); err != nil {
@@ -324,7 +325,7 @@ func TestMigratesFromV1(t *testing.T) {
 		t.Errorf("cancelled flag did not round-trip after migration")
 	}
 	// The v3 migration added the queries table; it must exist and be writable.
-	if err := d.AppendQuery(id, Query{TurnSeq: 1, Idx: 0, Input: 1, Output: 1}); err != nil {
+	if err := d.AppendQuery(id, Query{TurnSeq: 1, Idx: 0, UncachedInput: 1, Output: 1}); err != nil {
 		t.Fatalf("AppendQuery after v1->v3 migration: %v", err)
 	}
 	got, err = d.LoadSession(id)
@@ -333,5 +334,118 @@ func TestMigratesFromV1(t *testing.T) {
 	}
 	if len(got.Queries) != 1 || got.Queries[0].TurnSeq != 1 {
 		t.Errorf("queries after migration = %+v, want one row for turn 1", got.Queries)
+	}
+}
+
+// TestMigratesFromV3ToV4 verifies the v3->v4 upgrade path, which is the real
+// one for existing databases: the queries table gains cached_input/uncached_input,
+// existing `input` totals are backfilled as all-uncached (the split was not
+// recorded before v4), and the now-redundant `input` column is dropped.
+func TestMigratesFromV3ToV4(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "porter.db")
+
+	// Build a v3 database by hand, exactly as schema v3 defined it.
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open raw v3 db: %v", err)
+	}
+	_, err = raw.Exec(`
+		CREATE TABLE sessions (
+			id         INTEGER PRIMARY KEY AUTOINCREMENT,
+			created_at INTEGER NOT NULL
+		);
+		CREATE TABLE messages (
+			session_id   INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+			seq          INTEGER NOT NULL,
+			role         TEXT    NOT NULL,
+			content      TEXT    NOT NULL DEFAULT '',
+			reasoning    TEXT    NOT NULL DEFAULT '',
+			tool_call_id TEXT    NOT NULL DEFAULT '',
+			tool_calls   TEXT    NOT NULL DEFAULT '[]',
+			started_at   INTEGER NOT NULL DEFAULT 0,
+			finished_at  INTEGER NOT NULL DEFAULT 0,
+			cancelled    INTEGER NOT NULL DEFAULT 0,
+			PRIMARY KEY (session_id, seq)
+		);
+		CREATE TABLE queries (
+			session_id INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+			turn_seq   INTEGER NOT NULL,
+			idx        INTEGER NOT NULL,
+			input      INTEGER NOT NULL DEFAULT 0,
+			output     INTEGER NOT NULL DEFAULT 0,
+			error      TEXT    NOT NULL DEFAULT '',
+			PRIMARY KEY (session_id, turn_seq, idx)
+		);
+		PRAGMA user_version=3;
+	`)
+	if err != nil {
+		t.Fatalf("create v3 schema: %v", err)
+	}
+	res, err := raw.Exec(`INSERT INTO sessions (created_at) VALUES (7)`)
+	if err != nil {
+		t.Fatalf("insert v3 session: %v", err)
+	}
+	id, _ := res.LastInsertId()
+	if _, err := raw.Exec(
+		`INSERT INTO queries (session_id, turn_seq, idx, input, output) VALUES (?, 1, 0, 7, 8)`, id); err != nil {
+		t.Fatalf("insert v3 query: %v", err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatalf("close raw db: %v", err)
+	}
+
+	// Opening runs the v3->v4 migration.
+	d, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open after v3: %v", err)
+	}
+	defer d.Close()
+
+	// The old total is backfilled as all-uncached: cached_input=0,
+	// uncached_input=7, output=8.
+	got, err := d.LoadSession(id)
+	if err != nil {
+		t.Fatalf("LoadSession after migration: %v", err)
+	}
+	if len(got.Queries) != 1 {
+		t.Fatalf("queries after migration = %+v, want 1 row", got.Queries)
+	}
+	if q := got.Queries[0]; q.CachedInput != 0 || q.UncachedInput != 7 || q.Output != 8 || q.Error != "" {
+		t.Errorf("query after migration = %+v, want cached 0, uncached 7, output 8", q)
+	}
+
+	// The input column is gone: a write must use the split, and the split
+	// round-trips. (Probing the dropped column directly also confirms DROP
+	// COLUMN ran, not just that the backfill is invisible to LoadSession.)
+	var cols []string
+	rows, err := d.db.Query(`SELECT name FROM pragma_table_info('queries')`)
+	if err != nil {
+		t.Fatalf("list query columns: %v", err)
+	}
+	for rows.Next() {
+		var c string
+		if err := rows.Scan(&c); err != nil {
+			rows.Close()
+			t.Fatalf("scan column: %v", err)
+		}
+		cols = append(cols, c)
+	}
+	rows.Close()
+	for _, banned := range []string{"input"} {
+		for _, c := range cols {
+			if c == banned {
+				t.Errorf("queries still has column %q after v4 migration: %v", banned, cols)
+			}
+		}
+	}
+	if err := d.AppendQuery(id, Query{TurnSeq: 1, Idx: 1, CachedInput: 2, UncachedInput: 3, Output: 4}); err != nil {
+		t.Fatalf("AppendQuery after migration: %v", err)
+	}
+	got, err = d.LoadSession(id)
+	if err != nil {
+		t.Fatalf("LoadSession after write: %v", err)
+	}
+	if len(got.Queries) != 2 {
+		t.Fatalf("queries after write = %+v, want 2 rows", got.Queries)
 	}
 }

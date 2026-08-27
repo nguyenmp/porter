@@ -266,7 +266,18 @@
     return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   }
 
-  // Returns true if the chat is scrolled to (or within `threshold` px of) the
+  // tokenLine renders a turn's token usage line. When the provider reported
+  // cache hits the input split is shown explicitly; otherwise it's the plain
+  // "(N in, M out tokens)" line. Mirrors server tokenLine so live and reload
+  // render identically.
+  function tokenLine(cached, uncached, output) {
+    if (cached > 0) {
+      return '(' + cached + ' cached + ' + uncached + ' miss in, ' + output + ' out tokens)';
+    }
+    return '(' + uncached + ' in, ' + output + ' out tokens)';
+  }
+
+  // Returns true if the chat is scrolled to (or within `threshold` px of the
   // bottom. Used to decide whether to auto-follow new content: if the user has
   // scrolled up to read earlier messages, don't yank the view back down.
   function isNearBottom(el, threshold) {
@@ -943,8 +954,8 @@
         // failed (e.g. the LLM provider returned a 400 or a rate limit)
         // surfaces its error so a silent failure is never mistaken for a
         // finished turn that just had nothing to say; a successful turn
-        // reports its per-turn token totals, mirroring the REPL's "(N in,
-        // M out tokens)" line.
+        // reports its per-turn token totals (cached/uncached input split,
+        // mirroring the REPL's "(X cached + Y miss in, M out tokens)" line).
         const tseq = env.turn_seq;
         if (env.error && !turnOutcomeRendered('error', tseq)) {
           markTurnOutcomeRendered('error', tseq);
@@ -955,12 +966,12 @@
             escapeHTML(env.error).replace(/\n/g, '<br>') + '</div>';
           chat.appendChild(errDiv);
           hadNewContent = true;
-        } else if ((env.input > 0 || env.output > 0) && !turnOutcomeRendered('token', tseq)) {
+        } else if ((env.cached_input > 0 || env.uncached_input > 0 || env.output > 0) && !turnOutcomeRendered('token', tseq)) {
           markTurnOutcomeRendered('token', tseq);
           const tokDiv = document.createElement('div');
           tokDiv.className = 'token-line';
           if (tseq) tokDiv.dataset.turnSeq = tseq;
-          tokDiv.textContent = '(' + env.input + ' in, ' + env.output + ' out tokens)';
+          tokDiv.textContent = tokenLine(env.cached_input || 0, env.uncached_input || 0, env.output || 0);
           chat.appendChild(tokDiv);
           hadNewContent = true;
         }

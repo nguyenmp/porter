@@ -127,7 +127,8 @@ const (
 	// KindMessage marks a message the server just committed to history, stamped
 	// with its seq. This is what reconciles a subscriber with history.
 	KindMessage = "message_committed"
-	// KindTurnDone marks that a turn finished, carrying its usage.
+	// KindTurnDone marks that a turn finished, carrying its usage split into
+	// cached/uncached input and output tokens.
 	KindTurnDone = "turn_completed"
 	// KindResync tells a subscriber its `since` is too old to bridge to live;
 	// it must refetch history and resubscribe. No further lines follow.
@@ -157,9 +158,13 @@ type Envelope struct {
 	FinishedAt  int64  `json:"finished_at,omitempty"`  // KindToolResult
 	TurnID      int64  `json:"turn_id,omitempty"`      // KindTurnDone
 	TurnSeq     uint64 `json:"turn_seq,omitempty"`     // KindTurnDone (the user message seq that started the turn)
-	Input       int    `json:"input,omitempty"`        // KindTurnDone
-	Output      int    `json:"output,omitempty"`       // KindTurnDone
-	Error       string `json:"error,omitempty"`        // KindTurnDone
+	// CachedInput/UncachedInput are the turn's prompt-token split (cache hits
+	// vs misses); Output is its completion tokens. Total input is their sum,
+	// derived where display needs it. KindTurnDone.
+	CachedInput   int    `json:"cached_input,omitempty"`
+	UncachedInput int    `json:"uncached_input,omitempty"`
+	Output        int    `json:"output,omitempty"` // KindTurnDone
+	Error         string `json:"error,omitempty"`  // KindTurnDone
 	// Queue is the number of turns still waiting in the server's queue behind
 	// the message this envelope commits. It is set on user KindMessage
 	// envelopes (the server reports, at each turn start, how many messages are

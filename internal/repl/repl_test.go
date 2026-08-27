@@ -183,3 +183,31 @@ func TestLiveViewRendersTurnError(t *testing.T) {
 		t.Errorf("turn error not recorded on the structured stream; got:\n%s", jsonl.String())
 	}
 }
+
+// TestRunShowsCacheSplit verifies the REPL renders the explicit cached/uncached
+// input split when the provider reports cache hits, instead of the plain
+// "(N in, ...)" line.
+func TestRunShowsCacheSplit(t *testing.T) {
+	llmSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w,
+			`data: {"choices":[{"delta":{"content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":5,"prompt_tokens_details":{"cached_tokens":6}}}`+"\n\n"+
+				`data: [DONE]`+"\n")
+	}))
+	defer llmSrv.Close()
+	s, err := server.New(config.Config{BaseURL: llmSrv.URL + "/v1", Model: "m", APIKey: "k"})
+	if err != nil {
+		t.Fatalf("server.New: %v", err)
+	}
+	ts := httptest.NewServer(s.Handler())
+	defer func() { ts.Close(); s.Close() }()
+
+	var out, jsonl bytes.Buffer
+	err = Run(context.Background(), config.ClientConfig{ServerURL: ts.URL}, strings.NewReader("hi\nquit\n"), &out, &jsonl)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !strings.Contains(out.String(), "(6 cached + 4 miss in, 5 out tokens)") {
+		t.Errorf("missing cached/uncached token line; got:\n%s", out.String())
+	}
+}

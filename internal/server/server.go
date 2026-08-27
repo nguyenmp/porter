@@ -100,6 +100,18 @@ func argsSnippet(args string) string {
 	return flat
 }
 
+// tokenLine renders a turn's token usage for display. When the provider
+// reported cache hits, the input split is shown explicitly so cache savings are
+// visible: "(X cached + Y miss in, Z out tokens)". Otherwise it is the plain
+// "(N in, M out tokens)" line. It is the single Go source of truth for the
+// format; the web client mirrors it in JS for the live stream.
+func tokenLine(cached, uncached, output int) string {
+	if cached > 0 {
+		return fmt.Sprintf("(%d cached + %d miss in, %d out tokens)", cached, uncached, output)
+	}
+	return fmt.Sprintf("(%d in, %d out tokens)", uncached, output)
+}
+
 var templates = template.Must(template.New("").Funcs(template.FuncMap{
 	"nl2br":          nl2br,
 	"renderMarkdown": renderMarkdown,
@@ -107,6 +119,7 @@ var templates = template.Must(template.New("").Funcs(template.FuncMap{
 	"clock":          fmtClock,
 	"toolExitCode":   toolExitCode,
 	"argsSnippet":    argsSnippet,
+	"tokenLine":      tokenLine,
 }).ParseFS(webFS, "web/*.tmpl"))
 
 // pageData is the data passed to every page template.
@@ -135,10 +148,11 @@ type ToolRunInfo struct {
 // turn_completed. UserSeq (the turn's user-message seq) tags the element so
 // the live client can dedup its own render against what /view produced.
 type viewFooter struct {
-	UserSeq uint64
-	Input   int
-	Output  int
-	Error   string
+	UserSeq       uint64
+	CachedInput   int
+	UncachedInput int
+	Output        int
+	Error         string
 }
 
 // viewItem is one element of the rendered history: either a committed message
@@ -505,12 +519,13 @@ func (s *Server) handleView(w http.ResponseWriter, r *http.Request) {
 		// final message of history); render its footer there so a reload places
 		// it exactly where the live turn_completed marker would.
 		if i == len(ps.Messages)-1 || ps.Messages[i+1].Role == "user" {
-			if t, ok := turnByUser[curTurn]; ok && (t.Input > 0 || t.Output > 0 || t.Error != "") {
+			if t, ok := turnByUser[curTurn]; ok && (t.CachedInput > 0 || t.UncachedInput > 0 || t.Output > 0 || t.Error != "") {
 				items = append(items, viewItem{Footer: &viewFooter{
-					UserSeq: t.UserSeq,
-					Input:   t.Input,
-					Output:  t.Output,
-					Error:   t.Error,
+					UserSeq:       t.UserSeq,
+					CachedInput:   t.CachedInput,
+					UncachedInput: t.UncachedInput,
+					Output:        t.Output,
+					Error:         t.Error,
 				}})
 			}
 		}

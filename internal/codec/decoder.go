@@ -52,10 +52,37 @@ type chunk struct {
 		Delta        delta   `json:"delta"`
 		FinishReason *string `json:"finish_reason"`
 	}
-	Usage *struct {
-		PromptTokens     int `json:"prompt_tokens"`
-		CompletionTokens int `json:"completion_tokens"`
-	} `json:"usage"`
+	Usage *usage `json:"usage"`
+}
+
+// usage is the token-accounting object a provider sends on the final streamed
+// chunk. The cache split travels in two shapes, depending on who normalizes it:
+// OpenAI-compatible proxies (LiteLLM, OpenRouter) emit
+// prompt_tokens_details.cached_tokens, while DeepSeek's native API uses the
+// top-level prompt_cache_hit_tokens. cachedInput() prefers the normalized form
+// and falls back to the native one, so porter tolerates both.
+type usage struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	// PromptCacheHitTokens is DeepSeek's native cache-hit count (a top-level
+	// field, not nested under prompt_tokens_details).
+	PromptCacheHitTokens int `json:"prompt_cache_hit_tokens"`
+	// PromptTokensDetails is the OpenAI-compatible cache breakdown.
+	PromptTokensDetails *struct {
+		CachedTokens int `json:"cached_tokens"`
+	} `json:"prompt_tokens_details"`
+}
+
+// cachedInput returns how many prompt tokens were served from cache, or 0 when
+// the provider did not report a split.
+func (u *usage) cachedInput() int {
+	if u == nil {
+		return 0
+	}
+	if u.PromptTokensDetails != nil && u.PromptTokensDetails.CachedTokens > 0 {
+		return u.PromptTokensDetails.CachedTokens
+	}
+	return u.PromptCacheHitTokens
 }
 
 // Decoder accumulates a stream of raw SSE `data:` lines into structured Events,
@@ -68,6 +95,7 @@ type Decoder struct {
 	reasoning strings.Builder
 	inTokens  int
 	outTokens int
+	cachedIn  int
 
 	// finalized guards the one-time emission of the terminal events
 	// (TypeMessage, TypeToolCall, TypeUsage). A stream may end by a [DONE]
@@ -129,6 +157,7 @@ func (d *Decoder) Process(line string) (bool, error) {
 	if c.Usage != nil {
 		d.inTokens = c.Usage.PromptTokens
 		d.outTokens = c.Usage.CompletionTokens
+		d.cachedIn = c.Usage.cachedInput()
 	}
 
 	for _, choice := range c.Choices {
@@ -174,7 +203,12 @@ func (d *Decoder) finalize() bool {
 		_ = d.emit(Event{Type: TypeToolCall, Index: call.Index, ToolCallID: call.ID, Name: call.Name, Arguments: call.Arguments})
 	}
 	if d.inTokens > 0 || d.outTokens > 0 {
-		_ = d.emit(Event{Type: TypeUsage, InputTokens: d.inTokens, OutputTokens: d.outTokens})
+		cached := d.cachedIn
+		uncached := d.inTokens - cached
+		if uncached < 0 {
+			uncached = 0
+		}
+		_ = d.emit(Event{Type: TypeUsage, InputTokens: d.inTokens, OutputTokens: d.outTokens, CachedInputTokens: cached, UncachedInputTokens: uncached})
 	}
 	return true
 }

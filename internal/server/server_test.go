@@ -126,8 +126,8 @@ func TestSessionCommitsHistory(t *testing.T) {
 		}
 		if env.Kind == api.KindTurnDone {
 			turnDone = true
-			if env.Input != 1 || env.Output != 2 {
-				t.Errorf("turn done usage = %d/%d, want 1/2", env.Input, env.Output)
+			if env.CachedInput != 0 || env.UncachedInput != 1 || env.Output != 2 {
+				t.Errorf("turn done usage = %d cached/%d miss/%d out, want 0/1/2", env.CachedInput, env.UncachedInput, env.Output)
 			}
 		}
 	}
@@ -2132,8 +2132,8 @@ func TestTurnUsageSurvivesRestartViaView(t *testing.T) {
 	}
 	// The live marker carries the summed usage and the turn's user-message seq
 	// (the identity /view tags its footers with, so the live client can dedup).
-	if done.Input != 1 || done.Output != 1 {
-		t.Errorf("turn_completed usage = %d/%d, want 1/1", done.Input, done.Output)
+	if done.CachedInput != 0 || done.UncachedInput != 1 || done.Output != 1 {
+		t.Errorf("turn_completed usage = %d cached/%d miss/%d out, want 0/1/1", done.CachedInput, done.UncachedInput, done.Output)
 	}
 	if done.TurnSeq == 0 {
 		t.Errorf("turn_completed turn_seq = 0, want the user message's seq")
@@ -2205,6 +2205,65 @@ func TestTurnErrorSurvivesRestartViaView(t *testing.T) {
 	} {
 		if !strings.Contains(view, want) {
 			t.Errorf("view after restart missing %q:\n%s", want, view)
+		}
+	}
+}
+
+// cacheSplitLLM serves a plain reply with a cache split (7 of 10 prompt tokens
+// served from cache), so the derived turn renders the explicit
+// "(X cached + Y miss in, ...)" line.
+func cacheSplitLLM() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w,
+			`data: {"choices":[{"delta":{"content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":3,"prompt_tokens_details":{"cached_tokens":7}}}`+"\n\n"+
+				`data: [DONE]`+"\n")
+	}
+}
+
+// TestTurnCacheSplitRendersInView verifies the explicit cached/uncached split
+// reaches the web render: the turn_completed marker carries it live, and /view
+// renders "(7 cached + 3 miss in, 3 out tokens)" on reload from the persisted
+// query rows.
+func TestTurnCacheSplitRendersInView(t *testing.T) {
+	srv := newTestServer(t, cacheSplitLLM())
+	ts := srv
+	c := client.New(ts.URL)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	info, err := c.Create(ctx)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := c.Append(ctx, info.ID, "run it"); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	var done api.Envelope
+	if err := c.Subscribe(ctx, info.ID, info.Seq, func(env api.Envelope) {
+		if env.Kind == api.KindTurnDone {
+			done = env
+		}
+	}, func(env api.Envelope) bool { return env.Kind == api.KindTurnDone }); err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	if done.CachedInput != 7 || done.UncachedInput != 3 || done.Output != 3 {
+		t.Fatalf("turn_completed usage = %d cached/%d miss/%d out, want 7/3/3", done.CachedInput, done.UncachedInput, done.Output)
+	}
+
+	resp, err := http.Get(ts.URL + "/api/sessions/" + info.ID + "/view")
+	if err != nil {
+		t.Fatalf("GET view: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	// The '+' is HTML-escaped to &#43; by html/template's auto-escaper (it
+	// still renders as '+' in the browser).
+	for _, want := range []string{
+		`(7 cached &#43; 3 miss in, 3 out tokens)`,
+		`token-line`,
+	} {
+		if !strings.Contains(string(body), want) {
+			t.Errorf("view missing %q:\n%s", want, body)
 		}
 	}
 }

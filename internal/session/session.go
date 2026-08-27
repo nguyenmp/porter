@@ -313,7 +313,8 @@ func (s *Session) runTurn(ctx context.Context, content string) {
 			done.Error = err.Error()
 		}
 	} else {
-		done.Input = res.Usage.Input
+		done.CachedInput = res.Usage.CachedInput
+		done.UncachedInput = res.Usage.UncachedInput
 		done.Output = res.Usage.Output
 	}
 	s.endTurn(done)
@@ -385,11 +386,15 @@ func (s *Session) loadMessages() ([]llm.ChatMessage, uint64) {
 // queries' usage; Error is set when any of its queries failed (a failed query
 // ends the turn, so at most one error per turn, on its final query).
 type Turn struct {
-	UserSeq uint64 // bus seq of the user message that started the turn
-	Input   int
-	Output  int
-	Error   string
+	UserSeq       uint64 // bus seq of the user message that started the turn
+	CachedInput   int    // prompt tokens served from cache, summed across the turn's queries
+	UncachedInput int    // prompt tokens read fresh (cache misses), summed across the turn's queries
+	Output        int    // completion tokens, summed across the turn's queries
+	Error         string
 }
+
+// Input returns the turn's total input tokens (cached + uncached).
+func (t Turn) Input() int { return t.CachedInput + t.UncachedInput }
 
 // Persisted returns the session's full persisted state (messages with their
 // bus seqs, query records, max seq) in a single read. It backs the /view
@@ -412,7 +417,8 @@ func DeriveTurns(ps db.Session) []Turn {
 			t = &Turn{UserSeq: q.TurnSeq}
 			byUser[q.TurnSeq] = t
 		}
-		t.Input += q.Input
+		t.CachedInput += q.CachedInput
+		t.UncachedInput += q.UncachedInput
 		t.Output += q.Output
 		if t.Error == "" && q.Error != "" {
 			t.Error = q.Error
@@ -484,7 +490,7 @@ func (s *Session) commitEnv(env api.Envelope) (uint64, error) {
 // aborts the turn (fail-fast, like a message that cannot be persisted), since
 // the database must never fall behind what the bus has told subscribers.
 func (s *Session) commitQuery(turnSeq uint64, q agent.Query) error {
-	row := db.Query{TurnSeq: turnSeq, Idx: q.Idx, Input: q.Input, Output: q.Output}
+	row := db.Query{TurnSeq: turnSeq, Idx: q.Idx, CachedInput: q.CachedInput, UncachedInput: q.UncachedInput, Output: q.Output}
 	if q.Err != nil {
 		row.Error = q.Err.Error()
 	}

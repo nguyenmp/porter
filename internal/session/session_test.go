@@ -385,10 +385,10 @@ func TestDeriveTurnsAggregatesQueries(t *testing.T) {
 	}
 	turn1 := ps.Messages[0].Seq
 
-	if err := s.commitQuery(turn1, agentQuery(0, 2, 3, nil)); err != nil {
+	if err := s.commitQuery(turn1, agentQuery(0, 0, 2, 3, nil)); err != nil {
 		t.Fatalf("commitQuery turn1 q0: %v", err)
 	}
-	if err := s.commitQuery(turn1, agentQuery(1, 4, 5, fmt.Errorf("rate limit"))); err != nil {
+	if err := s.commitQuery(turn1, agentQuery(1, 0, 4, 5, fmt.Errorf("rate limit"))); err != nil {
 		t.Fatalf("commitQuery turn1 q1: %v", err)
 	}
 
@@ -399,7 +399,8 @@ func TestDeriveTurnsAggregatesQueries(t *testing.T) {
 		t.Fatalf("Persisted: %v", err)
 	}
 	turn2 := ps.Messages[len(ps.Messages)-1].Seq
-	if err := s.commitQuery(turn2, agentQuery(0, 8, 13, nil)); err != nil {
+	// Turn 2's query reports a cache split: 3 cached + 5 miss = 8 in, 13 out.
+	if err := s.commitQuery(turn2, agentQuery(0, 3, 5, 13, nil)); err != nil {
 		t.Fatalf("commitQuery turn2 q0: %v", err)
 	}
 
@@ -412,19 +413,19 @@ func TestDeriveTurnsAggregatesQueries(t *testing.T) {
 		t.Fatalf("turns = %+v, want 2", turns)
 	}
 	// Turn 1: usage sums across its two queries; the failed query marks it.
-	if turns[0].UserSeq != turn1 || turns[0].Input != 6 || turns[0].Output != 8 {
-		t.Errorf("turn 1 = %+v, want user %d, usage 6/8", turns[0], turn1)
+	if turns[0].UserSeq != turn1 || turns[0].UncachedInput != 6 || turns[0].CachedInput != 0 || turns[0].Output != 8 {
+		t.Errorf("turn 1 = %+v, want user %d, usage 6/8 (all uncached)", turns[0], turn1)
 	}
 	if !strings.Contains(turns[0].Error, "rate limit") {
 		t.Errorf("turn 1 error = %q, want the failed query's error", turns[0].Error)
 	}
 	// Turn 2: just its one query's usage, no error.
-	if turns[1].UserSeq != turn2 || turns[1].Input != 8 || turns[1].Output != 13 || turns[1].Error != "" {
-		t.Errorf("turn 2 = %+v, want user %d, usage 8/13, no error", turns[1], turn2)
+	if turns[1].UserSeq != turn2 || turns[1].CachedInput != 3 || turns[1].UncachedInput != 5 || turns[1].Output != 13 || turns[1].Error != "" {
+		t.Errorf("turn 2 = %+v, want user %d, usage 3 cached + 5 miss / 13 out, no error", turns[1], turn2)
 	}
 }
 
 // agentQuery builds an agent.Query for commitQuery.
-func agentQuery(idx, input, output int, err error) agent.Query {
-	return agent.Query{Idx: idx, Input: input, Output: output, Err: err}
+func agentQuery(idx, cached, uncached, output int, err error) agent.Query {
+	return agent.Query{Idx: idx, CachedInput: cached, UncachedInput: uncached, Output: output, Err: err}
 }

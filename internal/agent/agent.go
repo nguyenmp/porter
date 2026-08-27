@@ -19,11 +19,18 @@ import (
 )
 
 // Usage reports token counts for a single assistant turn (which may span
-// several round-trips when tools are called).
+// several round-trips when tools are called). Input is carried explicitly as
+// its two parts — CachedInput (prompt tokens the provider served from its
+// cache) and UncachedInput (the rest, cache misses) — because the two price
+// differently; Input() returns the derived total.
 type Usage struct {
-	Input  int
-	Output int
+	CachedInput   int
+	UncachedInput int
+	Output        int
 }
+
+// Input returns the turn's total input tokens (cached + uncached).
+func (u Usage) Input() int { return u.CachedInput + u.UncachedInput }
 
 // Query reports the outcome of one model request — a single agent loop
 // iteration (one LLM stream). It is the origin of token usage and request
@@ -34,9 +41,11 @@ type Query struct {
 	// Idx is the request's zero-based position within its turn (the agent runs
 	// requests sequentially, so 0 is the first request of the turn).
 	Idx int
-	// Input/Output are this single request's token totals.
-	Input  int
-	Output int
+	// CachedInput/UncachedInput are this request's prompt-token split (cache
+	// hits vs misses); Output is its completion tokens.
+	CachedInput   int
+	UncachedInput int
+	Output        int
 	// Err is set when the request itself failed (e.g. a provider error), which
 	// ends the turn immediately.
 	Err error
@@ -133,7 +142,8 @@ func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage,
 				// below; the assembled TypeToolCall is what lands in the
 				// committed message.
 			case codec.TypeUsage:
-				usage.Input += ev.InputTokens
+				usage.CachedInput += ev.CachedInputTokens
+				usage.UncachedInput += ev.UncachedInputTokens
 				usage.Output += ev.OutputTokens
 			case codec.TypeReasoningDelta:
 			default:
@@ -159,7 +169,7 @@ func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage,
 				body.Close()
 				// A request that failed mid-stream is still a failed query:
 				// report the partial usage and the error before ending.
-				if qerr := h.reportQuery(Query{Idx: i, Input: usage.Input, Output: usage.Output, Err: err}); qerr != nil {
+				if qerr := h.reportQuery(Query{Idx: i, CachedInput: usage.CachedInput, UncachedInput: usage.UncachedInput, Output: usage.Output, Err: err}); qerr != nil {
 					return res, qerr
 				}
 				return res, err
@@ -176,13 +186,14 @@ func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage,
 		dec.Final()
 		body.Close()
 
-		res.Usage.Input += usage.Input
+		res.Usage.CachedInput += usage.CachedInput
+		res.Usage.UncachedInput += usage.UncachedInput
 		res.Usage.Output += usage.Output
 		// The request succeeded: report its usage so the caller can persist it
 		// at the query's origin. Turns are derived (not stored) as the sum
 		// over their queries, so this single record is what makes per-turn
 		// totals rebuildable on a reload.
-		if qerr := h.reportQuery(Query{Idx: i, Input: usage.Input, Output: usage.Output}); qerr != nil {
+		if qerr := h.reportQuery(Query{Idx: i, CachedInput: usage.CachedInput, UncachedInput: usage.UncachedInput, Output: usage.Output}); qerr != nil {
 			return res, qerr
 		}
 

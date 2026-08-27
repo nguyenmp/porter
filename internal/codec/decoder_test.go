@@ -246,3 +246,75 @@ func TestDecoderFinalFlushesWithoutDone(t *testing.T) {
 		t.Errorf("Final duplicated events; got:\n%s\nwant:\n%s", after, before)
 	}
 }
+
+// TestDecoderSplitsCachedAndUncachedInput pins the explicit cache split: the
+// provider reports how many prompt tokens were served from cache
+// (prompt_tokens_details.cached_tokens, the OpenAI-compatible shape LiteLLM and
+// OpenRouter normalize to). The emitted usage event carries both parts, which
+// sum to the total input, plus the unchanged total for wire compatibility.
+func TestDecoderSplitsCachedAndUncachedInput(t *testing.T) {
+	got, err := feed(t,
+		`data: {"choices":[{"delta":{"content":"Hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":20,"prompt_tokens_details":{"cached_tokens":4}}}`,
+		`data: [DONE]`,
+	)
+	if err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	for _, want := range []string{
+		`"type":"usage"`,
+		`"input_tokens":10`,         // total kept for compatibility
+		`"output_tokens":20`,        //
+		`"cached_input_tokens":4`,   // the explicit split: cache hits
+		`"uncached_input_tokens":6`, // and the misses (10 - 4)
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("output missing %q; got:\n%s", want, got)
+		}
+	}
+}
+
+// TestDecoderSplitsCachedInputDeepSeek covers the native DeepSeek shape, where
+// the cache-hit count is a top-level prompt_cache_hit_tokens field rather than
+// nested under prompt_tokens_details. This is what the current .env model
+// (deepseek/deepseek-v4-flash) sends when it bypasses an OpenAI-normalizing
+// proxy.
+func TestDecoderSplitsCachedInputDeepSeek(t *testing.T) {
+	got, err := feed(t,
+		`data: {"choices":[{"delta":{"content":"Hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":20,"prompt_cache_hit_tokens":7}}`,
+		`data: [DONE]`,
+	)
+	if err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	for _, want := range []string{
+		`"cached_input_tokens":7`,
+		`"uncached_input_tokens":3`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("output missing %q; got:\n%s", want, got)
+		}
+	}
+}
+
+// TestDecoderNoCacheSplitDefaultsAllUncached pins the "provider did not report
+// a cache split" default: everything is uncached, and no zero-value cache
+// fields leak into the JSON.
+func TestDecoderNoCacheSplitDefaultsAllUncached(t *testing.T) {
+	got, err := feed(t,
+		`data: {"choices":[{"delta":{"content":"Hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":3}}`,
+		`data: [DONE]`,
+	)
+	if err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	for _, want := range []string{
+		`"uncached_input_tokens":5`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("output missing %q; got:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, `"cached_input_tokens"`) {
+		t.Errorf("zero cache split leaked into JSON (omitempty should drop it); got:\n%s", got)
+	}
+}

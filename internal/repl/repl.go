@@ -153,6 +153,17 @@ type liveView struct {
 	sawLive bool
 }
 
+// tokenLine renders a turn's token usage line. When the provider reported cache
+// hits the input split is shown explicitly: "(X cached + Y miss in, Z out
+// tokens)". Otherwise it is the plain "(N in, M out tokens)" line. Mirrors the
+// server's tokenLine so the REPL and web UI agree.
+func tokenLine(cached, uncached, output int) string {
+	if cached > 0 {
+		return fmt.Sprintf("(%d cached + %d miss in, %d out tokens)", cached, uncached, output)
+	}
+	return fmt.Sprintf("(%d in, %d out tokens)", uncached, output)
+}
+
 // emit handles one envelope from the session's event bus.
 func (v *liveView) emit(env api.Envelope) {
 	if env.Seq > v.seq {
@@ -168,8 +179,8 @@ func (v *liveView) emit(env api.Envelope) {
 			writeJSONL(v.jsonl, env)
 			return
 		}
-		if env.Input > 0 || env.Output > 0 {
-			fmt.Fprintf(v.out, "(%d in, %d out tokens)\n", env.Input, env.Output)
+		if env.CachedInput > 0 || env.UncachedInput > 0 || env.Output > 0 {
+			fmt.Fprintln(v.out, tokenLine(env.CachedInput, env.UncachedInput, env.Output))
 		}
 	case api.KindToolResult, api.KindToolResultDelta, api.KindToolStarted, api.KindToolCancelled:
 		// Streaming deltas, the start marker, and a user cancellation are

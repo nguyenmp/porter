@@ -36,8 +36,8 @@
 				<span class="msg-role">error</span>
 				<div class="msg-content">{{nl2br .Footer.Error}}</div>
 			</div>
-		{{else if or .Footer.Input .Footer.Output}}
-			<div class="token-line" data-turn-seq="{{.Footer.UserSeq}}">({{.Footer.Input}} in, {{.Footer.Output}} out tokens)</div>
+		{{else if or .Footer.CachedInput .Footer.UncachedInput .Footer.Output}}
+			<div class="token-line" data-turn-seq="{{.Footer.UserSeq}}">{{tokenLine .Footer.CachedInput .Footer.UncachedInput .Footer.Output}}</div>
 		{{end}}
 	{{end}}
 {{end}}
