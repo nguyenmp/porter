@@ -104,6 +104,12 @@ type Decoder struct {
 	// come).
 	finalized bool
 
+	// finished is set when any chunk carried a terminal finish_reason, so a
+	// caller can tell a stream that reached its natural end (even without a
+	// [DONE] marker) from one cut off mid-flight. It is false while the model
+	// is still generating.
+	finished bool
+
 	// toolCalls accumulates streamed tool-call fragments keyed by their stream
 	// index, so a call split across deltas reassembles into one.
 	toolCalls map[int]*ToolCall
@@ -161,6 +167,9 @@ func (d *Decoder) Process(line string) (bool, error) {
 	}
 
 	for _, choice := range c.Choices {
+		if choice.FinishReason != nil {
+			d.finished = true
+		}
 		if c := choice.Delta.Content; c != "" {
 			d.full.WriteString(c)
 			if err := d.emit(Event{Type: TypeMessageDelta, Role: "assistant", Delta: c}); err != nil {
@@ -190,6 +199,12 @@ func (d *Decoder) Process(line string) (bool, error) {
 func (d *Decoder) Final() bool {
 	return d.finalize()
 }
+
+// Finished reports whether the stream reached a terminal finish_reason (the
+// provider finished generating), even if no [DONE] marker followed. It is
+// false while the model is still generating. The agent uses it to distinguish
+// a user stop mid-stream from a stream that completed without a [DONE].
+func (d *Decoder) Finished() bool { return d.finished }
 
 // finalize writes the accumulated message, tool-call, and usage events exactly
 // once and reports done.

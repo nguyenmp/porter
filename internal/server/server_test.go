@@ -2592,3 +2592,259 @@ func TestWebRendersExecStatusAndSystemNotices(t *testing.T) {
 		t.Errorf("/view missing the system notice; got:\n%s", v[:600])
 	}
 }
+
+// TestStopStopsRunningTurn is the end-to-end Stop story: a model stream that
+// produces partial text then hangs; the user stops the turn via the HTTP
+// endpoint; the server commits the partial reply (marked interrupted), ends the
+// turn with a stopped marker (not an error), calls the model no further, and
+// renders the same on reload.
+func TestStopStopsRunningTurn(t *testing.T) {
+	var mu sync.Mutex
+	n := 0
+	srv := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		n++
+		call := n
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/event-stream")
+		if call == 1 {
+			// Stream a partial reply, then hold the connection open (no
+			// finish_reason, no [DONE]) until the stop cancels it.
+			fl, _ := w.(http.Flusher)
+			fmt.Fprint(w, `data: {"choices":[{"delta":{"content":"The answer is "},"finish_reason":null}]}`+"\n\n")
+			if fl != nil {
+				fl.Flush()
+			}
+			<-r.Context().Done()
+			return
+		}
+		// The turn must end on stop; a second model round-trip means the
+		// partial was fed back instead of stopping.
+		t.Errorf("model was called again after stop")
+		fmt.Fprint(w,
+			`data: {"choices":[{"delta":{"content":"unexpected"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`+"\n\n"+
+				`data: [DONE]`+"\n")
+	}))
+
+	c := client.New(srv.URL)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	info, err := c.Create(ctx)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// Subscribe so we can observe the streamed partial and the terminal marker.
+	var busMu sync.Mutex
+	var envelopes []api.Envelope
+	partialSeen := make(chan struct{}, 1)
+	subCtx, subCancel := context.WithCancel(context.Background())
+	defer subCancel()
+	subDone := make(chan struct{})
+	go func() {
+		defer close(subDone)
+		_ = c.Subscribe(subCtx, info.ID, info.Seq, func(env api.Envelope) {
+			busMu.Lock()
+			envelopes = append(envelopes, env)
+			busMu.Unlock()
+			if env.Kind == api.KindLLM && env.Event != nil && env.Event.Type == codec.TypeMessageDelta {
+				select {
+				case partialSeen <- struct{}{}:
+				default:
+				}
+			}
+		}, func(env api.Envelope) bool { return env.Kind == api.KindTurnDone })
+	}()
+
+	if err := c.Append(ctx, info.ID, "run it"); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+
+	// Wait for the partial text to stream, then stop the turn.
+	select {
+	case <-partialSeen:
+	case <-time.After(5 * time.Second):
+		t.Fatal("partial content never streamed")
+	}
+	if err := c.Stop(ctx, info.ID); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	select {
+	case <-subDone:
+	case <-time.After(10 * time.Second):
+		t.Fatal("turn never completed after stop")
+	}
+	subCancel()
+
+	// The bus carries turn_completed marked stopped, with no error.
+	var sawStopped bool
+	for _, env := range envelopes {
+		if env.Kind == api.KindTurnDone {
+			if !env.Stopped {
+				t.Errorf("turn_completed not marked stopped: %+v", env)
+			}
+			if env.Error != "" {
+				t.Errorf("turn_completed carries an error: %+v", env)
+			}
+			sawStopped = true
+		}
+	}
+	if !sawStopped {
+		t.Fatalf("bus missing turn_completed; got %+v", envelopes)
+	}
+
+	// History gained the committed partial assistant message, marked
+	// interrupted.
+	h, err := c.History(ctx, info.ID)
+	if err != nil {
+		t.Fatalf("History: %v", err)
+	}
+	var partial *llm.ChatMessage
+	for i := range h.History {
+		if h.History[i].Role == "assistant" {
+			partial = &h.History[i]
+		}
+	}
+	if partial == nil {
+		t.Fatalf("history missing committed assistant message; history = %+v", h.History)
+	}
+	want := "The answer is\n\n... [interrupted]"
+	if partial.Content != want {
+		t.Errorf("committed partial = %q, want %q", partial.Content, want)
+	}
+	if len(partial.ToolCalls) != 0 {
+		t.Errorf("committed partial carries tool calls: %+v", partial.ToolCalls)
+	}
+
+	// The reload view renders the partial message and the stopped footer.
+	vres, err := http.Get(srv.URL + "/api/sessions/" + url.PathEscape(info.ID) + "/view")
+	if err != nil {
+		t.Fatalf("GET /view: %v", err)
+	}
+	vbody, _ := io.ReadAll(vres.Body)
+	vres.Body.Close()
+	if !strings.Contains(string(vbody), "... [interrupted]") {
+		t.Errorf("/view missing interrupted marker; body:\n%s", vbody)
+	}
+	if !strings.Contains(string(vbody), `class="turn-stopped"`) {
+		t.Errorf("/view missing stopped footer; body:\n%s", vbody)
+	}
+}
+
+// TestStoppedTurnResumesOnNextMessage verifies a stopped chat is resumable: the
+// next user message starts a normal new turn whose model request carries the
+// committed partial (with the interrupted marker) in history, so the model
+// knows the previous reply was cut off.
+func TestStoppedTurnResumesOnNextMessage(t *testing.T) {
+	var mu sync.Mutex
+	n := 0
+	var bodies [][]byte
+	srv := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		n++
+		call := n
+		bodies = append(bodies, body)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/event-stream")
+		if call == 1 {
+			// First turn: stream a partial reply, then hold until stopped.
+			fl, _ := w.(http.Flusher)
+			fmt.Fprint(w, `data: {"choices":[{"delta":{"content":"The answer is "},"finish_reason":null}]}`+"\n\n")
+			if fl != nil {
+				fl.Flush()
+			}
+			<-r.Context().Done()
+			return
+		}
+		// Second turn (the resume): reply fully.
+		fmt.Fprint(w,
+			`data: {"choices":[{"delta":{"content":"The answer is 42."},"finish_reason":"stop"}],"usage":{"prompt_tokens":4,"completion_tokens":5}}`+"\n\n"+
+				`data: [DONE]`+"\n")
+	}))
+
+	c := client.New(srv.URL)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	info, err := c.Create(ctx)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	partialSeen := make(chan struct{}, 1)
+	turnDone := make(chan struct{}, 8)
+	subCtx, subCancel := context.WithCancel(context.Background())
+	defer subCancel()
+	go func() {
+		_ = c.Subscribe(subCtx, info.ID, info.Seq, func(env api.Envelope) {
+			if env.Kind == api.KindLLM && env.Event != nil && env.Event.Type == codec.TypeMessageDelta {
+				select {
+				case partialSeen <- struct{}{}:
+				default:
+				}
+			}
+			if env.Kind == api.KindTurnDone {
+				select {
+				case turnDone <- struct{}{}:
+				default:
+				}
+			}
+		}, nil)
+	}()
+
+	// Turn 1: partial reply, then stop.
+	if err := c.Append(ctx, info.ID, "what is 6*7?"); err != nil {
+		t.Fatalf("Append 1: %v", err)
+	}
+	select {
+	case <-partialSeen:
+	case <-time.After(5 * time.Second):
+		t.Fatal("partial content never streamed")
+	}
+	if err := c.Stop(ctx, info.ID); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	select {
+	case <-turnDone:
+	case <-time.After(10 * time.Second):
+		t.Fatal("first turn never completed after stop")
+	}
+
+	// Turn 2: resume with a plain message; the reply arrives.
+	if err := c.Append(ctx, info.ID, "continue"); err != nil {
+		t.Fatalf("Append 2: %v", err)
+	}
+	select {
+	case <-turnDone:
+	case <-time.After(10 * time.Second):
+		t.Fatal("second turn never completed")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(bodies) != 2 {
+		t.Fatalf("model requests = %d, want 2 (partial turn + resume)", len(bodies))
+	}
+	// The resumed request's history carries the committed partial with the
+	// interrupted marker, so the model knows the previous reply was cut off.
+	var req struct {
+		Messages []struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(bodies[1], &req); err != nil {
+		t.Fatalf("decode resumed request: %v", err)
+	}
+	found := false
+	for _, m := range req.Messages {
+		if m.Role == "assistant" && strings.Contains(m.Content, "... [interrupted]") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("resumed request missing the interrupted partial; messages = %+v", req.Messages)
+	}
+}

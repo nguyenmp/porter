@@ -41,6 +41,8 @@
 				<span class="msg-role">error</span>
 				<div class="msg-content">{{nl2br .Footer.Error}}</div>
 			</div>
+		{{else if .Footer.Stopped}}
+			<div class="turn-stopped" data-turn-seq="{{.Footer.UserSeq}}">stopped{{if or .Footer.CachedInput .Footer.UncachedInput .Footer.Output}} · {{tokenLine .Footer.CachedInput .Footer.UncachedInput .Footer.Output}}{{end}}</div>
 		{{else if or .Footer.CachedInput .Footer.UncachedInput .Footer.Output}}
 			<div class="token-line" data-turn-seq="{{.Footer.UserSeq}}">{{tokenLine .Footer.CachedInput .Footer.UncachedInput .Footer.Output}}</div>
 		{{end}}

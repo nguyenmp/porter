@@ -22,7 +22,7 @@ var ErrNotFound = errors.New("db: session not found")
 
 // schemaVersion is the current schema revision, tracked in PRAGMA user_version.
 // Bump it and extend migrate when the schema changes.
-const schemaVersion = 4
+const schemaVersion = 5
 
 // DB wraps the SQLite database handle. It deliberately uses a single
 // connection: pragmas like foreign_keys are per-connection, and a single
@@ -167,6 +167,21 @@ ALTER TABLE queries DROP COLUMN input;
 			return fmt.Errorf("set user_version: %w", err)
 		}
 	}
+	if v < 5 {
+		// v5: the `stopped` flag on per-request query records, so a turn the
+		// user aborted with the Stop button survives a reload as "stopped"
+		// (rather than a failed turn or a normal completion). Like the v2
+		// `cancelled` flag on tool messages, it is set on the query that marks
+		// the stop so the derived turn can render its footer from persisted
+		// data instead of only from the live bus.
+		const ddl = "ALTER TABLE queries ADD COLUMN stopped INTEGER NOT NULL DEFAULT 0"
+		if _, err := d.db.Exec(ddl); err != nil {
+			return fmt.Errorf("apply schema v5: %w", err)
+		}
+		if _, err := d.db.Exec("PRAGMA user_version=5"); err != nil {
+			return fmt.Errorf("set user_version: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -191,6 +206,11 @@ type Query struct {
 	UncachedInput int
 	Output        int
 	Error         string
+	// Stopped reports that the turn was aborted by the user (the Stop button)
+	// rather than completing or failing. It is set on the query that marks the
+	// stop (the streaming request, with its partial usage, or a request that
+	// never ran), so a reload can render the turn's stopped footer.
+	Stopped bool
 }
 
 // Session is the full persisted state of one session: its creation time, all
@@ -259,9 +279,9 @@ func (d *DB) AppendMessage(sessionID int64, m Message) error {
 // (written separately), while a failed request produced none.
 func (d *DB) AppendQuery(sessionID int64, q Query) error {
 	_, err := d.db.Exec(
-		`INSERT INTO queries (session_id, turn_seq, idx, cached_input, uncached_input, output, error)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		sessionID, q.TurnSeq, q.Idx, q.CachedInput, q.UncachedInput, q.Output, q.Error,
+		`INSERT INTO queries (session_id, turn_seq, idx, cached_input, uncached_input, output, error, stopped)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		sessionID, q.TurnSeq, q.Idx, q.CachedInput, q.UncachedInput, q.Output, q.Error, q.Stopped,
 	)
 	if err != nil {
 		return fmt.Errorf("insert query: %w", err)
@@ -315,7 +335,7 @@ func (d *DB) LoadSession(id int64) (Session, error) {
 	// result set is still open on the one connection).
 	rows.Close()
 	qrows, err := d.db.Query(
-		`SELECT turn_seq, idx, cached_input, uncached_input, output, error
+		`SELECT turn_seq, idx, cached_input, uncached_input, output, error, stopped
 		 FROM queries WHERE session_id = ? ORDER BY turn_seq ASC, idx ASC`, id)
 	if err != nil {
 		return Session{}, fmt.Errorf("load queries for %d: %w", id, err)
@@ -323,9 +343,11 @@ func (d *DB) LoadSession(id int64) (Session, error) {
 	defer qrows.Close()
 	for qrows.Next() {
 		var q Query
-		if err := qrows.Scan(&q.TurnSeq, &q.Idx, &q.CachedInput, &q.UncachedInput, &q.Output, &q.Error); err != nil {
+		var stopped int
+		if err := qrows.Scan(&q.TurnSeq, &q.Idx, &q.CachedInput, &q.UncachedInput, &q.Output, &q.Error, &stopped); err != nil {
 			return Session{}, fmt.Errorf("scan query: %w", err)
 		}
+		q.Stopped = stopped != 0
 		s.Queries = append(s.Queries, q)
 	}
 	if err := qrows.Err(); err != nil {

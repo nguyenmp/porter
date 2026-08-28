@@ -46,6 +46,11 @@ type Query struct {
 	CachedInput   int
 	UncachedInput int
 	Output        int
+	// Stopped is set when the turn was aborted by the user (the Stop button)
+	// rather than completing or failing. It is set on the request that was
+	// streaming when the stop landed (with its partial usage), or on a request
+	// that never ran (zero usage), so a reload can mark the turn stopped.
+	Stopped bool
 	// Err is set when the request itself failed (e.g. a provider error), which
 	// ends the turn immediately.
 	Err error
@@ -68,6 +73,19 @@ type TurnResult struct {
 // tool result (marked cancelled) and stopping the turn; the caller should end
 // the turn cleanly rather than surfacing it as a failure.
 var ErrToolCancelled = errors.New("tool call cancelled")
+
+// ErrTurnStopped reports that the user stopped the whole turn (the Stop button
+// in the UI) before it produced a final reply. RunTurn returns it when its
+// context is cancelled while the model is streaming (after committing any
+// partial reply, marked interrupted) or while a tool runs (after committing the
+// cancelled tool result); the caller should end the turn with a stopped marker
+// rather than a failure.
+var ErrTurnStopped = errors.New("turn stopped")
+
+// interruptedMarker is appended to a partial assistant reply when the user
+// stops the turn mid-stream, so the committed history — and the model on the
+// next turn — knows the reply was cut off rather than complete.
+const interruptedMarker = "... [interrupted]"
 
 // RunHooks carries optional callbacks RunTurn invokes as a turn progresses.
 type RunHooks struct {
@@ -154,6 +172,16 @@ func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage,
 			}
 		}
 
+		// A Stop that landed between requests (after a tool finished, before the
+		// model was called again) must end the turn here rather than start
+		// another request.
+		if ctx.Err() != nil {
+			if qerr := h.reportQuery(Query{Idx: i, Stopped: true}); qerr != nil {
+				return res, qerr
+			}
+			return res, ErrTurnStopped
+		}
+
 		// Inject the execution provider's environment context (system, working
 		// directory, files, skills) as a system-message prefix. It is read fresh
 		// each request so a provider swap mid-turn is reflected immediately; the
@@ -164,6 +192,15 @@ func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage,
 		}
 		body, err := client.Stream(ctx, msgs, js.Defs())
 		if err != nil {
+			// The request failed to start. If the user stopped the turn, this is
+			// the stop (the transport was cancelled before the request began),
+			// not a provider failure: end the turn cleanly.
+			if ctx.Err() != nil {
+				if qerr := h.reportQuery(Query{Idx: i, Stopped: true}); qerr != nil {
+					return res, qerr
+				}
+				return res, ErrTurnStopped
+			}
 			// The request itself failed (e.g. a provider error): report it as a
 			// failed query before ending the turn.
 			if qerr := h.reportQuery(Query{Idx: i, Err: err}); qerr != nil {
@@ -171,9 +208,16 @@ func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage,
 			}
 			return res, err
 		}
+		streamDone := false
 		for line := range llm.SSELines(body) {
 			done, err := dec.Process(line)
 			if err != nil {
+				// A decode failure on a stopped stream is the stop (the
+				// transport was cut mid-line), not a failed request: break out
+				// and let the stop path below commit the partial.
+				if ctx.Err() != nil {
+					break
+				}
 				body.Close()
 				// A request that failed mid-stream is still a failed query:
 				// report the partial usage and the error before ending.
@@ -183,6 +227,7 @@ func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage,
 				return res, err
 			}
 			if done {
+				streamDone = true
 				break
 			}
 		}
@@ -197,6 +242,34 @@ func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage,
 		res.Usage.CachedInput += usage.CachedInput
 		res.Usage.UncachedInput += usage.UncachedInput
 		res.Usage.Output += usage.Output
+
+		// The user stopped the turn mid-stream: commit any partial reply
+		// (marked interrupted so the model knows it was cut off) and end the
+		// turn. A fully assembled tool call is deliberately dropped — the tool
+		// never ran, and a stop must not launch it. The stream must not have
+		// reached a terminal state: a stop that lands in the same instant a
+		// reply completes ([DONE] or a finish_reason with no [DONE]) lets the
+		// turn finish normally rather than retroactively marking it stopped.
+		if ctx.Err() != nil && !streamDone && !dec.Finished() {
+			partial := reply.String()
+			if strings.TrimSpace(partial) != "" || strings.TrimSpace(reasoning) != "" {
+				text := partial
+				if strings.TrimSpace(text) != "" {
+					text = strings.TrimRight(text, " \t\n") + "\n\n" + interruptedMarker
+				} else {
+					text = interruptedMarker
+				}
+				if err := commit(llm.AssistantMessage(text, reasoning, nil)); err != nil {
+					return res, err
+				}
+				res.Text = text
+			}
+			if qerr := h.reportQuery(Query{Idx: i, CachedInput: usage.CachedInput, UncachedInput: usage.UncachedInput, Output: usage.Output, Stopped: true}); qerr != nil {
+				return res, qerr
+			}
+			return res, ErrTurnStopped
+		}
+
 		// The request succeeded: report its usage so the caller can persist it
 		// at the query's origin. Turns are derived (not stored) as the sum
 		// over their queries, so this single record is what makes per-turn
@@ -315,6 +388,16 @@ func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage,
 				m.Cancelled = true
 				if err := commit(m); err != nil {
 					return res, err
+				}
+				// A Stop cancels the whole turn's context, which also cancels
+				// this run's context: distinguish it from a per-tool Cancel so
+				// the turn ends with a stopped marker (and a stopped query is
+				// persisted for reload) rather than a plain tool cancellation.
+				if ctx.Err() != nil {
+					if qerr := h.reportQuery(Query{Idx: i + 1, Stopped: true}); qerr != nil {
+						return res, qerr
+					}
+					return res, ErrTurnStopped
 				}
 				return res, ErrToolCancelled
 			}

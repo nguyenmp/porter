@@ -233,6 +233,9 @@ func TestQueryRoundTrip(t *testing.T) {
 		// A provider-reported cache split round-trips: 1 cached + 3 miss in.
 		{TurnSeq: 1, Idx: 1, CachedInput: 1, UncachedInput: 3, Output: 5},
 		{TurnSeq: 8, Idx: 0, CachedInput: 0, UncachedInput: 0, Output: 0, Error: "boom"},
+		// A turn the user stopped round-trips its stopped flag (with the
+		// partial usage recorded at the stop).
+		{TurnSeq: 9, Idx: 0, CachedInput: 1, UncachedInput: 2, Output: 3, Stopped: true},
 	}
 	for _, q := range want {
 		if err := d.AppendQuery(id, q); err != nil {
@@ -447,5 +450,99 @@ func TestMigratesFromV3ToV4(t *testing.T) {
 	}
 	if len(got.Queries) != 2 {
 		t.Fatalf("queries after write = %+v, want 2 rows", got.Queries)
+	}
+}
+
+// TestMigratesFromV4ToV5 verifies the v4->v5 migration: opening a v4 database
+// adds the `stopped` column to queries (defaulting to 0, so a pre-existing
+// query reads as not stopped), and a stopped query written after the migration
+// round-trips.
+func TestMigratesFromV4ToV5(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "porter.db")
+
+	// Build a v4 database by hand, exactly as schema v4 defined it (v1
+	// sessions/messages plus v3 queries with the v4 cached/uncached split).
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open raw v4 db: %v", err)
+	}
+	_, err = raw.Exec(`
+		CREATE TABLE sessions (
+			id         INTEGER PRIMARY KEY AUTOINCREMENT,
+			created_at INTEGER NOT NULL
+		);
+		CREATE TABLE messages (
+			session_id   INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+			seq          INTEGER NOT NULL,
+			role         TEXT    NOT NULL,
+			content      TEXT    NOT NULL DEFAULT '',
+			reasoning    TEXT    NOT NULL DEFAULT '',
+			tool_call_id TEXT    NOT NULL DEFAULT '',
+			tool_calls   TEXT    NOT NULL DEFAULT '[]',
+			started_at   INTEGER NOT NULL DEFAULT 0,
+			finished_at  INTEGER NOT NULL DEFAULT 0,
+			cancelled    INTEGER NOT NULL DEFAULT 0,
+			PRIMARY KEY (session_id, seq)
+		);
+		CREATE TABLE queries (
+			session_id   INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+			turn_seq     INTEGER NOT NULL,
+			idx          INTEGER NOT NULL,
+			cached_input INTEGER NOT NULL DEFAULT 0,
+			uncached_input INTEGER NOT NULL DEFAULT 0,
+			output       INTEGER NOT NULL DEFAULT 0,
+			error        TEXT    NOT NULL DEFAULT '',
+			PRIMARY KEY (session_id, turn_seq, idx)
+		);
+		PRAGMA user_version=4;
+	`)
+	if err != nil {
+		t.Fatalf("create v4 schema: %v", err)
+	}
+	res, err := raw.Exec(`INSERT INTO sessions (created_at) VALUES (7)`)
+	if err != nil {
+		t.Fatalf("insert v4 session: %v", err)
+	}
+	id, _ := res.LastInsertId()
+	if _, err := raw.Exec(
+		`INSERT INTO queries (session_id, turn_seq, idx, cached_input, uncached_input, output) VALUES (?, 1, 0, 1, 2, 3)`, id); err != nil {
+		t.Fatalf("insert v4 query: %v", err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatalf("close raw db: %v", err)
+	}
+
+	// Opening runs the v4->v5 migration.
+	d, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open after v4: %v", err)
+	}
+	defer d.Close()
+
+	// The pre-existing query reads back as not stopped (the column defaults 0).
+	got, err := d.LoadSession(id)
+	if err != nil {
+		t.Fatalf("LoadSession after migration: %v", err)
+	}
+	if len(got.Queries) != 1 {
+		t.Fatalf("queries after migration = %+v, want 1 row", got.Queries)
+	}
+	if q := got.Queries[0]; q.Stopped {
+		t.Errorf("pre-existing query marked stopped after migration: %+v", q)
+	}
+
+	// A stopped query written after the migration round-trips.
+	if err := d.AppendQuery(id, Query{TurnSeq: 1, Idx: 1, CachedInput: 4, UncachedInput: 5, Output: 6, Stopped: true}); err != nil {
+		t.Fatalf("AppendQuery stopped after migration: %v", err)
+	}
+	got, err = d.LoadSession(id)
+	if err != nil {
+		t.Fatalf("LoadSession after write: %v", err)
+	}
+	if len(got.Queries) != 2 {
+		t.Fatalf("queries after write = %+v, want 2 rows", got.Queries)
+	}
+	if !got.Queries[1].Stopped {
+		t.Errorf("stopped query did not round-trip: %+v", got.Queries[1])
 	}
 }

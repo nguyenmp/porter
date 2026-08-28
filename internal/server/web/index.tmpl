@@ -39,6 +39,11 @@
 		      hx-swap="none"
 		      class="msg-form">
 			<input type="text" name="content" placeholder="Type a message…" autocomplete="off" autofocus>
+			{{/* Stop button: aborts the running agent loop (model stream + any
+			     running tool) and ends the turn with a stopped marker. type="button"
+			     so it never submits the form. Visible only while a turn is running
+			     (JS toggles hidden, seeded by the page-load Running flag). */}}
+			<button type="button" id="stop-btn" class="stop-btn" hidden>Stop</button>
 			<button type="submit">Send</button>
 		</form>
 		{{/* Session total below the input box: seeded at page render from the
@@ -118,6 +123,27 @@
 	// by exec_status envelopes (null until the first one arrives).
 	let execProvider = null;
 
+  // The Stop button mirrors turnRunning: visible only while a turn is running,
+  // disabled + "Stopping…" optimistically while the stop POST is in flight (so
+  // it can't be clicked twice), and hidden again when the turn ends — either
+  // way, the turn_completed envelope reconciles the authoritative state.
+  const stopBtn = document.getElementById('stop-btn');
+  let stopInFlight = false;
+
+  function updateStopBtn() {
+    if (!stopBtn) return;
+    if (!turnRunning) {
+      stopBtn.hidden = true;
+      stopInFlight = false;
+      stopBtn.disabled = false;
+      stopBtn.textContent = 'Stop';
+      return;
+    }
+    stopBtn.hidden = false;
+    stopBtn.disabled = stopInFlight;
+    stopBtn.textContent = stopInFlight ? 'Stopping…' : 'Stop';
+  }
+
   function updateStatus() {
     if (!statusEl) return;
     let text, cls;
@@ -144,9 +170,38 @@
     }
     statusEl.className = 'status ' + cls;
     if (statusTextEl) statusTextEl.textContent = text;
+    // The stop button's visibility tracks the same running signal.
+    updateStopBtn();
   }
 
   updateStatus();
+
+  // Stop button: POST to the session's stop endpoint to abort the running
+  // turn. The server commits any partial reply (marked interrupted), stops any
+  // running tool, and ends the turn with a stopped marker; the turn_completed
+  // envelope that follows reconciles the authoritative state.
+  if (stopBtn) {
+    stopBtn.addEventListener('click', function() {
+      const app = document.getElementById('app');
+      const sess = app ? app.dataset.session : null;
+      if (!sess || !turnRunning || stopInFlight) return;
+      stopInFlight = true;
+      updateStopBtn();
+      fetch('/api/sessions/' + encodeURIComponent(sess) + '/stop', { method: 'POST' })
+        .then(function(resp) {
+          if (!resp.ok) throw new Error('stop rejected');
+        })
+        .catch(function() {
+          // The request failed (e.g. the turn already finished). Revert to
+          // running; whichever terminal envelope arrives next settles the real
+          // state.
+          if (stopInFlight) {
+            stopInFlight = false;
+            updateStopBtn();
+          }
+        });
+    });
+  }
 
   // --- Mobile sidebar drawer ---
   // On small screens the sidebar is an off-canvas drawer: the hamburger opens
@@ -206,19 +261,23 @@
   // never draw a turn's outcome twice.
   const renderedTurnErrors = new Set();
   const renderedTurnTokens = new Set();
+  const renderedTurnStopped = new Set();
 
   // A turn's outcome (error block or token line) is rendered once per turn,
   // keyed by the turn's user-message seq. /view renders past outcomes with
   // data-turn-seq on load; live-rendered elements carry the same tag, so one
   // DOM check covers both sources plus SSE reconnect replays.
+  function turnOutcomeSet(kind) {
+    return kind === 'error' ? renderedTurnErrors : (kind === 'stopped' ? renderedTurnStopped : renderedTurnTokens);
+  }
   function turnOutcomeRendered(kind, tseq) {
     if (!tseq) return false;
     if (chat && chat.querySelector('[data-turn-seq="' + tseq + '"]')) return true;
-    return (kind === 'error' ? renderedTurnErrors : renderedTurnTokens).has(tseq);
+    return turnOutcomeSet(kind).has(tseq);
   }
   function markTurnOutcomeRendered(kind, tseq) {
     if (!tseq) return;
-    (kind === 'error' ? renderedTurnErrors : renderedTurnTokens).add(tseq);
+    turnOutcomeSet(kind).add(tseq);
   }
 
   // --- Reasoning blocks ---
@@ -990,7 +1049,23 @@
         // reports its per-turn token totals (cached/uncached input split,
         // mirroring the REPL's "(X cached + Y miss in, M out tokens)" line).
         const tseq = env.turn_seq;
-        if (env.error && !turnOutcomeRendered('error', tseq)) {
+        if (env.stopped && !turnOutcomeRendered('stopped', tseq)) {
+          // The user aborted the turn with the Stop button: any partial reply
+          // is already committed (marked interrupted), so render a stopped
+          // marker — with the partial usage when the provider reported any —
+          // in place of the usual token line.
+          markTurnOutcomeRendered('stopped', tseq);
+          const stopDiv = document.createElement('div');
+          stopDiv.className = 'turn-stopped';
+          if (tseq) stopDiv.dataset.turnSeq = tseq;
+          let label = 'stopped';
+          if (env.cached_input > 0 || env.uncached_input > 0 || env.output > 0) {
+            label += ' · ' + tokenLine(env.cached_input || 0, env.uncached_input || 0, env.output || 0);
+          }
+          stopDiv.textContent = label;
+          chat.appendChild(stopDiv);
+          hadNewContent = true;
+        } else if (env.error && !turnOutcomeRendered('error', tseq)) {
           markTurnOutcomeRendered('error', tseq);
           const errDiv = document.createElement('div');
           errDiv.className = 'msg msg-error';

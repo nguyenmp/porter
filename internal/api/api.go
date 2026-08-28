@@ -39,6 +39,11 @@ const (
 	// SessionCancelPath cancels an in-flight tool run, stopping the running
 	// command and ending the turn: POST.
 	SessionCancelPath = "/api/sessions/{id}/cancel/{call_id}"
+	// SessionStopPath aborts the session's currently running turn: the model
+	// stream is cancelled (committing any partial reply, marked interrupted),
+	// any running tool is stopped, and the turn ends with a stopped marker.
+	// POST.
+	SessionStopPath = "/api/sessions/{id}/stop"
 	// SessionExecContextPath registers the environment context of the connected
 	// execution provider (system, working directory, files, skills): POST.
 	SessionExecContextPath = "/api/sessions/{id}/exec/context"
@@ -185,6 +190,10 @@ type Envelope struct {
 	TotalUncachedInput int    `json:"total_uncached_input,omitempty"`
 	TotalOutput        int    `json:"total_output,omitempty"` // KindTurnDone
 	Error              string `json:"error,omitempty"`        // KindTurnDone
+	// Stopped reports that the user aborted the turn (the Stop button) rather
+	// than completing or failing. A stopped turn's partial reply (if any) is
+	// already committed, marked interrupted. KindTurnDone.
+	Stopped bool `json:"stopped,omitempty"`
 	// Queue is the number of turns still waiting in the server's queue behind
 	// the message this envelope commits. It is set on user KindMessage
 	// envelopes (the server reports, at each turn start, how many messages are

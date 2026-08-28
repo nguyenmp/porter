@@ -150,16 +150,18 @@ type ToolRunInfo struct {
 }
 
 // viewFooter is one turn's outcome for the view: the aggregated token usage
-// and, when any of the turn's queries failed, the error. It is rendered after
-// the turn's final message, matching where the live client appends it on
-// turn_completed. UserSeq (the turn's user-message seq) tags the element so
-// the live client can dedup its own render against what /view produced.
+// and, when any of the turn's queries failed, the error (or when the user
+// stopped the turn, Stopped). It is rendered after the turn's final message,
+// matching where the live client appends it on turn_completed. UserSeq (the
+// turn's user-message seq) tags the element so the live client can dedup its
+// own render against what /view produced.
 type viewFooter struct {
 	UserSeq       uint64
 	CachedInput   int
 	UncachedInput int
 	Output        int
 	Error         string
+	Stopped       bool
 }
 
 // viewItem is one element of the rendered history: either a committed message
@@ -239,6 +241,7 @@ func (s *Server) Handler() http.Handler {
 	r.Get(api.SessionExecPath, s.handleExec)
 	r.Post(api.SessionExecResultPath, s.handleExecResult)
 	r.Post(api.SessionCancelPath, s.handleCancel)
+	r.Post(api.SessionStopPath, s.handleStop)
 	r.Post(api.SessionExecContextPath, s.handleExecContext)
 	r.Get(api.SessionExecStatusPath, s.handleExecStatus)
 	return r
@@ -462,6 +465,26 @@ func (s *Server) handleCancel(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
+// handleStop aborts the session's currently running turn: the model stream is
+// cancelled (committing any partial reply, marked interrupted), any running
+// tool is stopped, and the turn ends with a stopped marker. It is the backend
+// for the UI's Stop button.
+func (s *Server) handleStop(w http.ResponseWriter, r *http.Request) {
+	ses, ok := s.store.Get(chi.URLParam(r, "id"))
+	if !ok {
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+	if err := ses.Stop(); err != nil {
+		// No turn is running (idle or already finished): reject, mirroring
+		// handleCancel's unknown-run behavior. The UI reconciles from the
+		// turn_completed envelope, so a late click is harmless.
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
 // handleExecResult streams a client's tool output back to the in-flight call.
 func (s *Server) handleExecResult(w http.ResponseWriter, r *http.Request) {
 	ses, ok := s.store.Get(chi.URLParam(r, "id"))
@@ -560,13 +583,14 @@ func (s *Server) handleView(w http.ResponseWriter, r *http.Request) {
 		// final message of history); render its footer there so a reload places
 		// it exactly where the live turn_completed marker would.
 		if i == len(ps.Messages)-1 || ps.Messages[i+1].Role == "user" {
-			if t, ok := turnByUser[curTurn]; ok && (t.CachedInput > 0 || t.UncachedInput > 0 || t.Output > 0 || t.Error != "") {
+			if t, ok := turnByUser[curTurn]; ok && (t.CachedInput > 0 || t.UncachedInput > 0 || t.Output > 0 || t.Error != "" || t.Stopped) {
 				items = append(items, viewItem{Footer: &viewFooter{
 					UserSeq:       t.UserSeq,
 					CachedInput:   t.CachedInput,
 					UncachedInput: t.UncachedInput,
 					Output:        t.Output,
 					Error:         t.Error,
+					Stopped:       t.Stopped,
 				}})
 			}
 		}

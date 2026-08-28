@@ -230,6 +230,11 @@ type Session struct {
 	// away. Runs are removed when their terminal result arrives.
 	runs map[string]*toolRun
 
+	// turnCancel aborts the currently running turn's context. It is set when a
+	// turn starts (runTurn) and cleared when it ends; Stop() calls it to stop
+	// the whole loop. Nil when the session is idle.
+	turnCancel context.CancelFunc
+
 	queue chan string
 }
 
@@ -296,6 +301,21 @@ func (s *Session) loop(ctx context.Context) {
 
 func (s *Session) runTurn(ctx context.Context, content string) {
 	turnID := s.nextTurn()
+	// The turn runs under its own cancellable context so the user can stop the
+	// whole loop (the Stop button): cancelling it aborts the model stream
+	// (committing any partial reply, marked interrupted) and any running tool
+	// (whose per-call context derives from it). The cancel func is cleared when
+	// the turn ends, so Stop() only reaches a live turn.
+	turnCtx, turnCancel := context.WithCancel(ctx)
+	s.mu.Lock()
+	s.turnCancel = turnCancel
+	s.mu.Unlock()
+	defer func() {
+		turnCancel()
+		s.mu.Lock()
+		s.turnCancel = nil
+		s.mu.Unlock()
+	}()
 	// Committing the user message marks the start of this turn. Carry the
 	// remaining queue depth so subscribers can show how many turns are still
 	// waiting behind this one (the loop already pulled this message out of the
@@ -317,21 +337,30 @@ func (s *Session) runTurn(ctx context.Context, content string) {
 	// Persist each request's usage/error as the agent produces it (the query's
 	// origin), so turns are rebuildable from the database on a reload.
 	onQuery := func(q agent.Query) error { return s.commitQuery(turnSeq, q) }
-	res, err := agent.RunTurn(ctx, s.client, s.snapshot(), s.provider(), s.emitLive, func(m llm.ChatMessage) error {
+	res, err := agent.RunTurn(turnCtx, s.client, s.snapshot(), s.provider(), s.emitLive, func(m llm.ChatMessage) error {
 		return s.commit(m)
 	}, agent.RunHooks{OnRunStarted: s.onRunStarted, OnQuery: onQuery})
 	if err != nil {
-		// A tool cancelled by the user is a clean stop, not a failure: the
-		// partial result is already committed and the tool_cancelled envelope
-		// went out, so end the turn without an error marker.
-		if !errors.Is(err, agent.ErrToolCancelled) {
+		switch {
+		case errors.Is(err, agent.ErrTurnStopped):
+			// The user stopped the turn: end it with a stopped marker (not an
+			// error). Any partial reply is already committed, marked
+			// interrupted, so history is transparent.
+			done.Stopped = true
+		case errors.Is(err, agent.ErrToolCancelled):
+			// A tool cancelled by the user is a clean stop, not a failure: the
+			// partial result is already committed and the tool_cancelled
+			// envelope went out, so end the turn without an error marker.
+		default:
 			done.Error = err.Error()
 		}
-	} else {
-		done.CachedInput = res.Usage.CachedInput
-		done.UncachedInput = res.Usage.UncachedInput
-		done.Output = res.Usage.Output
 	}
+	// Usage rides on every completion path (a stopped turn carries its partial
+	// usage), so the live marker matches what the persisted footer derives on
+	// reload.
+	done.CachedInput = res.Usage.CachedInput
+	done.UncachedInput = res.Usage.UncachedInput
+	done.Output = res.Usage.Output
 	s.endTurn(done)
 }
 
@@ -416,6 +445,9 @@ type Turn struct {
 	UncachedInput int    // prompt tokens read fresh (cache misses), summed across the turn's queries
 	Output        int    // completion tokens, summed across the turn's queries
 	Error         string
+	// Stopped reports that the user aborted the turn (the Stop button): any of
+	// its queries is marked stopped. A stopped turn is not an error.
+	Stopped bool
 }
 
 // Input returns the turn's total input tokens (cached + uncached).
@@ -445,6 +477,9 @@ func DeriveTurns(ps db.Session) []Turn {
 		t.CachedInput += q.CachedInput
 		t.UncachedInput += q.UncachedInput
 		t.Output += q.Output
+		if q.Stopped {
+			t.Stopped = true
+		}
 		if t.Error == "" && q.Error != "" {
 			t.Error = q.Error
 		}
@@ -515,7 +550,7 @@ func (s *Session) commitEnv(env api.Envelope) (uint64, error) {
 // aborts the turn (fail-fast, like a message that cannot be persisted), since
 // the database must never fall behind what the bus has told subscribers.
 func (s *Session) commitQuery(turnSeq uint64, q agent.Query) error {
-	row := db.Query{TurnSeq: turnSeq, Idx: q.Idx, CachedInput: q.CachedInput, UncachedInput: q.UncachedInput, Output: q.Output}
+	row := db.Query{TurnSeq: turnSeq, Idx: q.Idx, CachedInput: q.CachedInput, UncachedInput: q.UncachedInput, Output: q.Output, Stopped: q.Stopped}
 	if q.Err != nil {
 		row.Error = q.Err.Error()
 	}
@@ -695,6 +730,24 @@ func (s *Session) CancelRun(callID string) error {
 			// so don't block a cancel on a slow client.
 		}
 	}
+	return nil
+}
+
+// Stop aborts the currently running turn: it cancels the turn's context, which
+// stops the model stream (committing any partial reply, marked interrupted)
+// and any running tool (whose per-call context derives from the turn's), and
+// ends the turn with a stopped marker. It is the backend for the UI's Stop
+// button. It returns an error when no turn is running (idle, or already
+// finished), so a double-click or a late click is rejected rather than
+// cancelling the next turn.
+func (s *Session) Stop() error {
+	s.mu.Lock()
+	cancel := s.turnCancel
+	s.mu.Unlock()
+	if cancel == nil {
+		return errors.New("no turn running")
+	}
+	cancel()
 	return nil
 }
 

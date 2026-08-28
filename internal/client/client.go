@@ -81,6 +81,14 @@ func (c *Client) Cancel(ctx context.Context, id, callID string) error {
 	return c.doJSON(ctx, http.MethodPost, c.path(api.SessionCancelPath, id, callID), nil, nil)
 }
 
+// Stop aborts the session's currently running turn: the server cancels the
+// model stream (committing any partial reply, marked interrupted), stops any
+// running tool, and ends the turn with a stopped marker. It returns an error
+// when no turn is running (idle, or already finished).
+func (c *Client) Stop(ctx context.Context, id string) error {
+	return c.doJSON(ctx, http.MethodPost, c.path(api.SessionStopPath, id), nil, nil)
+}
+
 // Subscribe streams the session's event bus as NDJSON, calling onEvent for
 // every envelope until the connection ends, until until(env) reports true, or
 // until a resync is required (returned as ErrResync). onEvent may be nil.

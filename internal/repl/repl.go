@@ -197,6 +197,16 @@ func (v *liveView) emit(env api.Envelope) {
 			writeJSONL(v.jsonl, env)
 			return
 		}
+		// A turn the user stopped (the Stop button) ends with a stopped marker
+		// instead of a token line — or both, when partial usage was recorded.
+		if env.Stopped {
+			if env.CachedInput > 0 || env.UncachedInput > 0 || env.Output > 0 {
+				fmt.Fprintf(v.out, "stopped · %s\n", tokenLine(env.CachedInput, env.UncachedInput, env.Output))
+			} else {
+				fmt.Fprintln(v.out, "stopped")
+			}
+			return
+		}
 		if env.CachedInput > 0 || env.UncachedInput > 0 || env.Output > 0 {
 			fmt.Fprintln(v.out, tokenLine(env.CachedInput, env.UncachedInput, env.Output))
 		}

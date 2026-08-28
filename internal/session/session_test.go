@@ -557,3 +557,85 @@ func TestRemoteProviderDefsAndEnvironmentFromContext(t *testing.T) {
 		}
 	}
 }
+
+// TestStopAbortsRunningTurn verifies the session's Stop: it cancels the running
+// turn's context (the func runTurn registers), a second Stop while the same
+// turn runs is a no-op error, and once the turn's deferred cleanup clears the
+// cancel func, Stop reports no turn running.
+func TestStopAbortsRunningTurn(t *testing.T) {
+	s := newTestSession(t, "s")
+
+	// Idle: no turn running.
+	if err := s.Stop(); err == nil {
+		t.Fatalf("Stop on idle session error = nil, want error")
+	}
+
+	// A turn starts: runTurn registers the turn's cancel func.
+	var cancelled bool
+	s.mu.Lock()
+	s.turnCancel = func() { cancelled = true }
+	s.mu.Unlock()
+
+	if err := s.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if !cancelled {
+		t.Errorf("turn's cancel func was not called")
+	}
+	// A second Stop on the same turn is a harmless no-op (context cancel is
+	// idempotent); the UI guards against double-clicks, and a racing click can
+	// never cancel the *next* turn because the func is cleared when this one
+	// ends.
+	if err := s.Stop(); err != nil {
+		t.Errorf("second Stop error = %v, want nil (idempotent)", err)
+	}
+
+	// The turn ends: the deferred cleanup clears the cancel func (as runTurn's
+	// defer does), so Stop reports idle again.
+	s.mu.Lock()
+	s.turnCancel = nil
+	s.mu.Unlock()
+	if err := s.Stop(); err == nil {
+		t.Errorf("Stop after turn cleanup error = nil, want error")
+	}
+}
+
+// TestDeriveTurnsAggregatesStopped verifies a turn the user stopped (any of
+// its queries marked stopped) derives with Stopped set, distinct from an
+// error, and that usage still aggregates from the stopped query's partial
+// tokens.
+func TestDeriveTurnsAggregatesStopped(t *testing.T) {
+	s := newTestSession(t, "s")
+
+	// Turn 1: user message + a stopped query carrying the partial usage.
+	commitN(t, s, "turn", 1)
+	ps, err := s.Persisted()
+	if err != nil {
+		t.Fatalf("Persisted: %v", err)
+	}
+	turn1 := ps.Messages[0].Seq
+	q := agentQuery(0, 1, 2, 3, nil)
+	q.Stopped = true
+	if err := s.commitQuery(turn1, q); err != nil {
+		t.Fatalf("commitQuery: %v", err)
+	}
+
+	ps, err = s.Persisted()
+	if err != nil {
+		t.Fatalf("Persisted: %v", err)
+	}
+	turns := DeriveTurns(ps)
+	if len(turns) != 1 {
+		t.Fatalf("turns = %+v, want 1", turns)
+	}
+	if !turns[0].Stopped {
+		t.Errorf("turn Stopped = false, want true")
+	}
+	if turns[0].Error != "" {
+		t.Errorf("turn Error = %q, want empty (a stop is not an error)", turns[0].Error)
+	}
+	if turns[0].CachedInput != 1 || turns[0].UncachedInput != 2 || turns[0].Output != 3 {
+		t.Errorf("turn usage = %d/%d/%d, want the stopped query's partial usage 1/2/3",
+			turns[0].CachedInput, turns[0].UncachedInput, turns[0].Output)
+	}
+}

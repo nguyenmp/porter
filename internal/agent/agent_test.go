@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"porter/internal/api"
+	"porter/internal/codec"
 	"porter/internal/config"
 	"porter/internal/llm"
 	"porter/internal/tools"
@@ -742,5 +743,374 @@ func TestRunTurnInjectsEnvironmentContext(t *testing.T) {
 		if first.Role != "system" || !strings.Contains(first.Content, "/work") {
 			t.Errorf("request %d first message = %+v, want the injected system context", i, first)
 		}
+	}
+}
+
+// TestRunTurnStopsMidStreamCommitsPartial verifies the Stop path for a stream
+// cut off mid-generation: the turn's context is cancelled while the model is
+// still producing text, so RunTurn commits the partial reply (marked
+// interrupted) and ends with ErrTurnStopped — not a failure, and no tool
+// launched.
+func TestRunTurnStopsMidStreamCommitsPartial(t *testing.T) {
+	// The server streams one content delta then holds the connection open
+	// (no finish_reason, no [DONE]) until the client's request context is
+	// cancelled — exactly a reply the user interrupts.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fl, _ := w.(http.Flusher)
+		fmt.Fprint(w, `data: {"choices":[{"delta":{"content":"The answer is "},"finish_reason":null}]}`+"\n\n")
+		if fl != nil {
+			fl.Flush()
+		}
+		<-r.Context().Done()
+	}))
+	defer srv.Close()
+
+	cfg := config.Config{BaseURL: srv.URL + "/v1", Model: "test", APIKey: "k"}
+	client := llm.NewClient(cfg, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var mu sync.Mutex
+	var committed []llm.ChatMessage
+	var queries []Query
+	var got []api.Envelope
+	firstDelta := make(chan struct{}, 1)
+
+	done := make(chan error, 1)
+	var res TurnResult
+	go func() {
+		r, err := RunTurn(ctx, client, []llm.ChatMessage{llm.UserMessage("hi")},
+			tools.NewDispatcher(),
+			func(env api.Envelope) {
+				mu.Lock()
+				got = append(got, env)
+				mu.Unlock()
+				if env.Kind == api.KindLLM && env.Event != nil && env.Event.Type == codec.TypeMessageDelta {
+					select {
+					case firstDelta <- struct{}{}:
+					default:
+					}
+				}
+			},
+			func(m llm.ChatMessage) error {
+				committed = append(committed, m)
+				return nil
+			},
+			RunHooks{OnQuery: func(q Query) error {
+				queries = append(queries, q)
+				return nil
+			}})
+		res = r
+		done <- err
+	}()
+
+	// Wait until the partial text actually streamed, then stop the turn.
+	select {
+	case <-firstDelta:
+	case <-time.After(5 * time.Second):
+		t.Fatal("partial content never streamed")
+	}
+	cancel()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrTurnStopped) {
+			t.Fatalf("RunTurn error = %v, want ErrTurnStopped", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("RunTurn did not return after stop")
+	}
+
+	// The partial reply is committed, marked interrupted, with no tool calls:
+	// the model (and history) sees the reply was cut off, and the stop never
+	// launched a tool.
+	if len(committed) != 1 {
+		t.Fatalf("committed messages = %+v, want exactly the partial assistant reply", committed)
+	}
+	m := committed[0]
+	if m.Role != "assistant" {
+		t.Fatalf("committed message role = %q, want assistant", m.Role)
+	}
+	want := "The answer is\n\n" + interruptedMarker
+	if m.Content != want {
+		t.Errorf("committed partial = %q, want %q", m.Content, want)
+	}
+	if len(m.ToolCalls) != 0 {
+		t.Errorf("committed partial carries tool calls = %+v, want none (a stop must not launch tools)", m.ToolCalls)
+	}
+	if res.Text != want {
+		t.Errorf("res.Text = %q, want %q", res.Text, want)
+	}
+
+	// Exactly one query: the stopped request (zero usage, the fake server sent
+	// no usage chunk).
+	if len(queries) != 1 || !queries[0].Stopped || queries[0].Err != nil {
+		t.Errorf("queries = %+v, want one stopped query with no error", queries)
+	}
+
+	// No tool ever started (no tool_started/tool_result envelopes).
+	for _, env := range got {
+		if env.Kind == api.KindToolStarted || env.Kind == api.KindToolResult {
+			t.Errorf("tool envelope after stop: %+v", env)
+		}
+	}
+}
+
+// TestRunTurnStopsMidStreamNoPartial verifies the Stop path when the stream is
+// cut off before any content arrived: nothing meaningful to commit, so the turn
+// ends with just a stopped query (zero usage) and no message.
+func TestRunTurnStopsMidStreamNoPartial(t *testing.T) {
+	reqSeen := make(chan struct{}, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fl, _ := w.(http.Flusher)
+		if fl != nil {
+			fl.Flush()
+		}
+		select {
+		case reqSeen <- struct{}{}:
+		default:
+		}
+		<-r.Context().Done()
+	}))
+	defer srv.Close()
+
+	cfg := config.Config{BaseURL: srv.URL + "/v1", Model: "test", APIKey: "k"}
+	client := llm.NewClient(cfg, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var committed []llm.ChatMessage
+	var queries []Query
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := RunTurn(ctx, client, []llm.ChatMessage{llm.UserMessage("hi")},
+			tools.NewDispatcher(), nil,
+			func(m llm.ChatMessage) error {
+				committed = append(committed, m)
+				return nil
+			},
+			RunHooks{OnQuery: func(q Query) error {
+				queries = append(queries, q)
+				return nil
+			}})
+		done <- err
+	}()
+
+	select {
+	case <-reqSeen:
+	case <-time.After(5 * time.Second):
+		t.Fatal("request never reached the server")
+	}
+	cancel()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrTurnStopped) {
+			t.Fatalf("RunTurn error = %v, want ErrTurnStopped", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("RunTurn did not return after stop")
+	}
+
+	if len(committed) != 0 {
+		t.Errorf("committed = %+v, want nothing (no partial content to commit)", committed)
+	}
+	if len(queries) != 1 || !queries[0].Stopped {
+		t.Errorf("queries = %+v, want one stopped query", queries)
+	}
+}
+
+// TestRunTurnStopDuringToolIsTurnStopped verifies the Stop path while a tool is
+// running: cancelling the turn's context (not the per-call cancel func) must
+// end the turn with ErrTurnStopped — distinct from the per-tool Cancel, which
+// still returns ErrToolCancelled (see TestRunTurnCancelsRunningTool).
+func TestRunTurnStopDuringToolIsTurnStopped(t *testing.T) {
+	srv, _ := toolServer(t) // first request asks for a tool call
+	defer srv.Close()
+
+	cfg := config.Config{BaseURL: srv.URL + "/v1", Model: "test", APIKey: "k"}
+	client := llm.NewClient(cfg, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var mu sync.Mutex
+	var got []api.Envelope
+	var committed []llm.ChatMessage
+	var queries []Query
+	toolStarted := make(chan struct{}, 1)
+
+	p := &cancelProvider{}
+	hooks := RunHooks{
+		OnRunStarted: func(callID string, _ func()) {
+			select {
+			case toolStarted <- struct{}{}:
+			default:
+			}
+		},
+		OnQuery: func(q Query) error {
+			queries = append(queries, q)
+			return nil
+		},
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := RunTurn(ctx, client, []llm.ChatMessage{llm.UserMessage("run it")},
+			p, func(env api.Envelope) {
+				mu.Lock()
+				got = append(got, env)
+				mu.Unlock()
+			},
+			func(m llm.ChatMessage) error {
+				committed = append(committed, m)
+				return nil
+			},
+			hooks)
+		done <- err
+	}()
+
+	// Wait until the tool is running, then stop the whole turn.
+	select {
+	case <-toolStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("tool never started")
+	}
+	cancel()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrTurnStopped) {
+			t.Fatalf("RunTurn error = %v, want ErrTurnStopped (not ErrToolCancelled)", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("RunTurn did not return after stop")
+	}
+
+	// The cancelled tool envelope went out (terminal, like tool_result), and
+	// the committed history ends at the cancelled tool result.
+	var sawStarted, sawCancelled bool
+	for _, env := range got {
+		switch env.Kind {
+		case api.KindToolStarted:
+			sawStarted = true
+		case api.KindToolCancelled:
+			sawCancelled = true
+		case api.KindToolResult:
+			t.Errorf("normal tool_result emitted for a stopped run: %+v", env)
+		}
+	}
+	if !sawStarted || !sawCancelled {
+		t.Errorf("envelopes missing started/cancelled: got %+v", got)
+	}
+	var toolMsg *llm.ChatMessage
+	for i := range committed {
+		if committed[i].Role == "tool" {
+			toolMsg = &committed[i]
+		}
+	}
+	if toolMsg == nil || !toolMsg.Cancelled {
+		t.Fatalf("committed = %+v, want a cancelled tool message", committed)
+	}
+
+	// Queries: the tool-call request succeeded (idx 0), then the stopped
+	// request that never ran (idx 1) marks the turn stopped.
+	if len(queries) != 2 || queries[0].Stopped || !queries[1].Stopped {
+		t.Errorf("queries = %+v, want [success, stopped]", queries)
+	}
+}
+
+// TestRunTurnStopsAfterToolWithNoPartial verifies a stop that lands after a
+// tool finished but before the next model request produced anything: the tool
+// result stays committed, nothing new is committed, and the turn ends stopped.
+func TestRunTurnStopsAfterToolWithNoPartial(t *testing.T) {
+	var mu sync.Mutex
+	n := 0
+	reqSeen := make(chan struct{}, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		n++
+		call := n
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/event-stream")
+		if call == 1 {
+			fmt.Fprint(w,
+				`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","type":"function","function":{"name":"shell","arguments":"{\"command\":\"echo hi\"}"}}]},"finish_reason":"tool_calls"}]}`+"\n\n"+
+					`data: [DONE]`+"\n")
+			return
+		}
+		// Second request: hold the stream open (no content, no finish_reason);
+		// the stop must end the turn here with nothing new committed.
+		fl, _ := w.(http.Flusher)
+		if fl != nil {
+			fl.Flush()
+		}
+		select {
+		case reqSeen <- struct{}{}:
+		default:
+		}
+		<-r.Context().Done()
+	}))
+	defer srv.Close()
+
+	cfg := config.Config{BaseURL: srv.URL + "/v1", Model: "test", APIKey: "k"}
+	client := llm.NewClient(cfg, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var committed []llm.ChatMessage
+	var queries []Query
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := RunTurn(ctx, client, []llm.ChatMessage{llm.UserMessage("run it")},
+			tools.NewDispatcher(), nil,
+			func(m llm.ChatMessage) error {
+				committed = append(committed, m)
+				return nil
+			},
+			RunHooks{OnQuery: func(q Query) error {
+				queries = append(queries, q)
+				return nil
+			}})
+		done <- err
+	}()
+
+	select {
+	case <-reqSeen:
+	case <-time.After(5 * time.Second):
+		t.Fatal("second request never reached the server")
+	}
+	cancel()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrTurnStopped) {
+			t.Fatalf("RunTurn error = %v, want ErrTurnStopped", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("RunTurn did not return after stop")
+	}
+
+	// History committed during the turn: assistant-with-tool-call then the tool
+	// result — and nothing new from the held request (the user message is input
+	// history, not committed via onMessage).
+	if len(committed) != 2 {
+		t.Fatalf("committed = %+v, want assistant + tool result only", committed)
+	}
+	if committed[0].Role != "assistant" || len(committed[0].ToolCalls) != 1 {
+		t.Errorf("first committed = %+v, want the assistant tool-call message", committed[0])
+	}
+	if committed[1].Role != "tool" {
+		t.Errorf("last committed = %+v, want the tool result", committed[1])
+	}
+	if len(queries) != 2 || queries[0].Stopped || !queries[1].Stopped {
+		t.Errorf("queries = %+v, want [tool-call request success, stopped]", queries)
 	}
 }
