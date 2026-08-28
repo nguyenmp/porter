@@ -6,17 +6,17 @@ import (
 )
 
 const (
-	DefaultBaseURL     = "https://api.openai.com/v1"
-	DefaultModel       = "gpt-4o-mini"
-	DefaultAddr        = "127.0.0.1:8787"
-	DefaultServerURL   = "http://127.0.0.1:8787"
+	DefaultBaseURL   = "https://api.openai.com/v1"
+	DefaultModel     = "gpt-4o-mini"
+	DefaultAddr      = "127.0.0.1:8787"
+	DefaultServerURL = "http://127.0.0.1:8787"
 )
 
 // Config holds the settings for the server process, which owns the LLM
 // connection and tool execution.
 type Config struct {
 	// Addr is the address the server listens on.
-	Addr string
+	Addr    string
 	BaseURL string
 	Model   string
 	APIKey  string

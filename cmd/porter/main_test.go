@@ -53,6 +53,7 @@ func TestRunStreamsJSONL(t *testing.T) {
 		t.Errorf("raw SSE leaked through; got:\n%s", got)
 	}
 }
+
 // TestRunReportsTurnError verifies the one-shot CLI bubbles up a failed turn:
 // when the LLM provider rejects the request (e.g. a 400), run returns an error
 // carrying the provider's message instead of printing "stream complete" and
