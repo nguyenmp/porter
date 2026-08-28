@@ -91,6 +91,20 @@ func Run(ctx context.Context, cfg config.ClientConfig, in io.Reader, out, jsonl 
 		}
 	}()
 
+	// The exec connection above is what registers the provider: it commits the
+	// "execution provider connected" notice and makes the environment context
+	// (system, cwd, files, skills) available for injection into every model
+	// request. Registration runs in a goroutine, so without a wait a fast first
+	// input — piped stdin, a script, an impatient keystroke — could start the
+	// first turn before the provider is connected, silently dropping the
+	// environment context and the notice from that request. Wait until the
+	// connection is live; if it never comes up (e.g. the exec endpoint is
+	// unreachable) log it and continue — the session falls back to running
+	// tools in the server process, matching a client that never connected.
+	if err := waitForExec(ctx, c, info.ID); err != nil {
+		fmt.Fprintf(jsonl, "execution provider: %v\n", err)
+	}
+
 	// view is the single sink for everything the human-readable terminal shows.
 	// It tracks the latest committed seq so the next subscribe resumes exactly
 	// where the last one left off, relays live LLM events to both the JSONL
@@ -301,4 +315,38 @@ func writeJSONL(w io.Writer, v any) {
 		return
 	}
 	_, _ = w.Write(append(data, '\n'))
+}
+
+// waitForExec polls the session's exec status until the client's exec
+// connection has registered (Connected), so the first turn always sees the
+// environment context and the connect notice. It gives up after a short
+// timeout so a broken or unreachable exec endpoint degrades to local
+// execution in the server process instead of hanging the REPL.
+func waitForExec(ctx context.Context, c *client.Client, id string) error {
+	const timeout = 10 * time.Second
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for {
+		st, err := c.ExecStatus(ctx, id)
+		if err == nil && st.Connected {
+			return nil
+		}
+		if err != nil {
+			lastErr = err
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if time.Now().After(deadline) {
+			if lastErr != nil {
+				return fmt.Errorf("exec provider did not connect within %s: %w", timeout, lastErr)
+			}
+			return fmt.Errorf("exec provider did not connect within %s", timeout)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
 }
