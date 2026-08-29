@@ -196,7 +196,7 @@ Build order:
 - [x] 2. TTY REPL
 - [x] 3. Tool-call shell (file edits + network calls)
 - [x] 4. Server-owned conversation state (stateless clients poll history and subscribe to an event bus; commands instead of full-history resubmission)
-- [ ] Web UI (render from history poll + event bus, send commands)
+- [x] Web UI (render from history poll + event bus, send commands)
 - [x] SQLite-backed history (persist the server-owned session state)
 - [ ] Handoff / async execution
 - [ ] Metrics & performance (tokens/sec, tool timing, worktree cache)
@@ -206,11 +206,12 @@ Build order:
 
 **As-needed (ad hoc, when the need arises):**
 
-- Forks / resume
+- Forks / resume — tree view of the conversation, click to fork or rewind
+- Cost / token display — per-message totals (per-turn and per-session already rendered)
 - Memory
 - TODO
 - [x] Skills (discovery + load_skill)
-- Auth
+- Auth — single-user token gating the whole UI
 - Share / link (conversation, fork, turn)
 - Chat with a subagent after it finishes
 - Subagents
