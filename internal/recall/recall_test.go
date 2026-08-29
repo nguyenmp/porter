@@ -40,7 +40,8 @@ func TestTruncateFormat(t *testing.T) {
 	got := Truncate(content, "call_1", meta)
 
 	// The header states sizes (comma-formatted) and how to load the rest.
-	expectedHeader := fmt.Sprintf("[tool output: 1,024 of %s bytes (head); last 512 bytes shown below.  To load more: read_output(call_id=\"call_1\", offset=1024, max_bytes=%d).]", comma(len(content)), len(content)-HeadBytes)
+	expectedHeader := fmt.Sprintf("[tool output: %s of %s bytes (head); last %s shown below.  To load more: read_output(call_id=\"call_1\", offset=%d, max_bytes=%d).]",
+		comma(HeadBytes), comma(len(content)), bytesLabel(TailBytes), HeadBytes, len(content)-HeadBytes)
 	if !strings.Contains(got, expectedHeader) {
 		t.Errorf("truncation header missing/wrong:\n%s", got)
 	}
@@ -131,11 +132,11 @@ func TestServeWindow(t *testing.T) {
 	}
 
 	// A window covering exactly the middle bytes.
-	window, meta, err := ServeWindow(history, `{"call_id":"call_1","offset":1024,"max_bytes":1000}`)
+	window, meta, err := ServeWindow(history, fmt.Sprintf(`{"call_id":"call_1","offset":%d,"max_bytes":1000}`, HeadBytes))
 	if err != nil {
 		t.Fatalf("ServeWindow: %v", err)
 	}
-	if meta.SourceCallID != "call_1" || meta.Offset != 1024 || meta.MaxBytes != 1000 || meta.TotalBytes != len(full) || meta.ShownBytes != 1000 {
+	if meta.SourceCallID != "call_1" || meta.Offset != HeadBytes || meta.MaxBytes != 1000 || meta.TotalBytes != len(full) || meta.ShownBytes != 1000 {
 		t.Errorf("meta = %+v", meta)
 	}
 	if !strings.Contains(window, strings.Repeat("m", 1000)) {
@@ -145,19 +146,19 @@ func TestServeWindow(t *testing.T) {
 		t.Errorf("window missing the recall header:\n%s", window)
 	}
 	// The window is the raw bytes; the head and this window line up exactly.
-	if windowBytes := window[strings.Index(window, "\n")+1:]; windowBytes != full[1024:2024] {
-		t.Errorf("window bytes = %q..., want full[1024:2024]", windowBytes[:20])
+	if windowBytes := window[strings.Index(window, "\n")+1:]; windowBytes != full[HeadBytes:HeadBytes+1000] {
+		t.Errorf("window bytes = %q..., want full[HeadBytes:HeadBytes+1000]", windowBytes[:20])
 	}
 
 	// Omitting max_bytes reads to the end of the output.
-	toEnd, metaEnd, err := ServeWindow(history, `{"call_id":"call_1","offset":1024}`)
+	toEnd, metaEnd, err := ServeWindow(history, fmt.Sprintf(`{"call_id":"call_1","offset":%d}`, HeadBytes))
 	if err != nil {
 		t.Fatalf("ServeWindow to-end: %v", err)
 	}
-	if metaEnd.MaxBytes != len(full)-1024 {
-		t.Errorf("to-end max_bytes = %d, want %d", metaEnd.MaxBytes, len(full)-1024)
+	if metaEnd.MaxBytes != len(full)-HeadBytes {
+		t.Errorf("to-end max_bytes = %d, want %d", metaEnd.MaxBytes, len(full)-HeadBytes)
 	}
-	if !strings.HasSuffix(toEnd, full[1024:]) {
+	if !strings.HasSuffix(toEnd, full[HeadBytes:]) {
 		t.Errorf("to-end window must be the rest of the output")
 	}
 

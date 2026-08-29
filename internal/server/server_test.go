@@ -23,6 +23,7 @@ import (
 	"porter/internal/codec"
 	"porter/internal/config"
 	"porter/internal/llm"
+	"porter/internal/recall"
 	"porter/internal/tools"
 )
 
@@ -2997,7 +2998,7 @@ func TestTruncationEndToEnd(t *testing.T) {
 		mu.Unlock()
 		if call == 1 {
 			io.WriteString(w,
-				`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","type":"function","function":{"name":"shell","arguments":"{\"command\":\"awk 'BEGIN{for(i=0;i<1000;i++) printf \\\"line %d\\\\n\\\", i}'\"}"}}]},"finish_reason":"tool_calls"}]}`+"\n\n"+
+				`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","type":"function","function":{"name":"shell","arguments":"{\"command\":\"awk 'BEGIN{for(i=0;i<3000;i++) printf \\\"line %d\\\\n\\\", i}'\"}"}}]},"finish_reason":"tool_calls"}]}`+"\n\n"+
 					`data: [DONE]`+"\n")
 			return
 		}
@@ -3038,8 +3039,8 @@ func TestTruncationEndToEnd(t *testing.T) {
 			}
 		}
 	}
-	if meta == nil || !meta.Truncated || meta.TotalBytes != len(full) || meta.ShownBytes != 1536 {
-		t.Errorf("tool_result metadata = %+v, want truncated total=%d shown=1536", meta, len(full))
+	if meta == nil || !meta.Truncated || meta.TotalBytes != len(full) || meta.ShownBytes != recall.HeadBytes+recall.TailBytes {
+		t.Errorf("tool_result metadata = %+v, want truncated total=%d shown=%d", meta, len(full), recall.HeadBytes+recall.TailBytes)
 	}
 	if !committedMetaSeen {
 		t.Errorf("committed message envelope missing tool_output metadata")
@@ -3058,7 +3059,7 @@ func TestTruncationEndToEnd(t *testing.T) {
 	}
 	// /view renders the whole output (newlines as <br>): the first line,
 	// a middle line the truncated model view would omit, and the last line.
-	for _, probe := range []string{"line 0", "line 500", "line 999"} {
+	for _, probe := range []string{"line 0", "line 1500", "line 2999"} {
 		if !strings.Contains(html, probe) {
 			t.Errorf("/view must render the full tool output (missing %q)", probe)
 		}

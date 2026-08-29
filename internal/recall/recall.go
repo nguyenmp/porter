@@ -34,8 +34,8 @@ const ReadOutputTool = "read_output"
 // model-view truncation. They are not configurable; tune them here if the
 // budget needs to change.
 const (
-	HeadBytes = 1024
-	TailBytes = 512
+	HeadBytes = 8192
+	TailBytes = 8192
 )
 
 // truncationHeaderPrefix marks a message already in truncated model-view form,

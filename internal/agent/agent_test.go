@@ -19,6 +19,7 @@ import (
 	"porter/internal/codec"
 	"porter/internal/config"
 	"porter/internal/llm"
+	"porter/internal/recall"
 	"porter/internal/tools"
 )
 
@@ -1177,7 +1178,7 @@ func recallLLMServer(t *testing.T) (*httptest.Server, func() ([][]json.RawMessag
 		case 1:
 			fmt.Fprintf(w, `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"shell","arguments":"{\"command\":\"cat big\"}"}}]},"finish_reason":"tool_calls"}]}`+"\n\n"+`data: [DONE]`+"\n")
 		case 2:
-			fmt.Fprintf(w, `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_2","type":"function","function":{"name":"read_output","arguments":"{\"call_id\":\"call_1\",\"offset\":1024,\"max_bytes\":1000}"}}]},"finish_reason":"tool_calls"}]}`+"\n\n"+`data: [DONE]`+"\n")
+			fmt.Fprintf(w, `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_2","type":"function","function":{"name":"read_output","arguments":"{\"call_id\":\"call_1\",\"offset\":%d,\"max_bytes\":1000}"}}]},"finish_reason":"tool_calls"}]}`+"\n\n"+`data: [DONE]`+"\n", recall.HeadBytes)
 		default:
 			fmt.Fprintf(w, `data: {"choices":[{"delta":{"content":"done"},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":3}}`+"\n\n"+`data: [DONE]`+"\n")
 		}
@@ -1192,7 +1193,7 @@ func recallLLMServer(t *testing.T) (*httptest.Server, func() ([][]json.RawMessag
 // bigContent builds a deterministic over-budget output: head 'h's, 1000 'm's
 // in the middle, tail 't's, and the shell exit line.
 func bigContent() string {
-	return strings.Repeat("h", 1024) + strings.Repeat("m", 1000) + strings.Repeat("t", 512) + "\nexit code: 0\n"
+	return strings.Repeat("h", recall.HeadBytes) + strings.Repeat("m", 1000) + strings.Repeat("t", recall.TailBytes) + "\nexit code: 0\n"
 }
 
 // toolMsg extracts a role-"tool" message from a captured request by call id.
