@@ -2978,3 +2978,92 @@ func TestMCPTurn(t *testing.T) {
 		t.Errorf("CallMCP result = %q, want 'echo: hi'", toolResults[1])
 	}
 }
+
+// TestTruncationEndToEnd runs a real shell command with output larger than the
+// model-view head+tail budget through the whole HTTP stack, and verifies the
+// split: the DB and the /view render hold the full output, the bus carries the
+// full output plus truncation metadata (rendered as a badge in the UI), and
+// the committed message envelope carries the metadata for a reconnecting
+// client. The model request itself gets the truncated form — that is covered
+// by the agent tests; here we assert the server surfaces what the UI needs.
+func TestTruncationEndToEnd(t *testing.T) {
+	var mu sync.Mutex
+	n := 0
+	llmHandler := func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		mu.Lock()
+		n++
+		call := n
+		mu.Unlock()
+		if call == 1 {
+			io.WriteString(w,
+				`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","type":"function","function":{"name":"shell","arguments":"{\"command\":\"awk 'BEGIN{for(i=0;i<1000;i++) printf \\\"line %d\\\\n\\\", i}'\"}"}}]},"finish_reason":"tool_calls"}]}`+"\n\n"+
+					`data: [DONE]`+"\n")
+			return
+		}
+		io.WriteString(w,
+			`data: {"choices":[{"delta":{"content":"done"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`+"\n\n"+
+				`data: [DONE]`+"\n")
+	}
+	ts := newTestServer(t, llmHandler)
+
+	id, got, h := runOneTurnID(t, ts.URL, "run it")
+
+	// The committed history (DB-backed) holds the full output.
+	var full string
+	for _, m := range h.History {
+		if m.Role == "tool" {
+			full = m.Content
+		}
+	}
+	if len(full) < 2000 {
+		t.Fatalf("expected a big tool output, got %d bytes", len(full))
+	}
+
+	// The terminal tool_result envelope carries the full output plus metadata,
+	// and every committed role-"tool" envelope carries the metadata too (for a
+	// reconnecting client to render the badge).
+	var meta *llm.ToolOutputMeta
+	committedMetaSeen := false
+	for _, env := range got {
+		if env.Kind == api.KindToolResult && env.ToolCallID == "c1" {
+			if env.Result != full {
+				t.Errorf("bus tool_result should carry the full output")
+			}
+			meta = env.ToolOutput
+		}
+		if env.Kind == api.KindMessage && env.Message != nil && env.Message.Role == "tool" {
+			if env.ToolOutput != nil {
+				committedMetaSeen = true
+			}
+		}
+	}
+	if meta == nil || !meta.Truncated || meta.TotalBytes != len(full) || meta.ShownBytes != 1536 {
+		t.Errorf("tool_result metadata = %+v, want truncated total=%d shown=1536", meta, len(full))
+	}
+	if !committedMetaSeen {
+		t.Errorf("committed message envelope missing tool_output metadata")
+	}
+
+	// /view renders the full output plus the truncation badge.
+	resp, err := http.Get(ts.URL + "/api/sessions/" + url.PathEscape(id) + "/view")
+	if err != nil {
+		t.Fatalf("GET /view: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	html := string(body)
+	if !strings.Contains(html, "tool-output-badge") || !strings.Contains(html, "model saw") {
+		t.Errorf("/view missing truncation badge:\n%s", html)
+	}
+	// /view renders the whole output (newlines as <br>): the first line,
+	// a middle line the truncated model view would omit, and the last line.
+	for _, probe := range []string{"line 0", "line 500", "line 999"} {
+		if !strings.Contains(html, probe) {
+			t.Errorf("/view must render the full tool output (missing %q)", probe)
+		}
+	}
+	if strings.Contains(html, "[tool output:") {
+		t.Errorf("/view must show the full output, not the truncated model-view form")
+	}
+}

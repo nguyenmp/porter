@@ -349,6 +349,28 @@
     return '(' + uncached + ' in, ' + output + ' out tokens)';
   }
 
+  // fmtBytes mirrors the server's reload rendering of a byte count as a short
+  // human size ("1.0 MB", "1.5 KB", "512 B").
+  function fmtBytes(n) {
+    if (n >= 1073741824) return (n / 1073741824).toFixed(1) + ' GB';
+    if (n >= 1048576) return (n / 1048576).toFixed(1) + ' MB';
+    if (n >= 1024) return (n / 1024).toFixed(1) + ' KB';
+    return n + ' B';
+  }
+
+  // toolOutputBadge renders the tool-output metadata chip for a tool result's
+  // summary, or '' when there is none. Mirrors the /view template badge.
+  function toolOutputBadge(to) {
+    if (!to) return '';
+    if (to.recall) {
+      return ' <span class="tool-output-badge" title="read_output window served to the model; the full output stays under the source tool result">recall ' + fmtBytes(to.shown_bytes) + '</span>';
+    }
+    if (to.truncated) {
+      return ' <span class="tool-output-badge" title="This tool result was truncated in the model\'s context; the full output is shown here. Load the middle with read_output.">' + fmtBytes(to.total_bytes) + ' · model saw ' + fmtBytes(to.shown_bytes) + '</span>';
+    }
+    return '';
+  }
+
   // Returns true if the chat is scrolled to (or within `threshold` px of the
   // bottom. Used to decide whether to auto-follow new content: if the user has
   // scrolled up to read earlier messages, don't yank the view back down.
@@ -680,6 +702,9 @@
       status = 'running…';
     }
     el.querySelector('.tool-result-name').textContent = base + (status ? ' · ' + status : '');
+    if (run.toolOutput) {
+      el.querySelector('.tool-result-name').insertAdjacentHTML('beforeend', toolOutputBadge(run.toolOutput));
+    }
     el.querySelector('.tool-result-body').textContent = run.result;
     const cancelBtn = el.querySelector('.tool-cancel');
     if (cancelBtn) {
@@ -892,11 +917,12 @@
           }
           run.status = m.cancelled ? 'cancelled' : 'done';
           run.result = m.content;
+          run.toolOutput = env.tool_output;
           run.resultEl = document.createElement('details');
           run.resultEl.className = 'tool-result';
           const code = exitCodeLabel(m.content);
           const status = m.cancelled ? 'cancelled' : (code ? code : '');
-          run.resultEl.innerHTML = '<summary>tool result' + (status ? ' · ' + status : '') + '</summary><pre><code>' + escapeHTML(m.content).replace(/\n/g, '<br>') + '</code></pre>';
+          run.resultEl.innerHTML = '<summary>tool result' + (status ? ' · ' + status : '') + toolOutputBadge(run.toolOutput) + '</summary><pre><code>' + escapeHTML(m.content).replace(/\n/g, '<br>') + '</code></pre>';
           // Position the replayed result right after its owning assistant
           // message, matching /view's history layout (live placement already
           // does this via insertToolResult).
@@ -973,6 +999,7 @@
         if (env.name) trRun.name = env.name;
         if (env.arguments) trRun.args = env.arguments;
         trRun.result = env.result;
+        trRun.toolOutput = env.tool_output;
         trRun.status = 'done';
         trRun.startedAt = env.started_at || trRun.startedAt || 0;
         trRun.finishedAt = env.finished_at || 0;
@@ -990,6 +1017,7 @@
         if (env.name) tcRun.name = env.name;
         if (env.arguments) tcRun.args = env.arguments;
         tcRun.result = env.result;
+        tcRun.toolOutput = env.tool_output;
         tcRun.status = 'cancelled';
         tcRun.startedAt = env.started_at || tcRun.startedAt || 0;
         tcRun.finishedAt = env.finished_at || 0;

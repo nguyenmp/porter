@@ -546,3 +546,140 @@ func TestMigratesFromV4ToV5(t *testing.T) {
 		t.Errorf("stopped query did not round-trip: %+v", got.Queries[1])
 	}
 }
+
+// TestToolOutputRoundTrip verifies the structured tool-output metadata survives
+// a write/load round-trip (and that a message without it comes back nil).
+func TestToolOutputRoundTrip(t *testing.T) {
+	d := openTemp(t)
+	id, err := d.CreateSession(100)
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	meta := &llm.ToolOutputMeta{Truncated: true, TotalBytes: 2550, ShownBytes: 1536}
+	want := []Message{
+		{
+			Seq:         1,
+			ChatMessage: llm.ChatMessage{Role: "tool", ToolCallID: "call-1", Content: "big output", ToolOutput: meta},
+		},
+		{
+			Seq:         2,
+			ChatMessage: llm.ChatMessage{Role: "tool", ToolCallID: "call-2", Content: "small output"},
+		},
+		{
+			Seq: 3,
+			ChatMessage: llm.ChatMessage{Role: "tool", ToolCallID: "call-3", Content: "recall",
+				ToolOutput: &llm.ToolOutputMeta{Recall: true, SourceCallID: "call-1", Offset: 1024, MaxBytes: 1000, TotalBytes: 2550, ShownBytes: 1000}},
+		},
+	}
+	for _, m := range want {
+		if err := d.AppendMessage(id, m); err != nil {
+			t.Fatalf("AppendMessage(seq %d): %v", m.Seq, err)
+		}
+	}
+
+	got, err := d.LoadSession(id)
+	if err != nil {
+		t.Fatalf("LoadSession: %v", err)
+	}
+	for i, w := range want {
+		g := got.Messages[i]
+		if g.ToolOutput == nil && w.ToolOutput != nil {
+			t.Errorf("message %d: expected ToolOutput metadata, got nil", i)
+			continue
+		}
+		if g.ToolOutput != nil && w.ToolOutput == nil {
+			t.Errorf("message %d: got ToolOutput %+v, want nil", i, g.ToolOutput)
+			continue
+		}
+		if g.ToolOutput != nil && *g.ToolOutput != *w.ToolOutput {
+			t.Errorf("message %d: ToolOutput = %+v, want %+v", i, g.ToolOutput, w.ToolOutput)
+		}
+	}
+}
+
+// TestMigratesFromV5ToV6 verifies the v5->v6 upgrade path: the messages table
+// gains the tool_output column, pre-existing rows load with nil metadata, and
+// new writes round-trip the metadata.
+func TestMigratesFromV5ToV6(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "porter.db")
+
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open raw v5 db: %v", err)
+	}
+	_, err = raw.Exec(`
+		CREATE TABLE sessions (
+			id         INTEGER PRIMARY KEY AUTOINCREMENT,
+			created_at INTEGER NOT NULL
+		);
+		CREATE TABLE messages (
+			session_id   INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+			seq          INTEGER NOT NULL,
+			role         TEXT    NOT NULL,
+			content      TEXT    NOT NULL DEFAULT '',
+			reasoning    TEXT    NOT NULL DEFAULT '',
+			tool_call_id TEXT    NOT NULL DEFAULT '',
+			tool_calls   TEXT    NOT NULL DEFAULT '[]',
+			started_at   INTEGER NOT NULL DEFAULT 0,
+			finished_at  INTEGER NOT NULL DEFAULT 0,
+			cancelled    INTEGER NOT NULL DEFAULT 0,
+			PRIMARY KEY (session_id, seq)
+		);
+		CREATE TABLE queries (
+			session_id   INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+			turn_seq     INTEGER NOT NULL,
+			idx          INTEGER NOT NULL,
+			cached_input INTEGER NOT NULL DEFAULT 0,
+			uncached_input INTEGER NOT NULL DEFAULT 0,
+			output       INTEGER NOT NULL DEFAULT 0,
+			error        TEXT    NOT NULL DEFAULT '',
+			stopped      INTEGER NOT NULL DEFAULT 0,
+			PRIMARY KEY (session_id, turn_seq, idx)
+		);
+		PRAGMA user_version=5;
+	`)
+	if err != nil {
+		t.Fatalf("create v5 schema: %v", err)
+	}
+	res, err := raw.Exec(`INSERT INTO sessions (created_at) VALUES (7)`)
+	if err != nil {
+		t.Fatalf("insert v5 session: %v", err)
+	}
+	id, _ := res.LastInsertId()
+	if _, err := raw.Exec(
+		`INSERT INTO messages (session_id, seq, role, content, tool_call_id) VALUES (?, 1, 'tool', 'old row', 'call-0')`, id); err != nil {
+		t.Fatalf("insert v5 message: %v", err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatalf("close raw db: %v", err)
+	}
+
+	d, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open after v5: %v", err)
+	}
+	defer d.Close()
+
+	// Pre-existing rows load with nil metadata (the column defaults empty).
+	got, err := d.LoadSession(id)
+	if err != nil {
+		t.Fatalf("LoadSession after migration: %v", err)
+	}
+	if len(got.Messages) != 1 || got.Messages[0].ToolOutput != nil {
+		t.Fatalf("v5 row after migration = %+v, want intact with nil metadata", got.Messages)
+	}
+
+	// New writes round-trip the metadata.
+	meta := &llm.ToolOutputMeta{Truncated: true, TotalBytes: 2550, ShownBytes: 1536}
+	if err := d.AppendMessage(id, Message{Seq: 2, ChatMessage: llm.ChatMessage{Role: "tool", ToolCallID: "call-1", Content: "x", ToolOutput: meta}}); err != nil {
+		t.Fatalf("AppendMessage after migration: %v", err)
+	}
+	got, err = d.LoadSession(id)
+	if err != nil {
+		t.Fatalf("LoadSession after write: %v", err)
+	}
+	if len(got.Messages) != 2 || got.Messages[1].ToolOutput == nil || *got.Messages[1].ToolOutput != *meta {
+		t.Errorf("tool_output metadata did not round-trip after migration: %+v", got.Messages[1].ToolOutput)
+	}
+}

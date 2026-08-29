@@ -30,6 +30,13 @@ type ChatMessage struct {
 	// so the SSE replay of the committed message carries it to a reconnecting
 	// client, and so the model knows on the next turn that the previous run was
 	// aborted. It only appears when true.
+	// ToolOutput is structured metadata about a tool result's size and model-view
+	// presentation (see ToolOutputMeta): total/shown bytes, whether the model
+	// view truncated the result, and recall details for read_output results. It
+	// is json:"-" so it is never serialized into the LLM request payload; the
+	// DB persists it explicitly and the UI reads it from the committed message
+	// or the bus envelope.
+	ToolOutput *ToolOutputMeta `json:"-"`
 	Cancelled bool `json:"cancelled,omitempty"`
 }
 
@@ -84,4 +91,36 @@ func UserMessage(content string) ChatMessage {
 // directory, and available skills).
 func SystemMessage(content string) ChatMessage {
 	return ChatMessage{Role: "system", Content: content}
+}
+
+// ToolOutputMeta is structured metadata about a tool result's size and how the
+// model view presented it. It is persisted in the database and rendered in the
+// UI as a size/truncation badge, and is deliberately json:"-" on ChatMessage so
+// it is never serialized into the LLM request payload: a role-"tool" message
+// must carry only standard fields (some providers reject unknown ones), and
+// sending it would waste tokens on every request.
+type ToolOutputMeta struct {
+	// Truncated reports that the model view showed less than the full output
+	// (a head + tail slice). The full output is still stored in the DB and
+	// broadcast to the UI; only the model's view is trimmed.
+	Truncated bool `json:"truncated"`
+	// TotalBytes is the full output size in bytes.
+	TotalBytes int `json:"total_bytes"`
+	// ShownBytes is how many bytes the model view showed: HeadBytes+TailBytes
+	// when Truncated, else TotalBytes. For a recall (read_output) result it is
+	// the window size served to the model's context.
+	ShownBytes int `json:"shown_bytes"`
+	// Recall marks a read_output result: the window bytes were served to the
+	// model's context for the current turn only, and the persisted/broadcast
+	// copy is a short placeholder rather than the window (the full output
+	// lives once, under the source tool result). The model-view projection
+	// keeps a Recall message's content intact — it is the one exception to
+	// truncation.
+	Recall bool `json:"recall,omitempty"`
+	// SourceCallID is the tool_call_id the read_output read from (Recall only).
+	SourceCallID string `json:"source_call_id,omitempty"`
+	// Offset is the byte offset the read_output served from (Recall only).
+	Offset int `json:"offset,omitempty"`
+	// MaxBytes is the size of the window served to the model (Recall only).
+	MaxBytes int `json:"max_bytes,omitempty"`
 }

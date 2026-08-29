@@ -1114,3 +1114,304 @@ func TestRunTurnStopsAfterToolWithNoPartial(t *testing.T) {
 		t.Errorf("queries = %+v, want [tool-call request success, stopped]", queries)
 	}
 }
+
+// bigOutputProvider streams a fixed tool output larger than the model-view
+// head+tail budget, so the tests can verify the model sees a truncated slice
+// while history/emit carry the full output.
+type bigOutputProvider struct {
+	content string
+}
+
+func (p *bigOutputProvider) Defs() []llm.Tool    { return tools.Defs() }
+func (p *bigOutputProvider) Environment() string { return "" }
+func (p *bigOutputProvider) Run(ctx context.Context, name string, args []byte) (io.ReadCloser, error) {
+	if name != "shell" {
+		return nil, fmt.Errorf("unknown tool: %q", name)
+	}
+	return &stringStreamRC{strings.NewReader(p.content)}, nil
+}
+
+// stringStreamRC is an io.ReadCloser over an in-memory string.
+type stringStreamRC struct{ *strings.Reader }
+
+func (s *stringStreamRC) Close() error { return nil }
+
+// recallLLMServer serves three requests: shell (call_1), read_output (call_2)
+// of call_1, then a plain reply. It captures each request's messages, tools, and
+// the declared tool names (so the test can assert read_output is exposed).
+func recallLLMServer(t *testing.T) (*httptest.Server, func() ([][]json.RawMessage, []bool, [][]string)) {
+	t.Helper()
+	var mu sync.Mutex
+	var captured [][]json.RawMessage
+	var hadTools []bool
+	var toolNames [][]string
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Messages []json.RawMessage `json:"messages"`
+			Tools    []json.RawMessage `json:"tools"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		mu.Lock()
+		captured = append(captured, req.Messages)
+		hadTools = append(hadTools, len(req.Tools) > 0)
+		names := make([]string, 0, len(req.Tools))
+		for _, t := range req.Tools {
+			var f struct {
+				Function struct {
+					Name string `json:"name"`
+				} `json:"function"`
+			}
+			if err := json.Unmarshal(t, &f); err == nil && f.Function.Name != "" {
+				names = append(names, f.Function.Name)
+			}
+		}
+		toolNames = append(toolNames, names)
+		n := len(captured)
+		mu.Unlock()
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		switch n {
+		case 1:
+			fmt.Fprintf(w, `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"shell","arguments":"{\"command\":\"cat big\"}"}}]},"finish_reason":"tool_calls"}]}`+"\n\n"+`data: [DONE]`+"\n")
+		case 2:
+			fmt.Fprintf(w, `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_2","type":"function","function":{"name":"read_output","arguments":"{\"call_id\":\"call_1\",\"offset\":1024,\"max_bytes\":1000}"}}]},"finish_reason":"tool_calls"}]}`+"\n\n"+`data: [DONE]`+"\n")
+		default:
+			fmt.Fprintf(w, `data: {"choices":[{"delta":{"content":"done"},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":3}}`+"\n\n"+`data: [DONE]`+"\n")
+		}
+	}))
+	return srv, func() ([][]json.RawMessage, []bool, [][]string) {
+		mu.Lock()
+		defer mu.Unlock()
+		return captured, hadTools, toolNames
+	}
+}
+
+// bigContent builds a deterministic over-budget output: head 'h's, 1000 'm's
+// in the middle, tail 't's, and the shell exit line.
+func bigContent() string {
+	return strings.Repeat("h", 1024) + strings.Repeat("m", 1000) + strings.Repeat("t", 512) + "\nexit code: 0\n"
+}
+
+// toolMsg extracts a role-"tool" message from a captured request by call id.
+func toolMsg(t *testing.T, msgs []json.RawMessage, callID string) (string, bool) {
+	t.Helper()
+	for _, raw := range msgs {
+		var m struct {
+			Role       string `json:"role"`
+			ToolCallID string `json:"tool_call_id"`
+			Content    string `json:"content"`
+		}
+		if err := json.Unmarshal(raw, &m); err != nil {
+			t.Fatalf("unmarshal captured message: %v", err)
+		}
+		if m.Role == "tool" && m.ToolCallID == callID {
+			return m.Content, true
+		}
+	}
+	return "", false
+}
+
+// TestRunTurnTruncatesModelViewAndServesReadOutput is the end-to-end story:
+// the model sees the shell result truncated to head+tail, calls read_output,
+// the model's next request carries the full window in its context, while the
+// bus and committed history get a short placeholder (no window duplication),
+// and the metadata never leaks into the LLM payload.
+func TestRunTurnTruncatesModelViewAndServesReadOutput(t *testing.T) {
+	srv, snapshot := recallLLMServer(t)
+	defer srv.Close()
+
+	cfg := config.Config{BaseURL: srv.URL + "/v1", Model: "test", APIKey: "k"}
+	client := llm.NewClient(cfg, nil)
+
+	var got []api.Envelope
+	var committed []llm.ChatMessage
+	res, err := RunTurn(context.Background(), client, []llm.ChatMessage{llm.UserMessage("run it")},
+		&bigOutputProvider{content: bigContent()},
+		func(env api.Envelope) { got = append(got, env) },
+		func(m llm.ChatMessage) error { committed = append(committed, m); return nil })
+	if err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+	if res.Text != "done" {
+		t.Errorf("final text = %q, want done", res.Text)
+	}
+
+	captured, hadTools, toolNames := snapshot()
+	if len(captured) != 3 {
+		t.Fatalf("expected 3 requests, got %d", len(captured))
+	}
+	for i := range hadTools {
+		if !hadTools[i] {
+			t.Errorf("request %d should declare tools (read_output is always exposed)", i)
+		}
+		// read_output is always declared, alongside the provider's tools.
+		found := false
+		for _, name := range toolNames[i] {
+			if name == "read_output" {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("request %d tools = %v, missing read_output", i, toolNames[i])
+		}
+	}
+
+	// Request 2 is the model's view after the shell result: truncated.
+	shellView, ok := toolMsg(t, captured[1], "call_1")
+	if !ok {
+		t.Fatalf("request 2 missing shell tool message")
+	}
+	if !strings.Contains(shellView, "[tool output:") {
+		t.Errorf("model view of shell result not truncated:\n%.200s", shellView)
+	}
+	if strings.Contains(shellView, strings.Repeat("m", 1000)) {
+		t.Errorf("model view must omit the middle bytes")
+	}
+	if !strings.HasSuffix(shellView, "exit code: 0\n") {
+		t.Errorf("model view must keep the tail exit line")
+	}
+
+	// The tool_output metadata must never reach the LLM payload (json:"-").
+	for _, raw := range captured[1] {
+		if strings.Contains(string(raw), "tool_output") {
+			t.Errorf("tool_output leaked into the LLM request: %s", raw)
+		}
+	}
+
+	// Request 3 is the model's view after read_output: the full window.
+	windowView, ok := toolMsg(t, captured[2], "call_2")
+	if !ok {
+		t.Fatalf("request 3 missing read_output tool message")
+	}
+	if !strings.Contains(windowView, "[recall: read_output") {
+		t.Errorf("read_output view missing recall header:\n%.120s", windowView)
+	}
+	if !strings.Contains(windowView, strings.Repeat("m", 1000)) {
+		t.Errorf("model must see the full window bytes in its context")
+	}
+
+	// The committed history (res.History) holds the full shell output AND the
+	// full read_output window (the model's next-turn source of truth).
+	var committedShell, committedWindow string
+	for _, m := range res.History {
+		switch m.ToolCallID {
+		case "call_1":
+			committedShell = m.Content
+		case "call_2":
+			committedWindow = m.Content
+		}
+	}
+	if !strings.Contains(committedShell, strings.Repeat("m", 1000)) {
+		t.Errorf("history must hold the full shell output")
+	}
+	if !strings.Contains(committedWindow, strings.Repeat("m", 1000)) {
+		t.Errorf("history must hold the full read_output window")
+	}
+
+	// The bus gets the full shell result with truncation metadata, and the
+	// read_output result as a placeholder with recall metadata.
+	var sawShellResult, sawRecallResult bool
+	for _, env := range got {
+		if env.Kind != api.KindToolResult {
+			continue
+		}
+		switch env.ToolCallID {
+		case "call_1":
+			sawShellResult = true
+			if env.Result != bigContent() {
+				t.Errorf("bus shell result must be the full output")
+			}
+			if env.ToolOutput == nil || !env.ToolOutput.Truncated || env.ToolOutput.TotalBytes != len(bigContent()) {
+				t.Errorf("bus shell result metadata = %+v, want truncated with total bytes", env.ToolOutput)
+			}
+		case "call_2":
+			sawRecallResult = true
+			if strings.Contains(env.Result, strings.Repeat("m", 1000)) {
+				t.Errorf("bus read_output result must be a placeholder, not the window")
+			}
+			if !strings.Contains(env.Result, "[recall:") {
+				t.Errorf("bus read_output result missing recall notice: %q", env.Result)
+			}
+			if env.ToolOutput == nil || !env.ToolOutput.Recall || env.ToolOutput.SourceCallID != "call_1" {
+				t.Errorf("bus read_output metadata = %+v, want recall of call_1", env.ToolOutput)
+			}
+		}
+	}
+	if !sawShellResult {
+		t.Errorf("bus missing shell tool_result")
+	}
+	if !sawRecallResult {
+		t.Errorf("bus missing read_output tool_result")
+	}
+
+	// The persisted/committed read_output message is the placeholder (onMessage
+	// got it), never the window — the no-duplication requirement.
+	var committedRecall string
+	for _, m := range committed {
+		if m.Role == "tool" && m.ToolCallID == "call_2" {
+			committedRecall = m.Content
+		}
+	}
+	if committedRecall == "" {
+		t.Fatalf("onMessage never committed the read_output result")
+	}
+	if strings.Contains(committedRecall, strings.Repeat("m", 1000)) {
+		t.Errorf("committed read_output result must be a placeholder, not the window")
+	}
+	if !strings.Contains(committedRecall, "[recall:") {
+		t.Errorf("committed read_output result missing recall notice: %q", committedRecall)
+	}
+}
+
+// TestRunTurnReadOutputUnknownCallID verifies a bad read_output call is
+// surfaced to the model as an error and does not end the turn.
+// TestRunTurnReadOutputUnknownCallID verifies a bad read_output call is
+// surfaced to the model as an error and does not end the turn.
+func TestRunTurnReadOutputUnknownCallID(t *testing.T) {
+	var mu sync.Mutex
+	var reqCount int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Messages []json.RawMessage `json:"messages"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		mu.Lock()
+		reqCount++
+		n := reqCount
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/event-stream")
+		switch n {
+		case 1:
+			fmt.Fprintf(w, `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"shell","arguments":"{\"command\":\"echo hi\"}"}}]},"finish_reason":"tool_calls"}]}`+"\n\n"+`data: [DONE]`+"\n")
+		case 2:
+			fmt.Fprintf(w, `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_2","type":"function","function":{"name":"read_output","arguments":"{\"call_id\":\"nope\"}"}}]},"finish_reason":"tool_calls"}]}`+"\n\n"+`data: [DONE]`+"\n")
+		default:
+			fmt.Fprintf(w, `data: {"choices":[{"delta":{"content":"done"},"finish_reason":"stop"}]}`+"\n\n"+`data: [DONE]`+"\n")
+		}
+	}))
+	defer srv.Close()
+
+	cfg := config.Config{BaseURL: srv.URL + "/v1", Model: "test", APIKey: "k"}
+	client := llm.NewClient(cfg, nil)
+	res, err := RunTurn(context.Background(), client, []llm.ChatMessage{llm.UserMessage("run it")},
+		&fakeToolProvider{chunks: []string{"hi\nexit code: 0\n"}}, nil, nil)
+	if err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+	if res.Text != "done" {
+		t.Errorf("final text = %q, want done (a bad read_output must not end the turn)", res.Text)
+	}
+	// The read_output error is committed so the model sees it.
+	var sawErr bool
+	for _, m := range res.History {
+		if m.Role == "tool" && m.ToolCallID == "call_2" {
+			sawErr = strings.Contains(m.Content, "unknown call_id \"nope\"")
+		}
+	}
+	if !sawErr {
+		t.Errorf("read_output error not committed to history")
+	}
+}

@@ -15,6 +15,7 @@ import (
 	"porter/internal/api"
 	"porter/internal/codec"
 	"porter/internal/llm"
+	"porter/internal/recall"
 	"porter/internal/tools"
 )
 
@@ -182,15 +183,20 @@ func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage,
 			return res, ErrTurnStopped
 		}
 
-		// Inject the execution provider's environment context (system, working
-		// directory, files, skills) as a system-message prefix. It is read fresh
-		// each request so a provider swap mid-turn is reflected immediately; the
-		// context is small and static per provider, so repeating it costs little.
-		msgs := res.History
+		// The model's view is the committed history projected for the model:
+		// tool results larger than the head+tail budget are trimmed to a head +
+		// tail slice (the full output stays in History, the DB, and the UI), and
+		// read_output (recall) windows are kept intact. The projection is pure —
+		// History always holds full output, so each request re-projects fresh and
+		// never compounds.
+		msgs := recall.ProjectModelView(res.History)
 		if env := js.Environment(); env != "" {
 			msgs = append([]llm.ChatMessage{llm.SystemMessage(env)}, msgs...)
 		}
-		body, err := client.Stream(ctx, msgs, js.Defs())
+		// read_output is served by the agent itself (from History), so it is
+		// declared alongside the provider's tools on every request.
+		defs := append([]llm.Tool{recall.Def()}, js.Defs()...)
+		body, err := client.Stream(ctx, msgs, defs)
 		if err != nil {
 			// The request failed to start. If the user stopped the turn, this is
 			// the stop (the transport was cancelled before the request began),
@@ -300,6 +306,46 @@ func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage,
 			// after every callCtx.Err() check below, so those checks see only a
 			// user's cancellation (via the hook), never our own cleanup.
 			defer callCancel()
+			// read_output is served by the agent itself from the turn's history:
+			// it needs no execution provider, no cancel hook, and works for any
+			// provider (local or remote) even when no client is connected.
+			if c.Name == recall.ReadOutputTool {
+				window, meta, rerr := recall.ServeWindow(res.History, c.Arguments)
+				if rerr != nil {
+					// A bad read_output call is a tool that failed to start: emit
+					// the terminal envelope and commit the error, then keep the
+					// turn going so the model sees the error and can react.
+					result := "error: " + rerr.Error()
+					if emit != nil {
+						emit(api.Envelope{Kind: api.KindToolResult, ToolCallID: c.ID, Name: c.Name, Arguments: c.Arguments, Result: result})
+					}
+					if err := commit(llm.ToolResult(c.ID, result)); err != nil {
+						return res, err
+					}
+					continue
+				}
+				// The model gets the full window in its context; the persisted and
+				// broadcast copy is a short placeholder so the window bytes are
+				// never duplicated in the DB (they live once, under the source
+				// tool result). The window must reach res.History directly, not
+				// through commit (which would persist it), so the two halves are
+				// written separately here.
+				placeholder := recall.Placeholder(meta)
+				if emit != nil {
+					emit(api.Envelope{Kind: api.KindToolResult, ToolCallID: c.ID, Name: c.Name, Arguments: c.Arguments, Result: placeholder, ToolOutput: meta})
+				}
+				windowMsg := llm.ToolResult(c.ID, window)
+				windowMsg.ToolOutput = meta
+				res.History = append(res.History, windowMsg)
+				if onMessage != nil {
+					placeholderMsg := llm.ToolResult(c.ID, placeholder)
+					placeholderMsg.ToolOutput = meta
+					if err := onMessage(placeholderMsg); err != nil {
+						return res, err
+					}
+				}
+				continue
+			}
 			if h.OnRunStarted != nil {
 				h.OnRunStarted(c.ID, callCancel)
 			}
@@ -308,10 +354,13 @@ func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage,
 				// The tool never started; there is nothing to stream, so emit the
 				// terminal envelope directly (matching the old single-shot shape).
 				result := "error: " + err.Error()
+				meta := recall.Meta(result)
 				if emit != nil {
-					emit(api.Envelope{Kind: api.KindToolResult, ToolCallID: c.ID, Name: c.Name, Arguments: c.Arguments, Result: result})
+					emit(api.Envelope{Kind: api.KindToolResult, ToolCallID: c.ID, Name: c.Name, Arguments: c.Arguments, Result: result, ToolOutput: meta})
 				}
-				if err := commit(llm.ToolResult(c.ID, result)); err != nil {
+				m := llm.ToolResult(c.ID, result)
+				m.ToolOutput = meta
+				if err := commit(m); err != nil {
 					return res, err
 				}
 				if callCtx.Err() != nil {
@@ -380,12 +429,13 @@ func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage,
 					partial = "(cancelled)"
 				}
 				if emit != nil {
-					emit(api.Envelope{Kind: api.KindToolCancelled, ToolCallID: c.ID, Name: c.Name, Arguments: c.Arguments, StartedAt: startedAt, FinishedAt: finishedAt, Result: partial})
+					emit(api.Envelope{Kind: api.KindToolCancelled, ToolCallID: c.ID, Name: c.Name, Arguments: c.Arguments, StartedAt: startedAt, FinishedAt: finishedAt, Result: partial, ToolOutput: recall.Meta(partial)})
 				}
 				m := llm.ToolResult(c.ID, partial)
 				m.StartedAt = startedAt
 				m.FinishedAt = finishedAt
 				m.Cancelled = true
+				m.ToolOutput = recall.Meta(partial)
 				if err := commit(m); err != nil {
 					return res, err
 				}
@@ -402,8 +452,9 @@ func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage,
 				return res, ErrToolCancelled
 			}
 
+			meta := recall.Meta(result.String())
 			if emit != nil {
-				emit(api.Envelope{Kind: api.KindToolResult, ToolCallID: c.ID, Name: c.Name, Arguments: c.Arguments, StartedAt: startedAt, FinishedAt: finishedAt, Result: result.String()})
+				emit(api.Envelope{Kind: api.KindToolResult, ToolCallID: c.ID, Name: c.Name, Arguments: c.Arguments, StartedAt: startedAt, FinishedAt: finishedAt, Result: result.String(), ToolOutput: meta})
 			}
 			// The committed tool message carries the server clocks (json:"-" so
 			// they never reach the model or the history API), letting /view
@@ -412,6 +463,7 @@ func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage,
 			m := llm.ToolResult(c.ID, result.String())
 			m.StartedAt = startedAt
 			m.FinishedAt = finishedAt
+			m.ToolOutput = meta
 			if err := commit(m); err != nil {
 				return res, err
 			}

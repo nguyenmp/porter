@@ -101,6 +101,22 @@ func argsSnippet(args string) string {
 	return flat
 }
 
+// fmtBytes renders a byte count as a short human-readable size for the
+// tool-output badge ("1.0 MB", "1.5 KB", "512 B"). Mirrored by fmtBytes in the
+// web client so live and reload render identically.
+func fmtBytes(n int) string {
+	switch {
+	case n >= 1<<30:
+		return fmt.Sprintf("%.1f GB", float64(n)/(1<<30))
+	case n >= 1<<20:
+		return fmt.Sprintf("%.1f MB", float64(n)/(1<<20))
+	case n >= 1<<10:
+		return fmt.Sprintf("%.1f KB", float64(n)/(1<<10))
+	default:
+		return fmt.Sprintf("%d B", n)
+	}
+}
+
 // tokenLine renders a turn's token usage for display. When the provider
 // reported cache hits, the input split is shown explicitly so cache savings are
 // visible: "(X cached + Y miss in, Z out tokens)". Otherwise it is the plain
@@ -121,6 +137,7 @@ var templates = template.Must(template.New("").Funcs(template.FuncMap{
 	"toolExitCode":   toolExitCode,
 	"argsSnippet":    argsSnippet,
 	"tokenLine":      tokenLine,
+	"fmtBytes":       fmtBytes,
 }).ParseFS(webFS, "web/*.tmpl"))
 
 // pageData is the data passed to every page template.

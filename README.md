@@ -80,7 +80,7 @@ SSE transport are future work.
 - Estimated cost per message, per turn, per chat, per subagent — before sending, based on input cost, including resume-from-history
 - Show both cached and uncached estimates where behavior is hard to predict; pull prices from upstream (OpenRouter, etc)
 - Keep the hidden thought token out of resubmission
-- Drop full tool call output from chat history after the model has already read it. Keep only a `tool_output` field (full | head | tail | summary | omit) with size metadata (bytes/lines), plus a `read_output` tool to show it again when needed.
+- Trim large tool call output in the model's view only: a tool result larger than 1.5 KB is sent to the model as a head + tail slice with a size header, and a `read_output(call_id, offset, max_bytes)` tool loads any byte window of the original (omit `max_bytes` to read the rest in one call). The full output is still stored in History and rendered in the UI — frontend and DB hold the full data; only the model's context is trimmed. A `tool_output` metadata field (total_bytes, shown_bytes, truncated, recall) rides on the committed message and the bus so the UI can render a badge, and `read_output` results are persisted as a short placeholder so the window bytes are never duplicated in the database. *(Future: drop full output from History once the model has read it, with `read_output` served from the DB.)*
 - Concurrent compaction to reduce chat history, with long term recall like `read_output` but for memory
 
 ### Performance
@@ -157,7 +157,7 @@ Terms used throughout this README, grouped by the part of the system they belong
 
 - **Event** — purely what the LLM produced: streamed text, reasoning, a finished message, token usage, and the tool calls it requests. Real-time and ephemeral.
 - **Delta** — a streamed chunk of message or reasoning text (`message_delta` / `reasoning_delta`).
-- **View** — *(planned)* the projection of History a consumer is given. The model's view can be trimmed or summarized (with recall tools to expand back); the user's view is the human-readable form. Today the model receives History directly.
+- **View** — the projection of History a consumer is given. The model's view trims large tool results to a head + tail slice (with a `read_output` recall tool to expand back); the user's view is the full human-readable form. Other trims and summaries are future work.
 
 ### The conversation (shared vocabulary)
 
@@ -200,7 +200,8 @@ Build order:
 - [x] SQLite-backed history (persist the server-owned session state)
 - [ ] Handoff / async execution
 - [ ] Metrics & performance (tokens/sec, tool timing, worktree cache)
-- [ ] Token cost management (`tool_output` trimming, `read_output`, budget before send)
+- [x] Tool output trimming (`tool_output` head+tail model view, `read_output` recall) — full output kept in History/DB, only the model view trimmed
+- [ ] Token budget before send
 - [x] Dynamic MCP
 
 **As-needed (ad hoc, when the need arises):**

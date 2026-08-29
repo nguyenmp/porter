@@ -22,7 +22,7 @@ var ErrNotFound = errors.New("db: session not found")
 
 // schemaVersion is the current schema revision, tracked in PRAGMA user_version.
 // Bump it and extend migrate when the schema changes.
-const schemaVersion = 5
+const schemaVersion = 6
 
 // DB wraps the SQLite database handle. It deliberately uses a single
 // connection: pragmas like foreign_keys are per-connection, and a single
@@ -182,6 +182,20 @@ ALTER TABLE queries DROP COLUMN input;
 			return fmt.Errorf("set user_version: %w", err)
 		}
 	}
+	if v < 6 {
+		// v6: structured tool-output metadata on committed messages
+		// (total/shown bytes, whether the model view truncated the result, and
+		// read_output recall details), so the UI can render a size/truncation
+		// badge and the model-view projection knows what to show. Stored as a
+		// JSON blob in a TEXT column (empty = no metadata, the pre-v6 default).
+		const ddl = "ALTER TABLE messages ADD COLUMN tool_output TEXT NOT NULL DEFAULT ''"
+		if _, err := d.db.Exec(ddl); err != nil {
+			return fmt.Errorf("apply schema v6: %w", err)
+		}
+		if _, err := d.db.Exec("PRAGMA user_version=6"); err != nil {
+			return fmt.Errorf("set user_version: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -263,15 +277,34 @@ func (d *DB) AppendMessage(sessionID int64, m Message) error {
 	if err != nil {
 		return fmt.Errorf("marshal tool calls: %w", err)
 	}
+	toolOutput, err := marshalToolOutput(m.ToolOutput)
+	if err != nil {
+		return err
+	}
 	_, err = d.db.Exec(
-		`INSERT INTO messages (session_id, seq, role, content, reasoning, tool_call_id, tool_calls, started_at, finished_at, cancelled)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		sessionID, m.Seq, m.Role, m.Content, m.Reasoning, m.ToolCallID, string(calls), m.StartedAt, m.FinishedAt, boolInt(m.Cancelled),
+		`INSERT INTO messages (session_id, seq, role, content, reasoning, tool_call_id, tool_calls, started_at, finished_at, cancelled, tool_output)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		sessionID, m.Seq, m.Role, m.Content, m.Reasoning, m.ToolCallID, string(calls), m.StartedAt, m.FinishedAt, boolInt(m.Cancelled), toolOutput,
 	)
 	if err != nil {
 		return fmt.Errorf("insert message: %w", err)
 	}
 	return nil
+}
+
+// marshalToolOutput encodes a ToolOutputMeta to its stored JSON form, or ""
+// for nil (the column default). The metadata is json:"-" on ChatMessage so it
+// is never sent to the LLM; it is persisted explicitly here and read back in
+// LoadSession.
+func marshalToolOutput(m *llm.ToolOutputMeta) (string, error) {
+	if m == nil {
+		return "", nil
+	}
+	b, err := json.Marshal(m)
+	if err != nil {
+		return "", fmt.Errorf("marshal tool output metadata: %w", err)
+	}
+	return string(b), nil
 }
 
 // AppendQuery writes one per-request usage/error record. It is independent of
@@ -286,6 +319,7 @@ func (d *DB) AppendQuery(sessionID int64, q Query) error {
 	if err != nil {
 		return fmt.Errorf("insert query: %w", err)
 	}
+
 	return nil
 }
 
@@ -301,7 +335,7 @@ func (d *DB) LoadSession(id int64) (Session, error) {
 		return Session{}, fmt.Errorf("load session %d: %w", id, err)
 	}
 	rows, err := d.db.Query(
-		`SELECT seq, role, content, reasoning, tool_call_id, tool_calls, started_at, finished_at, cancelled
+		`SELECT seq, role, content, reasoning, tool_call_id, tool_calls, started_at, finished_at, cancelled, tool_output
 		 FROM messages WHERE session_id = ? ORDER BY seq ASC`, id)
 	if err != nil {
 		return Session{}, fmt.Errorf("load messages for %d: %w", id, err)
@@ -310,11 +344,18 @@ func (d *DB) LoadSession(id int64) (Session, error) {
 		var m Message
 		var calls string
 		var cancelled int
-		if err := rows.Scan(&m.Seq, &m.Role, &m.Content, &m.Reasoning, &m.ToolCallID, &calls, &m.StartedAt, &m.FinishedAt, &cancelled); err != nil {
+		var toolOutput string
+		if err := rows.Scan(&m.Seq, &m.Role, &m.Content, &m.Reasoning, &m.ToolCallID, &calls, &m.StartedAt, &m.FinishedAt, &cancelled, &toolOutput); err != nil {
 			rows.Close()
 			return Session{}, fmt.Errorf("scan message: %w", err)
 		}
 		m.Cancelled = cancelled != 0
+		if toolOutput != "" {
+			if err := json.Unmarshal([]byte(toolOutput), &m.ToolOutput); err != nil {
+				rows.Close()
+				return Session{}, fmt.Errorf("decode tool output metadata for seq %d: %w", m.Seq, err)
+			}
+		}
 		if calls != "" {
 			if err := json.Unmarshal([]byte(calls), &m.ToolCalls); err != nil {
 				rows.Close()

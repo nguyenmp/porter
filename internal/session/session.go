@@ -66,10 +66,10 @@ type Persister interface {
 // context, which should outlive any single request (the session server's
 // lifetime).
 type Store struct {
-	ctx      context.Context
-	cancel   context.CancelFunc
-	mu       sync.Mutex
-	persist  Persister
+	ctx     context.Context
+	cancel  context.CancelFunc
+	mu      sync.Mutex
+	persist Persister
 	// hub serves the session's MCP tools (FindMCP, CallMCP). It is shared
 	// across sessions: the registry is loaded once at server startup from
 	// porter.mcp.json. Nil when no MCP hub was configured.
@@ -522,6 +522,10 @@ func (s *Session) commit(m llm.ChatMessage) error {
 	if m.Role == "assistant" && m.Content != "" {
 		env.MessageHTML = render.Markdown(m.Content)
 	}
+	// The tool-output metadata rides on the committed envelope so the live UI
+	// renders the same size/truncation/recall badge /view renders from the
+	// persisted copy.
+	env.ToolOutput = m.ToolOutput
 	_, err := s.commitEnv(env)
 	return err
 }
@@ -587,6 +591,9 @@ func (s *Session) rebuildFromPersisted(ps db.Session) {
 		if m.Role == "assistant" && m.Content != "" {
 			env.MessageHTML = render.Markdown(m.Content)
 		}
+		// The tool-output metadata rides on the replayed commit too, so a
+		// reconnecting client renders the badge exactly as /view does.
+		env.ToolOutput = m.ToolOutput
 		s.bufferLocked(env)
 	}
 	// No turns are in flight at startup, so every persisted query belongs to a

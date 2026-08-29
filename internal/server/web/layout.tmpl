@@ -59,6 +59,20 @@
 		   running (JS toggles hidden). */
 		.tool-result summary { display: flex; align-items: center; gap: 0.5rem; }
 		.tool-result-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+		/* The tool-output badge on a tool result summary: shows the full size and
+		   how much of it the model saw (or, for read_output results, that the
+		   bytes went to the model). A small amber chip so it reads as metadata,
+		   not conversation content. */
+		.tool-output-badge {
+			font-size: 0.78em;
+			color: #8a6d3b;
+			background: #fdf6e3;
+			border: 1px solid #e8d8a0;
+			border-radius: 3px;
+			padding: 0 0.35em;
+			flex-shrink: 0;
+			white-space: nowrap;
+		}
 		.tool-cancel {
 			margin-left: auto;
 			flex-shrink: 0;

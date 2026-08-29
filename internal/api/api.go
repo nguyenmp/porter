@@ -168,11 +168,17 @@ type Envelope struct {
 	Name        string `json:"name,omitempty"`         // KindToolResult, KindToolResultDelta, KindToolStarted
 	Arguments   string `json:"arguments,omitempty"`    // KindToolResult, KindToolStarted
 	Result      string `json:"result,omitempty"`       // KindToolResult
-	Delta       string `json:"delta,omitempty"`        // KindToolResultDelta
-	StartedAt   int64  `json:"started_at,omitempty"`   // KindToolStarted, KindToolResult
-	FinishedAt  int64  `json:"finished_at,omitempty"`  // KindToolResult
-	TurnID      int64  `json:"turn_id,omitempty"`      // KindTurnDone
-	TurnSeq     uint64 `json:"turn_seq,omitempty"`     // KindTurnDone (the user message seq that started the turn)
+	// ToolOutput is structured metadata about a tool result's size and model-view
+	// presentation (total/shown bytes, truncation, recall). It is set on
+	// KindToolResult (normal, cancelled, and read_output) and carried on the
+	// KindMessage commit, so the live UI renders the same badge /view renders
+	// from the persisted copy.
+	ToolOutput *llm.ToolOutputMeta `json:"tool_output,omitempty"` // KindToolResult, KindMessage
+	Delta      string              `json:"delta,omitempty"`       // KindToolResultDelta
+	StartedAt  int64               `json:"started_at,omitempty"`  // KindToolStarted, KindToolResult
+	FinishedAt int64               `json:"finished_at,omitempty"` // KindToolResult
+	TurnID     int64               `json:"turn_id,omitempty"`     // KindTurnDone
+	TurnSeq    uint64              `json:"turn_seq,omitempty"`    // KindTurnDone (the user message seq that started the turn)
 	// CachedInput/UncachedInput are the turn's prompt-token split (cache hits
 	// vs misses); Output is its completion tokens. Total input is their sum,
 	// derived where display needs it. KindTurnDone.

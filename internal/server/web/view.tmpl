@@ -31,7 +31,7 @@
 			{{$t := index $.Tools $m.ToolCallID}}
 			{{$code := toolExitCode $m.Content}}
 			<details class="tool-result">
-				<summary title="{{if $t.Name}}{{clock $m.StartedAt}} – {{clock $m.FinishedAt}}{{end}}">tool result: {{$t.Name}}{{if $t.Arguments}} {{argsSnippet $t.Arguments}}{{end}}{{if $m.Cancelled}} · cancelled{{if $m.StartedAt}} · {{dur $m.StartedAt $m.FinishedAt}}{{end}}{{else}}{{if $code}} · {{$code}}{{end}}{{if $m.StartedAt}} · {{dur $m.StartedAt $m.FinishedAt}}{{end}}{{end}}</summary>
+				<summary title="{{if $t.Name}}{{clock $m.StartedAt}} – {{clock $m.FinishedAt}}{{end}}">tool result: {{$t.Name}}{{if $t.Arguments}} {{argsSnippet $t.Arguments}}{{end}}{{if $m.Cancelled}} · cancelled{{if $m.StartedAt}} · {{dur $m.StartedAt $m.FinishedAt}}{{end}}{{else}}{{if $code}} · {{$code}}{{end}}{{if $m.StartedAt}} · {{dur $m.StartedAt $m.FinishedAt}}{{end}}{{end}}{{if $m.ToolOutput}}{{if $m.ToolOutput.Recall}}<span class="tool-output-badge" title="read_output window served to the model; the full output stays under the source tool result">recall {{fmtBytes $m.ToolOutput.ShownBytes}}</span>{{else if $m.ToolOutput.Truncated}}<span class="tool-output-badge" title="This tool result was truncated in the model's context; the full output is shown here. Load the middle with read_output.">{{fmtBytes $m.ToolOutput.TotalBytes}} · model saw {{fmtBytes $m.ToolOutput.ShownBytes}}</span>{{end}}{{end}}</summary>
 				<pre><code>{{nl2br $m.Content}}</code></pre>
 			</details>
 		{{end}}

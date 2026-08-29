@@ -639,3 +639,56 @@ func TestDeriveTurnsAggregatesStopped(t *testing.T) {
 			turns[0].CachedInput, turns[0].UncachedInput, turns[0].Output)
 	}
 }
+
+// TestCommittedToolEnvelopeCarriesToolOutput verifies the tool-output metadata
+// rides on the committed KindMessage envelope — for the live bus and, after a
+// rebuild from the persister, for a reconnecting client's replay — so the UI
+// renders the badge identically whether live or from history.
+func TestCommittedToolEnvelopeCarriesToolOutput(t *testing.T) {
+	s := newTestSession(t, "s")
+	meta := &llm.ToolOutputMeta{Truncated: true, TotalBytes: 2550, ShownBytes: 1536}
+	m := llm.ToolResult("call-1", "big output")
+	m.ToolOutput = meta
+	if err := s.commit(m); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	// The live commit path (session.commit) stamps the metadata onto the
+	// committed KindMessage envelope.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var live api.Envelope
+	for env := range s.From(ctx, 0) {
+		live = env
+		break
+	}
+	if live.Kind != api.KindMessage || live.Message == nil || live.Message.Role != "tool" {
+		t.Fatalf("live first envelope = %+v, want the tool message", live)
+	}
+	if live.ToolOutput == nil || *live.ToolOutput != *meta {
+		t.Errorf("live committed envelope ToolOutput = %+v, want %+v", live.ToolOutput, meta)
+	}
+
+	// Rebuild from the persister (simulating a server restart): the replay
+	// envelope must carry the metadata too, matching /view.
+	ps, err := s.Persisted()
+	if err != nil {
+		t.Fatalf("Persisted: %v", err)
+	}
+	s2 := newSession(s.ID(), nil, nil, s.persist, ps.ID, ps.CreatedAt, nil)
+	s2.rebuildFromPersisted(ps)
+
+	ctx2, cancel2 := context.WithCancel(context.Background())
+	defer cancel2()
+	var replayed api.Envelope
+	for env := range s2.From(ctx2, 0) {
+		replayed = env
+		break
+	}
+	if replayed.Kind != api.KindMessage || replayed.Message == nil || replayed.Message.Role != "tool" {
+		t.Fatalf("replay first envelope = %+v, want the tool message", replayed)
+	}
+	if replayed.ToolOutput == nil || *replayed.ToolOutput != *meta {
+		t.Errorf("replayed envelope ToolOutput = %+v, want %+v", replayed.ToolOutput, meta)
+	}
+}
