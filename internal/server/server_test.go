@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
@@ -50,7 +51,7 @@ func newTestServer(t *testing.T, llmHandler http.HandlerFunc) *httptest.Server {
 func startServerDB(t *testing.T, dbPath string, llmHandler http.HandlerFunc) (*Server, *httptest.Server) {
 	t.Helper()
 	llmSrv := httptest.NewServer(llmHandler)
-	s, err := newServer(config.Config{BaseURL: llmSrv.URL + "/v1", Model: "m", APIKey: "k"}, dbPath)
+	s, err := newServer(config.Config{BaseURL: llmSrv.URL + "/v1", Model: "m", APIKey: "k"}, dbPath, "")
 	if err != nil {
 		t.Fatalf("newServer: %v", err)
 	}
@@ -2846,5 +2847,134 @@ func TestStoppedTurnResumesOnNextMessage(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("resumed request missing the interrupted partial; messages = %+v", req.Messages)
+	}
+}
+
+// startServerMCP is startServerDB with an explicit MCP config path, so tests
+// can exercise the MCP hub through a real turn.
+func startServerMCP(t *testing.T, dbPath, mcpPath string, llmHandler http.HandlerFunc) (*Server, *httptest.Server) {
+	t.Helper()
+	llmSrv := httptest.NewServer(llmHandler)
+	s, err := newServer(config.Config{BaseURL: llmSrv.URL + "/v1", Model: "m", APIKey: "k"}, dbPath, mcpPath)
+	if err != nil {
+		t.Fatalf("newServer: %v", err)
+	}
+	ts := httptest.NewServer(s.Handler())
+	t.Cleanup(func() {
+		s.Close()
+		ts.Close()
+		llmSrv.Close()
+	})
+	return s, ts
+}
+
+// mockMCPHandler is a minimal streamable-HTTP MCP server for tests: it
+// handshakes, lists one echo tool, and echoes tool calls back as text.
+func mockMCPHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			ID     any             `json:"id"`
+			Method string          `json:"method"`
+			Params json.RawMessage `json:"params"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		resp := map[string]any{"jsonrpc": "2.0", "id": req.ID}
+		switch req.Method {
+		case "initialize":
+			resp["result"] = map[string]any{
+				"protocolVersion": "2025-06-18",
+				"capabilities":    map[string]any{},
+				"serverInfo":      map[string]any{"name": "mock", "version": "1"},
+			}
+		case "notifications/initialized":
+			w.WriteHeader(http.StatusAccepted)
+			return
+		case "tools/list":
+			resp["result"] = map[string]any{
+				"tools": []map[string]any{{"name": "echo", "description": "Echo text back", "inputSchema": map[string]any{
+					"type": "object", "properties": map[string]any{"text": map[string]any{"type": "string"}}, "required": []string{"text"},
+				}}},
+			}
+		case "tools/call":
+			var p struct {
+				Name      string         `json:"name"`
+				Arguments map[string]any `json:"arguments"`
+			}
+			_ = json.Unmarshal(req.Params, &p)
+			resp["result"] = map[string]any{
+				"content": []map[string]any{{"type": "text", "text": "echo: " + fmt.Sprintf("%v", p.Arguments["text"])}},
+				"isError": false,
+			}
+		default:
+			http.Error(w, "unknown method", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}
+}
+
+// mcpThenReplyLLM asks for a FindMCP call, then a CallMCP call, then replies
+// plainly.
+func mcpThenReplyLLM() http.HandlerFunc {
+	var mu sync.Mutex
+	n := 0
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		mu.Lock()
+		n++
+		call := n
+		mu.Unlock()
+		switch call {
+		case 1:
+			fmt.Fprint(w,
+				`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","type":"function","function":{"name":"FindMCP","arguments":"{\"server_name\":\"mock\"}"}}]},"finish_reason":"tool_calls"}]}`+"\n\n"+
+					`data: [DONE]`+"\n")
+		case 2:
+			fmt.Fprint(w,
+				`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c2","type":"function","function":{"name":"CallMCP","arguments":"{\"server_name\":\"mock\",\"tool_name\":\"echo\",\"args\":{\"text\":\"hi\"}}"}}]},"finish_reason":"tool_calls"}]}`+"\n\n"+
+					`data: [DONE]`+"\n")
+		default:
+			fmt.Fprint(w,
+				`data: {"choices":[{"delta":{"content":"done"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`+"\n\n"+
+					`data: [DONE]`+"\n")
+		}
+	}
+}
+
+// TestMCPTurn drives a real turn that discovers an MCP server with FindMCP,
+// calls a tool on it with CallMCP, and verifies both results land in history.
+func TestMCPTurn(t *testing.T) {
+	mcpSrv := httptest.NewServer(mockMCPHandler())
+	defer mcpSrv.Close()
+
+	cfgPath := filepath.Join(t.TempDir(), "porter.mcp.json")
+	data, _ := json.Marshal(map[string]any{"servers": []map[string]any{{
+		"name": "mock", "description": "Mock server", "url": mcpSrv.URL,
+	}}})
+	if err := os.WriteFile(cfgPath, data, 0o644); err != nil {
+		t.Fatalf("write mcp config: %v", err)
+	}
+
+	_, ts := startServerMCP(t, filepath.Join(t.TempDir(), "porter.db"), cfgPath, mcpThenReplyLLM())
+	_, hist := runOneTurn(t, ts.URL, "use the mock server")
+
+	var toolResults []string
+	for _, m := range hist.History {
+		if m.Role == "tool" {
+			toolResults = append(toolResults, m.Content)
+		}
+	}
+	if len(toolResults) != 2 {
+		t.Fatalf("tool results = %d, want 2: %v", len(toolResults), toolResults)
+	}
+	if !strings.Contains(toolResults[0], "server mock (1 tools)") || !strings.Contains(toolResults[0], "echo: Echo text back") {
+		t.Errorf("FindMCP result = %q", toolResults[0])
+	}
+	if toolResults[1] != "echo: hi" {
+		t.Errorf("CallMCP result = %q, want 'echo: hi'", toolResults[1])
 	}
 }

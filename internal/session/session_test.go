@@ -180,7 +180,7 @@ func TestEnqueueRunsTurn(t *testing.T) {
 	nctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	st := NewStore(memPersister(t), nctx)
+	st := NewStore(memPersister(t), nil, nctx)
 	s, err := st.Create(client)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -225,7 +225,7 @@ func TestRunningAndQueueDepth(t *testing.T) {
 }
 
 func TestSetProviderDefaultsToLocal(t *testing.T) {
-	st := NewStore(memPersister(t))
+	st := NewStore(memPersister(t), nil)
 	s, err := st.Create(nil)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -253,7 +253,7 @@ func newTestSession(t *testing.T, id string) *Session {
 	if err != nil {
 		t.Fatalf("create session row: %v", err)
 	}
-	return newSession(id, nil, nil, d, rowID, time.Now().UnixMilli())
+	return newSession(id, nil, nil, d, rowID, time.Now().UnixMilli(), nil)
 }
 
 // memPersister opens a fresh in-memory SQLite database as a Persister.

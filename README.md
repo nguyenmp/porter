@@ -52,6 +52,29 @@ A tree of turns. Each turn has a single parent and can fork into many children.
   change commits a short role-`system` notice so the model knows the environment
   changed.
 
+### MCP (Model Context Protocol)
+
+MCP servers are configured in `porter.mcp.json` (gitignored; see
+`porter.mcp.json.example`). At startup the server fetches each configured
+server's tool list (streamable HTTP transport, bearer-token auth) and caches
+it in memory; a server that fails to respond is reported rather than blocking
+startup. The model sees exactly two tools no matter how many servers or tools
+are configured:
+
+- **FindMCP** — its description lists every configured server (name,
+  description, tool count, load status); calling it lists a server's tools
+  (or all servers), filtered by an optional substring, with `full=true` for
+  full descriptions and input schemas.
+- **CallMCP** — calls one tool on one server and returns the text result. It
+  supports cancellation like any other tool (aborting the HTTP request).
+
+MCP calls run on the server, where the credentials live, and never cross the
+exec channel to a connected execution client. Only tools are used; resources
+and prompts are ignored. Connections are stateless (no persistent stream), so
+`notifications/list_changed` and `ping` are never received; the only
+per-server state kept is the streamable-HTTP session id. OAuth and the legacy
+SSE transport are future work.
+
 ### Cost & metrics
 
 - Estimated cost per message, per turn, per chat, per subagent — before sending, based on input cost, including resume-from-history
@@ -178,7 +201,7 @@ Build order:
 - [ ] Handoff / async execution
 - [ ] Metrics & performance (tokens/sec, tool timing, worktree cache)
 - [ ] Token cost management (`tool_output` trimming, `read_output`, budget before send)
-- [ ] Dynamic MCP
+- [x] Dynamic MCP
 
 **As-needed (ad hoc, when the need arises):**
 

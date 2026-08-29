@@ -1,0 +1,11 @@
+{
+  "servers": [
+    {
+      "name": "example",
+      "description": "Example MCP server",
+      "url": "https://example.com/mcp",
+      "auth": { "type": "bearer", "token": "your-token-here" },
+      "timeout_seconds": 60
+    }
+  ]
+}

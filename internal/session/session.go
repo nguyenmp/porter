@@ -21,6 +21,7 @@ import (
 	"porter/internal/api"
 	"porter/internal/db"
 	"porter/internal/llm"
+	"porter/internal/mcp"
 	"porter/internal/render"
 	"porter/internal/tools"
 )
@@ -69,19 +70,23 @@ type Store struct {
 	cancel   context.CancelFunc
 	mu       sync.Mutex
 	persist  Persister
+	// hub serves the session's MCP tools (FindMCP, CallMCP). It is shared
+	// across sessions: the registry is loaded once at server startup from
+	// porter.mcp.json. Nil when no MCP hub was configured.
+	hub      *mcp.Hub
 	sessions map[string]*Session
 }
 
-// NewStore returns an empty store backed by persist. Pass a context to bind the
-// session schedules' lifetime to it; otherwise they live for the process
-// lifetime.
-func NewStore(persist Persister, ctxs ...context.Context) *Store {
+// NewStore returns an empty store backed by persist, serving MCP tools from
+// hub (nil for none). Pass a context to bind the session schedules' lifetime
+// to it; otherwise they live for the process lifetime.
+func NewStore(persist Persister, hub *mcp.Hub, ctxs ...context.Context) *Store {
 	ctx := context.Background()
 	if len(ctxs) > 0 {
 		ctx = ctxs[0]
 	}
 	ctx, cancel := context.WithCancel(ctx)
-	return &Store{ctx: ctx, cancel: cancel, persist: persist, sessions: map[string]*Session{}}
+	return &Store{ctx: ctx, cancel: cancel, persist: persist, hub: hub, sessions: map[string]*Session{}}
 }
 
 // Create makes a new session and starts its turn scheduler. The session is
@@ -95,7 +100,7 @@ func (st *Store) Create(client *llm.Client) (*Session, error) {
 		return nil, fmt.Errorf("create session: %w", err)
 	}
 	id := fmt.Sprintf("session_%d", dbID)
-	s := newSession(id, client, nil, st.persist, dbID, now)
+	s := newSession(id, client, nil, st.persist, dbID, now, st.hub)
 	st.mu.Lock()
 	st.sessions[id] = s
 	st.mu.Unlock()
@@ -146,7 +151,7 @@ func (st *Store) Load(client *llm.Client) error {
 			return fmt.Errorf("load session %d: %w", sm.ID, err)
 		}
 		id := fmt.Sprintf("session_%d", ps.ID)
-		s := newSession(id, client, nil, st.persist, ps.ID, ps.CreatedAt)
+		s := newSession(id, client, nil, st.persist, ps.ID, ps.CreatedAt, st.hub)
 		s.rebuildFromPersisted(ps)
 		st.mu.Lock()
 		st.sessions[id] = s
@@ -197,6 +202,7 @@ type Session struct {
 	mu      sync.Mutex
 	persist Persister
 	js      tools.Provider
+	hub     *mcp.Hub
 	logSeq  uint64
 	turn    int64
 	running bool // a turn has started but its completion marker is not yet committed
@@ -251,7 +257,7 @@ type toolRun struct {
 	cancel    func()
 }
 
-func newSession(id string, client *llm.Client, js tools.Provider, persist Persister, dbID int64, createdAt int64) *Session {
+func newSession(id string, client *llm.Client, js tools.Provider, persist Persister, dbID int64, createdAt int64, hub *mcp.Hub) *Session {
 	if js == nil {
 		js = tools.NewDispatcher()
 	}
@@ -262,6 +268,7 @@ func newSession(id string, client *llm.Client, js tools.Provider, persist Persis
 		js:        js,
 		persist:   persist,
 		createdAt: createdAt,
+		hub:       hub,
 		queue:     make(chan string, 16),
 	}
 }
@@ -276,14 +283,20 @@ func (s *Session) SetProvider(js tools.Provider) {
 }
 
 // provider returns the current execution provider, defaulting to local
-// execution when none has been registered.
+// execution when none has been registered. When the session has an MCP hub,
+// the execution provider is wrapped in a composite that also exposes the hub
+// tools (FindMCP, CallMCP); hub calls are served on the server and never
+// cross the exec channel.
 func (s *Session) provider() tools.Provider {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.js == nil {
 		s.js = tools.NewDispatcher()
 	}
-	return s.js
+	if s.hub == nil {
+		return s.js
+	}
+	return &mcp.Composite{Exec: s.js, Hub: s.hub}
 }
 
 // loop is the turn scheduler. It consumes queued user messages one at a time,

@@ -22,6 +22,7 @@ import (
 	"porter/internal/config"
 	"porter/internal/db"
 	"porter/internal/llm"
+	"porter/internal/mcp"
 	mdr "porter/internal/render"
 	"porter/internal/session"
 )
@@ -191,16 +192,18 @@ type Server struct {
 
 // New validates cfg and builds a Server with its own LLM client and session
 // store, opening the server-owned session database at porter.db in the working
-// directory and loading every persisted session so history, the session list,
-// and bus positions survive restarts. Each session resolves its own execution
+// directory, loading every persisted session so history, the session list, and
+// bus positions survive restarts, and loading the MCP hub from porter.mcp.json
+// so sessions can serve MCP tools. Each session resolves its own execution
 // provider at runtime, defaulting to local execution.
 func New(cfg config.Config) (*Server, error) {
-	return newServer(cfg, "porter.db")
+	return newServer(cfg, "porter.db", "porter.mcp.json")
 }
 
-// newServer is New with an explicit database path, so tests (and future
-// configuration) can point the server at a database other than ./porter.db.
-func newServer(cfg config.Config, dbPath string) (*Server, error) {
+// newServer is New with explicit database and MCP config paths, so tests (and
+// future configuration) can point the server at a database other than
+// ./porter.db and skip or redirect MCP loading.
+func newServer(cfg config.Config, dbPath, mcpPath string) (*Server, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
@@ -208,8 +211,17 @@ func newServer(cfg config.Config, dbPath string) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Load the MCP hub before serving: each configured server's tool list is
+	// fetched once at boot and cached in memory (see mcp.Load). A missing
+	// config file is fine — no MCP — while a malformed one fails startup like
+	// a bad env. Credentials live only here, on the server.
+	hub, err := mcp.Load(mcpPath, nil)
+	if err != nil {
+		_ = d.Close()
+		return nil, err
+	}
 	client := llm.NewClient(cfg, nil)
-	store := session.NewStore(d)
+	store := session.NewStore(d, hub)
 	if err := store.Load(client); err != nil {
 		_ = d.Close()
 		return nil, fmt.Errorf("load persisted sessions: %w", err)

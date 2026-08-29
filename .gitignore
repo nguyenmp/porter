@@ -17,3 +17,6 @@ porter.log
 porter.db
 porter.db-wal
 porter.db-shm
+
+# MCP config (local secrets; see porter.mcp.json.example)
+porter.mcp.json
