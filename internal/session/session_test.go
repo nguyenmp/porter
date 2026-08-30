@@ -253,7 +253,7 @@ func newTestSession(t *testing.T, id string) *Session {
 	if err != nil {
 		t.Fatalf("create session row: %v", err)
 	}
-	return newSession(id, nil, nil, d, rowID, time.Now().UnixMilli(), nil)
+	return newSession(id, nil, nil, d, rowID, time.Now().UnixMilli(), 0, nil)
 }
 
 // memPersister opens a fresh in-memory SQLite database as a Persister.
@@ -675,7 +675,7 @@ func TestCommittedToolEnvelopeCarriesToolOutput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Persisted: %v", err)
 	}
-	s2 := newSession(s.ID(), nil, nil, s.persist, ps.ID, ps.CreatedAt, nil)
+	s2 := newSession(s.ID(), nil, nil, s.persist, ps.ID, ps.CreatedAt, ps.ArchivedAt, nil)
 	s2.rebuildFromPersisted(ps)
 
 	ctx2, cancel2 := context.WithCancel(context.Background())
@@ -690,5 +690,57 @@ func TestCommittedToolEnvelopeCarriesToolOutput(t *testing.T) {
 	}
 	if replayed.ToolOutput == nil || *replayed.ToolOutput != *meta {
 		t.Errorf("replayed envelope ToolOutput = %+v, want %+v", replayed.ToolOutput, meta)
+	}
+}
+
+func TestStoreArchiveUnarchive(t *testing.T) {
+	st := NewStore(memPersister(t), nil)
+	s, err := st.Create(nil)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if s.Archived() {
+		t.Error("fresh session Archived() = true, want false")
+	}
+
+	// Archive: the session reports archived and the list carries a stamp.
+	if err := st.Archive(s.ID()); err != nil {
+		t.Fatalf("Archive: %v", err)
+	}
+	if !s.Archived() {
+		t.Error("Archived() after Archive = false, want true")
+	}
+	list := st.List()
+	if len(list) != 1 || list[0].ArchivedAt == 0 {
+		t.Fatalf("list after archive = %+v, want one archived row", list)
+	}
+	// The stamp is persisted: a fresh session rebuilt from the same persister
+	// sees it (a restarted server keeps the folder state).
+	ps, err := s.Persisted()
+	if err != nil {
+		t.Fatalf("Persisted: %v", err)
+	}
+	if ps.ArchivedAt == 0 {
+		t.Errorf("persisted archived_at = 0, want the archive stamp")
+	}
+
+	// Unarchive clears the flag everywhere.
+	if err := st.Unarchive(s.ID()); err != nil {
+		t.Fatalf("Unarchive: %v", err)
+	}
+	if s.Archived() {
+		t.Error("Archived() after Unarchive = true, want false")
+	}
+	list = st.List()
+	if len(list) != 1 || list[0].ArchivedAt != 0 {
+		t.Fatalf("list after unarchive = %+v, want one active row", list)
+	}
+
+	// Unknown session: ErrNotFound on both operations.
+	if err := st.Archive("session_9999"); err != db.ErrNotFound {
+		t.Errorf("Archive unknown = %v, want db.ErrNotFound", err)
+	}
+	if err := st.Unarchive("session_9999"); err != db.ErrNotFound {
+		t.Errorf("Unarchive unknown = %v, want db.ErrNotFound", err)
 	}
 }

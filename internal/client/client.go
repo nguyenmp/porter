@@ -117,6 +117,17 @@ func (c *Client) Stop(ctx context.Context, id string) error {
 	return c.doJSON(ctx, http.MethodPost, c.path(api.SessionStopPath, id), nil, nil)
 }
 
+// Archive marks the session archived, folding it out of the active sidebar
+// list into the Archived folder. The chat itself is unaffected.
+func (c *Client) Archive(ctx context.Context, id string) error {
+	return c.doJSON(ctx, http.MethodPost, c.path(api.SessionArchivePath, id), nil, nil)
+}
+
+// Unarchive restores an archived session to the active list.
+func (c *Client) Unarchive(ctx context.Context, id string) error {
+	return c.doJSON(ctx, http.MethodPost, c.path(api.SessionUnarchivePath, id), nil, nil)
+}
+
 // Subscribe streams the session's event bus as NDJSON, calling onEvent for
 // every envelope until the connection ends, until until(env) reports true, or
 // until a resync is required (returned as ErrResync). onEvent may be nil.

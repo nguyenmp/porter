@@ -3073,3 +3073,151 @@ func TestTruncationEndToEnd(t *testing.T) {
 		t.Errorf("/view must show the full output, not the truncated model-view form")
 	}
 }
+
+func TestArchiveUnarchiveSession(t *testing.T) {
+	srv := newTestServer(t, plainLLM())
+	c := client.New(srv.URL)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	info, err := c.Create(ctx)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// A fresh session is active (no archived_at in the list).
+	var list api.SessionsResponse
+	if err := fetchJSON(srv.URL+api.SessionsPath, &list); err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(list.Sessions) != 1 || list.Sessions[0].ArchivedAt != 0 {
+		t.Fatalf("fresh session = %+v, want one active row", list.Sessions)
+	}
+
+	// Archive: 204, and the row carries a nonzero archived_at.
+	if err := c.Archive(ctx, info.ID); err != nil {
+		t.Fatalf("Archive: %v", err)
+	}
+	list = api.SessionsResponse{}
+	if err := fetchJSON(srv.URL+api.SessionsPath, &list); err != nil {
+		t.Fatalf("list after archive: %v", err)
+	}
+	if len(list.Sessions) != 1 || list.Sessions[0].ArchivedAt == 0 {
+		t.Fatalf("archived session = %+v, want archived_at set", list.Sessions)
+	}
+
+	// Archiving again is idempotent (no error).
+	if err := c.Archive(ctx, info.ID); err != nil {
+		t.Fatalf("re-Archive: %v", err)
+	}
+
+	// Unarchive: 204, and the row is active again.
+	if err := c.Unarchive(ctx, info.ID); err != nil {
+		t.Fatalf("Unarchive: %v", err)
+	}
+	list = api.SessionsResponse{}
+	if err := fetchJSON(srv.URL+api.SessionsPath, &list); err != nil {
+		t.Fatalf("list after unarchive: %v", err)
+	}
+	if len(list.Sessions) != 1 || list.Sessions[0].ArchivedAt != 0 {
+		t.Fatalf("unarchived session = %+v, want archived_at cleared", list.Sessions)
+	}
+
+	// Unknown session: 404.
+	resp, err := http.Post(srv.URL+"/api/sessions/session_9999/archive", "", nil)
+	if err != nil {
+		t.Fatalf("archive unknown: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("archive unknown status = %d, want 404", resp.StatusCode)
+	}
+}
+
+func TestAppendUnarchivesSession(t *testing.T) {
+	srv := newTestServer(t, plainLLM())
+	c := client.New(srv.URL)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	info, err := c.Create(ctx)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := c.Archive(ctx, info.ID); err != nil {
+		t.Fatalf("Archive: %v", err)
+	}
+
+	// Chatting with the archived session pulls it out of archive: after the
+	// append, the list reports it active again.
+	if err := c.Append(ctx, info.ID, "still relevant"); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	var list api.SessionsResponse
+	if err := fetchJSON(srv.URL+api.SessionsPath, &list); err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(list.Sessions) != 1 || list.Sessions[0].ArchivedAt != 0 {
+		t.Fatalf("session after append = %+v, want unarchived", list.Sessions)
+	}
+}
+
+// fetchJSON GETs url and decodes the JSON response into out, failing the test
+// on transport, status, or decode errors. Callers must pass a fresh struct:
+// encoding/json does not zero the target, so reusing one across decodes keeps
+// omitempty fields (like archived_at on an active session) from a prior
+// decode.
+func fetchJSON(url string, out any) error {
+	resp, err := http.Get(url)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("status %d", resp.StatusCode)
+	}
+	return json.NewDecoder(resp.Body).Decode(out)
+}
+
+func TestIndexArchiveButtonState(t *testing.T) {
+	srv := newTestServer(t, plainLLM())
+	c := client.New(srv.URL)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	get := func(id string) string {
+		t.Helper()
+		resp, err := http.Get(srv.URL + "/?session=" + id)
+		if err != nil {
+			t.Fatalf("GET /: %v", err)
+		}
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
+		return string(body)
+	}
+
+	// An active session renders the Archive state (data-archived="false").
+	info, err := c.Create(ctx)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	s := get(info.ID)
+	if !strings.Contains(s, `data-archived="false"`) {
+		t.Errorf("active session page missing data-archived=\"false\": %q", s)
+	}
+	if !strings.Contains(s, "Archive") {
+		t.Errorf("active session page should show the Archive action")
+	}
+
+	// An archived session renders the Restore state (data-archived="true").
+	if err := c.Archive(ctx, info.ID); err != nil {
+		t.Fatalf("Archive: %v", err)
+	}
+	s = get(info.ID)
+	if !strings.Contains(s, `data-archived="true"`) {
+		t.Errorf("archived session page missing data-archived=\"true\": %q", s)
+	}
+	if !strings.Contains(s, "Restore") {
+		t.Errorf("archived session page should show the Restore action")
+	}
+}

@@ -57,6 +57,12 @@ type Persister interface {
 	// ListSessions returns every session, newest first, with the raw content of
 	// each session's first user message (the sidebar preview source).
 	ListSessions() ([]db.Summary, error)
+	// ArchiveSession marks a session archived at the given epoch-ms time,
+	// folding it out of the active sidebar list.
+	ArchiveSession(id int64, at int64) error
+	// UnarchiveSession clears a session's archived flag, moving it back to the
+	// active list.
+	UnarchiveSession(id int64) error
 }
 
 // Store owns the live set of sessions. Sessions are created by persisting a
@@ -100,7 +106,7 @@ func (st *Store) Create(client *llm.Client) (*Session, error) {
 		return nil, fmt.Errorf("create session: %w", err)
 	}
 	id := fmt.Sprintf("session_%d", dbID)
-	s := newSession(id, client, nil, st.persist, dbID, now, st.hub)
+	s := newSession(id, client, nil, st.persist, dbID, now, 0, st.hub)
 	st.mu.Lock()
 	st.sessions[id] = s
 	st.mu.Unlock()
@@ -129,12 +135,46 @@ func (st *Store) List() []api.SessionSummary {
 	out := make([]api.SessionSummary, 0, len(summaries))
 	for _, s := range summaries {
 		out = append(out, api.SessionSummary{
-			ID:        fmt.Sprintf("session_%d", s.ID),
-			CreatedAt: s.CreatedAt,
-			Preview:   previewOf(s.FirstUser),
+			ID:         fmt.Sprintf("session_%d", s.ID),
+			CreatedAt:  s.CreatedAt,
+			Preview:    previewOf(s.FirstUser),
+			ArchivedAt: s.ArchivedAt,
 		})
 	}
 	return out
+}
+
+// Archive marks a session archived at the current time, folding it out of the
+// active sidebar list and into the Archived folder (ordered most-recently
+// archived first). The flag is persisted before memory is updated (fail-fast,
+// matching Create), so the list and the session can never disagree. Archive is
+// purely organizational: history, running turns, and the event bus are
+// unaffected. It is idempotent for an already-archived session.
+func (st *Store) Archive(id string) error {
+	ses, ok := st.Get(id)
+	if !ok {
+		return db.ErrNotFound
+	}
+	now := time.Now().UnixMilli()
+	if err := st.persist.ArchiveSession(ses.dbID, now); err != nil {
+		return fmt.Errorf("archive session: %w", err)
+	}
+	ses.setArchived(now)
+	return nil
+}
+
+// Unarchive clears a session's archived flag, moving it back to the active
+// list. Persist first, then update memory, mirroring Archive. Idempotent.
+func (st *Store) Unarchive(id string) error {
+	ses, ok := st.Get(id)
+	if !ok {
+		return db.ErrNotFound
+	}
+	if err := st.persist.UnarchiveSession(ses.dbID); err != nil {
+		return fmt.Errorf("unarchive session: %w", err)
+	}
+	ses.setArchived(0)
+	return nil
 }
 
 // Load rebuilds the live session set from the persister: one Session per row,
@@ -151,7 +191,7 @@ func (st *Store) Load(client *llm.Client) error {
 			return fmt.Errorf("load session %d: %w", sm.ID, err)
 		}
 		id := fmt.Sprintf("session_%d", ps.ID)
-		s := newSession(id, client, nil, st.persist, ps.ID, ps.CreatedAt, st.hub)
+		s := newSession(id, client, nil, st.persist, ps.ID, ps.CreatedAt, ps.ArchivedAt, st.hub)
 		s.rebuildFromPersisted(ps)
 		st.mu.Lock()
 		st.sessions[id] = s
@@ -198,6 +238,10 @@ type Session struct {
 	dbID      int64 // numeric row id in the persister (the "n" of session_<n>)
 	client    *llm.Client
 	createdAt int64 // creation time from the persister; orders the session list
+	// archivedAt is the epoch-ms time the session was archived, or 0 when
+	// active. It comes from the persister (survives restarts) and is what the
+	// web sidebar uses to fold archived sessions into the Archived folder.
+	archivedAt int64
 
 	mu      sync.Mutex
 	persist Persister
@@ -257,7 +301,7 @@ type toolRun struct {
 	cancel    func()
 }
 
-func newSession(id string, client *llm.Client, js tools.Provider, persist Persister, dbID int64, createdAt int64, hub *mcp.Hub) *Session {
+func newSession(id string, client *llm.Client, js tools.Provider, persist Persister, dbID int64, createdAt int64, archivedAt int64, hub *mcp.Hub) *Session {
 	if js == nil {
 		js = tools.NewDispatcher()
 	}
@@ -385,6 +429,23 @@ func (s *Session) Enqueue(content string) {
 
 // ID returns the session's id.
 func (s *Session) ID() string { return s.id }
+
+// Archived reports whether the session has been archived (folded out of the
+// active sidebar list into the Archived folder). Chatting with an archived
+// session unarchives it.
+func (s *Session) Archived() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.archivedAt > 0
+}
+
+// setArchived updates the session's archived timestamp. at is epoch-ms; 0
+// clears the flag (back to active).
+func (s *Session) setArchived(at int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.archivedAt = at
+}
 
 // QueueDepth returns how many user messages are still waiting in the queue
 // behind the turn currently running (0 when idle). The server is the single

@@ -8,6 +8,7 @@ package server
 import (
 	"embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html/template"
 	"io/fs"
@@ -169,6 +170,10 @@ type pageData struct {
 	TotalCached   int
 	TotalUncached int
 	TotalOutput   int
+	// Archived reports whether the current session is archived, so the chat
+	// page's archive/restore button can render the correct initial state
+	// before any JS runs.
+	Archived bool
 }
 
 // ToolRunInfo carries the display details of one tool call for the view,
@@ -287,6 +292,8 @@ func (s *Server) Handler() http.Handler {
 	r.Post(api.SessionExecResultPath, s.handleExecResult)
 	r.Post(api.SessionCancelPath, s.handleCancel)
 	r.Post(api.SessionStopPath, s.handleStop)
+	r.Post(api.SessionArchivePath, s.handleArchive)
+	r.Post(api.SessionUnarchivePath, s.handleUnarchive)
 	r.Post(api.SessionExecContextPath, s.handleExecContext)
 	r.Get(api.SessionExecStatusPath, s.handleExecStatus)
 	return r
@@ -351,6 +358,17 @@ func (s *Server) handleAppend(w http.ResponseWriter, r *http.Request) {
 	if strings.TrimSpace(content) == "" {
 		http.Error(w, "empty message", http.StatusBadRequest)
 		return
+	}
+	// Chatting with an archived session pulls it out of archive: sending any
+	// message unarchives it server-side, so every client (web, REPL, script)
+	// gets the same behavior with no per-client logic. The DB write is
+	// fail-fast; a failure surfaces as 500 rather than silently leaving the
+	// session archived while the message queues.
+	if ses.Archived() {
+		if err := s.store.Unarchive(ses.ID()); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 	}
 	ses.Enqueue(content)
 	w.WriteHeader(http.StatusAccepted)
@@ -530,6 +548,38 @@ func (s *Server) handleStop(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
+// handleArchive marks the session archived, folding it out of the active
+// sidebar list into the Archived folder (most recently archived first). The
+// chat itself is unaffected — history, running turns, and streaming all
+// continue; archive is purely organizational. Idempotent: archiving an
+// already-archived session is a no-op success.
+func (s *Server) handleArchive(w http.ResponseWriter, r *http.Request) {
+	if err := s.store.Archive(chi.URLParam(r, "id")); err != nil {
+		if errors.Is(err, db.ErrNotFound) {
+			http.Error(w, "session not found", http.StatusNotFound)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
+// handleUnarchive restores an archived session to the active list. It is the
+// explicit backend for the chat page's Restore button; sending any message to
+// an archived session unarchives it through the same store path. Idempotent.
+func (s *Server) handleUnarchive(w http.ResponseWriter, r *http.Request) {
+	if err := s.store.Unarchive(chi.URLParam(r, "id")); err != nil {
+		if errors.Is(err, db.ErrNotFound) {
+			http.Error(w, "session not found", http.StatusNotFound)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
 // handleExecResult streams a client's tool output back to the in-flight call.
 func (s *Server) handleExecResult(w http.ResponseWriter, r *http.Request) {
 	ses, ok := s.store.Get(chi.URLParam(r, "id"))
@@ -672,5 +722,6 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		TotalCached:   cached,
 		TotalUncached: uncached,
 		TotalOutput:   output,
+		Archived:      ses.Archived(),
 	})
 }

@@ -27,10 +27,37 @@
 		.new-chat { margin-bottom: 0.75rem; }
 		.new-chat button { width: 100%; padding: 0.4rem 0.75rem; border: 1px solid #ccc; border-radius: 4px; background: #fff; color: #333; cursor: pointer; }
 		.new-chat button:hover { background: #f0f0f0; }
-		#session-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.25rem; }
-		#session-list a { display: block; padding: 0.35rem 0.5rem; border-radius: 4px; color: #333; text-decoration: none; font-size: 0.9em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-		#session-list a:hover { background: #f0f0f0; }
-		#session-list a.active { background: #e0e0e0; font-weight: bold; }
+		#session-list, #archived-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.25rem; }
+		#session-list a, #archived-list a { display: block; padding: 0.35rem 0.5rem; border-radius: 4px; color: #333; text-decoration: none; font-size: 0.9em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+		#session-list a:hover, #archived-list a:hover { background: #f0f0f0; }
+		#session-list a.active, #archived-list a.active { background: #e0e0e0; font-weight: bold; }
+		/* Archived rows read as filed-away: dimmed, but fully clickable —
+		   chatting with one unarchives it server-side. */
+		#archived-list a { color: #999; }
+		#archived-list a:hover { color: #666; }
+		#archived-list a.active { color: #333; }
+		/* The Archived folder: a collapsible section below the active list,
+		   collapsed by default with its count in the header. */
+		#archived-section { margin-top: 0.75rem; padding-top: 0.5rem; border-top: 1px solid #eee; }
+		.archived-toggle {
+			display: flex; align-items: center; gap: 0.3rem;
+			width: 100%; padding: 0.3rem 0.5rem; border: none; background: none;
+			color: #888; font-size: 0.8em; cursor: pointer; border-radius: 4px; text-align: left;
+		}
+		.archived-toggle:hover { background: #f5f5f5; }
+		.archived-toggle:focus-visible { outline: 2px solid #007bff; outline-offset: 1px; }
+		.archived-caret { font-style: normal; font-size: 0.7em; }
+		#archived-list { margin-top: 0.25rem; }
+		/* Header row above the chat: the current session's archive/restore
+		   toggle. Always visible, so the action is discoverable and accessible
+		   without a hover gate. */
+		.chat-header { display: flex; justify-content: flex-end; padding: 0.4rem 0.75rem; }
+		.archive-btn {
+			padding: 0.3rem 0.75rem; border: 1px solid #ccc; border-radius: 999px;
+			background: #fff; color: #555; font-size: 0.85rem; cursor: pointer;
+		}
+		.archive-btn:hover { background: #f0f0f0; }
+		.archive-btn:focus-visible { outline: 2px solid #007bff; outline-offset: 1px; }
 		.main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 		.msg { margin-bottom: 0.75rem; padding: 0.5rem; border-radius: 4px; }
 		.msg-user { background: #e8f4fd; }
@@ -236,8 +263,11 @@
 
 			/* Touch-friendly drawer targets. */
 			.new-chat button { padding: 0.7rem 0.75rem; font-size: 1rem; }
-			#session-list { gap: 0.125rem; }
-			#session-list a { padding: 0.7rem 0.75rem; font-size: 1rem; }
+			#session-list, #archived-list { gap: 0.125rem; }
+			#session-list a, #archived-list a { padding: 0.7rem 0.75rem; font-size: 1rem; }
+			.archived-toggle { padding: 0.7rem 0.75rem; font-size: 0.95rem; }
+			.archive-btn { padding: 0.6rem 1.1rem; font-size: 1rem; }
+			.chat-header { padding: calc(0.5rem + env(safe-area-inset-top, 0px)) 0.5rem 0; }
 			.status { font-size: 0.9rem; }
 			.status-dot { width: 10px; height: 10px; }
 

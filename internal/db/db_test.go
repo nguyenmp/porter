@@ -683,3 +683,190 @@ func TestMigratesFromV5ToV6(t *testing.T) {
 		t.Errorf("tool_output metadata did not round-trip after migration: %+v", got.Messages[1].ToolOutput)
 	}
 }
+
+func TestArchiveUnarchiveSession(t *testing.T) {
+	d := openTemp(t)
+
+	// Three sessions at increasing created_at, so active ordering is defined.
+	a, err := d.CreateSession(10)
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	b, err := d.CreateSession(20)
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	c, err := d.CreateSession(30)
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	// New sessions start active.
+	list, err := d.ListSessions()
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	for _, s := range list {
+		if s.ArchivedAt != 0 {
+			t.Errorf("fresh session %d archived_at = %d, want 0", s.ID, s.ArchivedAt)
+		}
+	}
+
+	// Archive b at 50 and c at 40 (so b was archived more recently). The list
+	// must fold them below the active session, ordered by archived_at DESC.
+	if err := d.ArchiveSession(b, 50); err != nil {
+		t.Fatalf("ArchiveSession b: %v", err)
+	}
+	if err := d.ArchiveSession(c, 40); err != nil {
+		t.Fatalf("ArchiveSession c: %v", err)
+	}
+	list, err = d.ListSessions()
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	var got []int64
+	for _, s := range list {
+		got = append(got, s.ID)
+	}
+	// Active first (a, the only unarchived one), then archived by stamp DESC.
+	want := []int64{a, b, c}
+	if len(got) != len(want) {
+		t.Fatalf("order = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("order = %v, want %v", got, want)
+			break
+		}
+	}
+	if list[1].ArchivedAt != 50 || list[2].ArchivedAt != 40 {
+		t.Errorf("archived stamps = %d, %d; want 50, 40", list[1].ArchivedAt, list[2].ArchivedAt)
+	}
+
+	// LoadSession carries the flag.
+	ps, err := d.LoadSession(b)
+	if err != nil {
+		t.Fatalf("LoadSession: %v", err)
+	}
+	if ps.ArchivedAt != 50 {
+		t.Errorf("LoadSession archived_at = %d, want 50", ps.ArchivedAt)
+	}
+
+	// Unarchive c: it returns to the active list in created_at order.
+	if err := d.UnarchiveSession(c); err != nil {
+		t.Fatalf("UnarchiveSession: %v", err)
+	}
+	list, err = d.ListSessions()
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	got = got[:0]
+	for _, s := range list {
+		got = append(got, s.ID)
+	}
+	if want := []int64{c, a, b}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] || got[2] != want[2] {
+		t.Errorf("after unarchive order = %v, want %v", got, want)
+	}
+
+	// Idempotent: re-archiving an archived session just re-stamps it.
+	if err := d.ArchiveSession(b, 60); err != nil {
+		t.Fatalf("re-ArchiveSession: %v", err)
+	}
+	ps, err = d.LoadSession(b)
+	if err != nil {
+		t.Fatalf("LoadSession: %v", err)
+	}
+	if ps.ArchivedAt != 60 {
+		t.Errorf("re-archive stamp = %d, want 60", ps.ArchivedAt)
+	}
+	// Unarchiving an active session is a no-op success.
+	if err := d.UnarchiveSession(a); err != nil {
+		t.Fatalf("UnarchiveSession active: %v", err)
+	}
+}
+
+func TestMigratesFromV6ToV7(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "porter.db")
+
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open raw v6 db: %v", err)
+	}
+	_, err = raw.Exec(`
+		CREATE TABLE sessions (
+			id         INTEGER PRIMARY KEY AUTOINCREMENT,
+			created_at INTEGER NOT NULL
+		);
+		CREATE TABLE messages (
+			session_id   INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+			seq          INTEGER NOT NULL,
+			role         TEXT    NOT NULL,
+			content      TEXT    NOT NULL DEFAULT '',
+			reasoning    TEXT    NOT NULL DEFAULT '',
+			tool_call_id TEXT    NOT NULL DEFAULT '',
+			tool_calls   TEXT    NOT NULL DEFAULT '[]',
+			started_at   INTEGER NOT NULL DEFAULT 0,
+			finished_at  INTEGER NOT NULL DEFAULT 0,
+			cancelled    INTEGER NOT NULL DEFAULT 0,
+			tool_output  TEXT    NOT NULL DEFAULT '',
+			PRIMARY KEY (session_id, seq)
+		);
+		CREATE TABLE queries (
+			session_id   INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+			turn_seq     INTEGER NOT NULL,
+			idx          INTEGER NOT NULL,
+			cached_input INTEGER NOT NULL DEFAULT 0,
+			uncached_input INTEGER NOT NULL DEFAULT 0,
+			output       INTEGER NOT NULL DEFAULT 0,
+			error        TEXT    NOT NULL DEFAULT '',
+			stopped      INTEGER NOT NULL DEFAULT 0,
+			PRIMARY KEY (session_id, turn_seq, idx)
+		);
+		PRAGMA user_version=6;
+	`)
+	if err != nil {
+		t.Fatalf("create v6 schema: %v", err)
+	}
+	res, err := raw.Exec(`INSERT INTO sessions (created_at) VALUES (7)`)
+	if err != nil {
+		t.Fatalf("insert v6 session: %v", err)
+	}
+	id, _ := res.LastInsertId()
+	if err := raw.Close(); err != nil {
+		t.Fatalf("close raw db: %v", err)
+	}
+
+	d, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open after v6: %v", err)
+	}
+	defer d.Close()
+
+	// Pre-existing rows migrate as active.
+	got, err := d.LoadSession(id)
+	if err != nil {
+		t.Fatalf("LoadSession after migration: %v", err)
+	}
+	if got.ArchivedAt != 0 {
+		t.Errorf("v6 row after migration archived_at = %d, want 0", got.ArchivedAt)
+	}
+
+	// Archive/unarchive work on the migrated schema.
+	if err := d.ArchiveSession(id, 99); err != nil {
+		t.Fatalf("ArchiveSession after migration: %v", err)
+	}
+	got, err = d.LoadSession(id)
+	if err != nil {
+		t.Fatalf("LoadSession after archive: %v", err)
+	}
+	if got.ArchivedAt != 99 {
+		t.Errorf("archived_at after archive = %d, want 99", got.ArchivedAt)
+	}
+	list, err := d.ListSessions()
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	if len(list) != 1 || list[0].ArchivedAt != 99 {
+		t.Errorf("list after archive = %+v, want one archived row", list)
+	}
+}

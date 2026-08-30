@@ -102,6 +102,23 @@ We build and run through Docker so the pinned Go version is used for portable de
 
 The server owns conversation state, and since the SQLite-backed history roadmap item it persists every session — its creation time, full committed history (including tool timing, reasoning, and tool calls), and the bus position clients resume from — to a SQLite database at `porter.db` in the working directory. When running via `make server` (which mounts the repo at `/app`) or `porter-macos` from the repo, the file lands in the repo and is gitignored, exactly like `porter.log`. Because committed state lives in the database, sessions survive server restarts: a restarted server loads them back and the sidebar, `/view`, and SSE resume all keep working.
 
+### Archiving sessions
+
+The web sidebar keeps every session in one list, newest first. To keep the
+list focused on what's still relevant, the chat page carries an **Archive**
+button (top-right, always visible) for the current session. Archiving folds the
+session into a collapsible **Archived** folder below the active list — collapsed
+by default, with a count in its header so the folder's contents stay
+discoverable. It is purely organizational: history, running turns, and
+streaming are unaffected, and the session survives restarts either way.
+
+Chatting with an archived session pulls it out of archive automatically:
+sending any message unarchives it server-side (the web UI, REPL, and scripts
+all get this for free, since they share the append path), so an old session
+you come back to quietly returns to the active list. The backend surface is
+`POST /api/sessions/{id}/archive` and `POST /api/sessions/{id}/unarchive`, both
+idempotent.
+
 ### Cancelling a running task
 
 Long-running tools (tests, builds, `tail -f`) render live in the web UI with an

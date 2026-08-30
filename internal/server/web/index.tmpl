@@ -13,10 +13,36 @@
 			<button type="submit">+ New chat</button>
 		</form>
 		<ul id="session-list" hidden></ul>
+		{{/* Archived folder: sessions the user archived, folded below the active
+		     list. Collapsed by default; the count in the header stays visible so
+		     the folder's contents are discoverable while folded. Rows are plain
+		     links — the archive/restore action lives on the chat page (not
+		     per-row) to keep the sidebar uncluttered. Chatting with an archived
+		     session unarchives it server-side. */}}
+		<div id="archived-section" hidden>
+			<button type="button" id="archived-toggle" class="archived-toggle" aria-expanded="false">
+				<span class="archived-caret" id="archived-caret">&#9656;</span>
+				Archived (<span id="archived-count">0</span>)
+			</button>
+			<ul id="archived-list" hidden></ul>
+		</div>
 	</nav>
 	<div id="sidebar-backdrop"></div>
 	<main class="main">
 		{{if .Session}}
+		{{/* Header row: the current session's archive/restore toggle. Always
+		     visible (no hover gate) so the action is discoverable,
+		     keyboard-operable, and screen-reader accessible. Archive is purely
+		     organizational — history, running turns, and streaming are
+		     unaffected; sending a message unarchives. */}}
+		<div class="chat-header">
+			<button type="button" id="archive-btn" class="archive-btn"
+			        data-archived="{{if .Archived}}true{{else}}false{{end}}"
+			        aria-pressed="{{if .Archived}}true{{else}}false{{end}}"
+			        title="{{if .Archived}}Restore this session to the active list{{else}}Archive this session (chatting with it unarchives){{end}}">
+				<span id="archive-btn-label">{{if .Archived}}&#8617; Restore{{else}}&#128452; Archive{{end}}</span>
+			</button>
+		</div>
 		<div class="chat-wrap">
 			<div id="chat"
 			  hx-get="/api/sessions/{{.Session}}/view"
@@ -81,25 +107,108 @@
 
   function renderSidebar(activeId) {
     const listEl = document.getElementById('session-list');
-    if (!listEl) return;
+    const secEl = document.getElementById('archived-section');
+    const archList = document.getElementById('archived-list');
+    const countEl = document.getElementById('archived-count');
+    if (!listEl || !secEl || !archList) return;
     fetch('/api/sessions')
       .then(resp => resp.ok ? resp.json() : null)
       .then(data => {
         if (!data || !Array.isArray(data.sessions)) return;
-        listEl.innerHTML = '';
+        // The server returns one flat list; the client folds it: active
+        // sessions on top, archived ones under the Archived folder. A session
+        // is archived when the server reports a nonzero archived_at.
+        const active = [], archived = [];
         for (const s of data.sessions) {
           if (!s || !s.id) continue;
-          const a = document.createElement('a');
-          a.href = '/?session=' + encodeURIComponent(s.id);
-          a.textContent = s.preview || s.id;
-          a.title = s.id;
-          a.className = 'session-link' + (s.id === activeId ? ' active' : '');
-          listEl.appendChild(a);
+          (s.archived_at ? archived : active).push(s);
         }
-        listEl.hidden = data.sessions.length === 0;
+        listEl.innerHTML = '';
+        for (const s of active) listEl.appendChild(sessionLink(s, activeId));
+        listEl.hidden = active.length === 0;
+
+        archList.innerHTML = '';
+        for (const s of archived) archList.appendChild(sessionLink(s, activeId));
+        secEl.hidden = archived.length === 0;
+        if (countEl) countEl.textContent = String(archived.length);
+        setArchivedOpen(archivedOpen); // preserve the user's expand/collapse choice
       })
       .catch(function() {}); // page is web-reliant; leave the list empty on failure
   }
+
+  // One sidebar row: a plain link to the session. Rows carry no per-session
+  // actions — the archive/restore button lives on the chat page for the
+  // current session only, keeping the sidebar uncluttered. Archived rows are
+  // dimmed (the .archived class) but stay fully clickable.
+  function sessionLink(s, activeId) {
+    const li = document.createElement('li');
+    li.className = 'session-row';
+    const a = document.createElement('a');
+    a.href = '/?session=' + encodeURIComponent(s.id);
+    a.textContent = s.preview || s.id;
+    a.title = s.id;
+    a.className = 'session-link' + (s.id === activeId ? ' active' : '') + (s.archived_at ? ' archived' : '');
+    li.appendChild(a);
+    return li;
+  }
+
+  // --- Archived folder ---
+  // Collapsed by default on every page load; the header's count keeps the
+  // folder discoverable while folded. The open state is kept in memory for
+  // the page session, so a re-render (after archiving or unarchiving from the
+  // chat page) preserves the user's choice rather than snapping it shut.
+  const archivedToggle = document.getElementById('archived-toggle');
+  const archivedListEl = document.getElementById('archived-list');
+  let archivedOpen = false;
+  function setArchivedOpen(open) {
+    archivedOpen = !!open;
+    if (archivedListEl) archivedListEl.hidden = !archivedOpen;
+    if (archivedToggle) {
+      archivedToggle.setAttribute('aria-expanded', archivedOpen ? 'true' : 'false');
+      const caret = document.getElementById('archived-caret');
+      if (caret) caret.textContent = archivedOpen ? '\u25be' : '\u25b8';
+    }
+  }
+  if (archivedToggle) {
+    archivedToggle.addEventListener('click', function() {
+      setArchivedOpen(archivedListEl ? archivedListEl.hidden : false);
+    });
+  }
+  setArchivedOpen(false);
+
+  // --- Archive / restore the current session ---
+  // The single archive action lives here, on the chat page, for the session
+  // being viewed. Toggling posts to the server, flips the button in place,
+  // and re-renders the sidebar so the session moves between the active list
+  // and the Archived folder. Sending a message unarchives server-side; the
+  // form handler at the bottom syncs the button back in that case.
+  const archiveBtn = document.getElementById('archive-btn');
+  function updateArchiveBtn() {
+    if (!archiveBtn) return;
+    const archived = archiveBtn.dataset.archived === 'true';
+    const label = document.getElementById('archive-btn-label');
+    if (label) label.textContent = archived ? '\u21a9 Restore' : '\u{1F5C4}\ufe0f Archive';
+    archiveBtn.title = archived
+      ? 'Restore this session to the active list'
+      : 'Archive this session (chatting with it unarchives)';
+    archiveBtn.setAttribute('aria-pressed', archived ? 'true' : 'false');
+  }
+  if (archiveBtn) {
+    archiveBtn.addEventListener('click', function() {
+      const id = activeSession;
+      if (!id) return;
+      const archived = archiveBtn.dataset.archived === 'true';
+      fetch('/api/sessions/' + encodeURIComponent(id) + (archived ? '/unarchive' : '/archive'), { method: 'POST' })
+        .then(resp => {
+          if (!resp.ok) return;
+          archiveBtn.dataset.archived = archived ? 'false' : 'true';
+          updateArchiveBtn();
+          renderSidebar(id);
+        })
+        .catch(function() {});
+    });
+  }
+  updateArchiveBtn();
 
   // Render the list on load (empty state has no active session). The New chat
   // flow navigates with ?session=, so a fresh load always refetches.
@@ -1228,11 +1337,19 @@
   };
 
   // After sending a message, clear the input and keep focus. The form only
-  // exists when a session is selected (the empty state has none).
+  // exists when a session is selected (the empty state has none). Sending a
+  // message to an archived session unarchives it server-side; when that
+  // happens, flip the page's archive button back to Archive and move the
+  // session back into the active sidebar list.
   if (form) {
-    form.addEventListener('htmx:afterRequest', function() {
+    form.addEventListener('htmx:afterRequest', function(evt) {
       input.value = '';
       input.focus();
+      if (evt.detail && evt.detail.successful && archiveBtn && archiveBtn.dataset.archived === 'true') {
+        archiveBtn.dataset.archived = 'false';
+        updateArchiveBtn();
+        renderSidebar(activeSession);
+      }
     });
   }
 })();

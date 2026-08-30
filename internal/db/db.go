@@ -22,7 +22,7 @@ var ErrNotFound = errors.New("db: session not found")
 
 // schemaVersion is the current schema revision, tracked in PRAGMA user_version.
 // Bump it and extend migrate when the schema changes.
-const schemaVersion = 6
+const schemaVersion = 7
 
 // DB wraps the SQLite database handle. It deliberately uses a single
 // connection: pragmas like foreign_keys are per-connection, and a single
@@ -196,6 +196,21 @@ ALTER TABLE queries DROP COLUMN input;
 			return fmt.Errorf("set user_version: %w", err)
 		}
 	}
+	if v < 7 {
+		// v7: `archived_at_epoch_ms` on sessions, so the web sidebar can fold
+		// archived sessions out of the active list. 0 = not archived; otherwise
+		// the epoch-ms time the session was archived (which also orders the
+		// Archived folder, most recently archived first). The units are in the
+		// column name, matching the created_at/started_at/finished_at
+		// epoch-ms convention.
+		const ddl = "ALTER TABLE sessions ADD COLUMN archived_at_epoch_ms INTEGER NOT NULL DEFAULT 0"
+		if _, err := d.db.Exec(ddl); err != nil {
+			return fmt.Errorf("apply schema v7: %w", err)
+		}
+		if _, err := d.db.Exec("PRAGMA user_version=7"); err != nil {
+			return fmt.Errorf("set user_version: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -232,20 +247,22 @@ type Query struct {
 // MaxSeq is the highest seq written, which is where a restarted session resumes
 // its bus position.
 type Session struct {
-	ID        int64
-	CreatedAt int64
-	Messages  []Message
-	Queries   []Query
-	MaxSeq    uint64
+	ID         int64
+	CreatedAt  int64
+	ArchivedAt int64
+	Messages   []Message
+	Queries    []Query
+	MaxSeq     uint64
 }
 
 // Summary is one row of the session list, newest first. FirstUser is the raw
 // content of the session's first user message (empty when the session has no
 // messages yet); truncation to a single-line preview is the caller's job.
 type Summary struct {
-	ID        int64
-	CreatedAt int64
-	FirstUser string
+	ID         int64
+	CreatedAt  int64
+	ArchivedAt int64
+	FirstUser  string
 }
 
 // boolInt converts a Go bool to the 0/1 integer SQLite stores booleans as.
@@ -328,7 +345,7 @@ func (d *DB) AppendQuery(sessionID int64, q Query) error {
 func (d *DB) LoadSession(id int64) (Session, error) {
 	var s Session
 	s.ID = id
-	if err := d.db.QueryRow("SELECT created_at FROM sessions WHERE id = ?", id).Scan(&s.CreatedAt); err != nil {
+	if err := d.db.QueryRow("SELECT created_at, archived_at_epoch_ms FROM sessions WHERE id = ?", id).Scan(&s.CreatedAt, &s.ArchivedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Session{}, ErrNotFound
 		}
@@ -401,13 +418,16 @@ func (d *DB) LoadSession(id int64) (Session, error) {
 // session's first user message (the sidebar preview source).
 func (d *DB) ListSessions() ([]Summary, error) {
 	rows, err := d.db.Query(`
-		SELECT s.id, s.created_at, COALESCE((
+		SELECT s.id, s.created_at, s.archived_at_epoch_ms, COALESCE((
 			SELECT m.content FROM messages m
 			WHERE m.session_id = s.id AND m.role = 'user'
 			ORDER BY m.seq ASC LIMIT 1
 		), '')
 		FROM sessions s
-		ORDER BY s.created_at DESC, s.id DESC`)
+		ORDER BY (s.archived_at_epoch_ms > 0) ASC,
+		         CASE WHEN s.archived_at_epoch_ms = 0 THEN s.created_at
+		              ELSE s.archived_at_epoch_ms END DESC,
+		         s.id DESC`)
 	if err != nil {
 		return nil, fmt.Errorf("list sessions: %w", err)
 	}
@@ -415,7 +435,7 @@ func (d *DB) ListSessions() ([]Summary, error) {
 	var out []Summary
 	for rows.Next() {
 		var s Summary
-		if err := rows.Scan(&s.ID, &s.CreatedAt, &s.FirstUser); err != nil {
+		if err := rows.Scan(&s.ID, &s.CreatedAt, &s.ArchivedAt, &s.FirstUser); err != nil {
 			return nil, fmt.Errorf("scan session: %w", err)
 		}
 		out = append(out, s)
@@ -424,4 +444,27 @@ func (d *DB) ListSessions() ([]Summary, error) {
 		return nil, fmt.Errorf("iterate sessions: %w", err)
 	}
 	return out, nil
+}
+
+// ArchiveSession marks a session archived at the given epoch-ms time, folding
+// it out of the active sidebar list and into the Archived folder (ordered by
+// this timestamp, most recently archived first). Archive is purely
+// organizational: history, running turns, and the event bus are unaffected.
+func (d *DB) ArchiveSession(id int64, at int64) error {
+	_, err := d.db.Exec("UPDATE sessions SET archived_at_epoch_ms = ? WHERE id = ?", at, id)
+	if err != nil {
+		return fmt.Errorf("archive session: %w", err)
+	}
+	return nil
+}
+
+// UnarchiveSession clears a session's archived flag, moving it back to the
+// active list. It is idempotent: unarchiving an already-active session is a
+// no-op update.
+func (d *DB) UnarchiveSession(id int64) error {
+	_, err := d.db.Exec("UPDATE sessions SET archived_at_epoch_ms = 0 WHERE id = ?", id)
+	if err != nil {
+		return fmt.Errorf("unarchive session: %w", err)
+	}
+	return nil
 }

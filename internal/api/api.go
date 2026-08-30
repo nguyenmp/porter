@@ -44,6 +44,13 @@ const (
 	// any running tool is stopped, and the turn ends with a stopped marker.
 	// POST.
 	SessionStopPath = "/api/sessions/{id}/stop"
+	// SessionArchivePath marks a session archived, folding it out of the
+	// active sidebar list and into the Archived folder: POST. Idempotent.
+	SessionArchivePath = "/api/sessions/{id}/archive"
+	// SessionUnarchivePath restores an archived session to the active list:
+	// POST. Idempotent. Sending any message to an archived session also
+	// unarchives it server-side, so this endpoint is the explicit button.
+	SessionUnarchivePath = "/api/sessions/{id}/unarchive"
 	// SessionExecContextPath registers the environment context of the connected
 	// execution provider (system, working directory, files, skills): POST.
 	SessionExecContextPath = "/api/sessions/{id}/exec/context"
@@ -219,6 +226,10 @@ type SessionSummary struct {
 	ID        string `json:"id"`
 	CreatedAt int64  `json:"created_at"`
 	Preview   string `json:"preview,omitempty"`
+	// ArchivedAt is the epoch-ms time the session was archived, or 0 when it
+	// is active. Omitted from the JSON for active sessions so the sidebar
+	// response stays terse.
+	ArchivedAt int64 `json:"archived_at,omitempty"`
 }
 
 // SessionsResponse is returned by GET /api/sessions, newest first. The server
