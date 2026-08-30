@@ -244,6 +244,21 @@
   // the live assistant message's _toolRuns map (see getRunByIndex) tracks those
   // pre-id runs and registers them here under the id once it arrives.
   const toolRuns = new Map();
+
+  // --- Client-side markdown (live streaming) ---
+  // Assistant output is markdown, but the server only renders the committed
+  // copy (message_html on message_committed, goldmark server-side). While a
+  // message streams we render markdown in the browser so the live view isn't
+  // plain text; the committed swap in finalizeAssistant stays authoritative.
+  // markdown-it with html:false escapes raw HTML instead of emitting it, so
+  // prompt-injected markup (<img onerror>, <iframe srcdoc>, ...) can never
+  // execute in the live view — the same guarantee goldmark's default renderer
+  // gives the committed copy. linkify:true + the task-lists plugin match
+  // goldmark's GFM extension.
+  const mdText = window.markdownit({ html: false, linkify: true }).use(window.markdownitTaskLists);
+  // Reasoning is the model's chain-of-thought: same renderer, but breaks:true
+  // preserves its newlines (the server ships reasoning as raw text and the
+  // client renders it, so there's no goldmark counterpart to match).
   // Single 100ms timer driving all running tool blocks; cleared when idle.
   let toolTimer = null;
   // Committed messages are replayed by the server whenever the SSE stream
@@ -380,11 +395,6 @@
   }
 
   // --- Collapsible reasoning ---
-  // Render a reasoning block's text as HTML (escaped, newlines to <br>).
-  function reasonHTML(s) {
-    return escapeHTML(s).replace(/\n/g, '<br>');
-  }
-
   // Build a reasoning element into the collapsible "show last line" block.
   // The full text is stored on the element (el._reasoningFull) and
   // renderReasoning() redraws the visible text from it, so the same element
@@ -412,8 +422,8 @@
   // Redraw the visible text from el._reasoningFull according to the current
   // collapsed/expanded state. Collapsed shows only the last non-blank line as a
   // single no-wrap row (CSS handles the ellipsis and truncation), with a "..."
-  // marker row above it when more non-blank lines are hidden; expanded shows
-  // the whole thing.
+  // marker row above it when more non-blank lines are hidden; expanded renders
+  // the whole thing through mdReasoning (markdown, line breaks preserved).
   function renderReasoning(el) {
     const text = el._reasoningFull || '';
     const textEl = el.querySelector('.reasoning-text');
@@ -422,7 +432,10 @@
     if (el._expanded) {
       el.classList.remove('reasoning-collapsed');
       moreEl.classList.remove('show');
-      textEl.innerHTML = reasonHTML(text);
+      // Expanded reasoning renders as markdown (mdReasoning, breaks:true so
+      // the model's line-oriented chain-of-thought keeps its line breaks).
+      // html:false keeps injected markup inert, same as the assistant path.
+      textEl.innerHTML = mdReasoning.render(text);
       el.querySelector('.reasoning-caret').textContent = '\u25bc';
       toggle.setAttribute('aria-expanded', 'true');
     } else {
@@ -490,6 +503,62 @@
       ensureAssistant().before(currentReasoning);
     }
     return currentReasoning;
+  }
+
+  // --- Live markdown streaming (segments) ---
+  // The live assistant msg-content interleaves markdown text with streaming
+  // tool-call blocks, so it can't be one innerHTML redraw without destroying
+  // the call blocks. Keep an ordered segment list (text runs + call runs) on
+  // the element: each frame we rebuild from it — text segments render through
+  // mdText, call segments re-append their live <details> blocks. State lives
+  // on the run objects (callEl / _toolRuns), so rebuilds are cheap and the
+  // segments survive the redraw untouched.
+  function textSegments(el) {
+    if (!el._mdSegments) el._mdSegments = [];
+    return el._mdSegments;
+  }
+
+  function appendTextDelta(el, delta) {
+    const segs = textSegments(el);
+    const last = segs[segs.length - 1];
+    if (last && last.type === 'text') last.text += delta;
+    else segs.push({ type: 'text', text: delta });
+  }
+
+  function ensureCallSegment(el, run) {
+    const segs = textSegments(el);
+    for (const seg of segs) {
+      if (seg.type === 'call' && seg.run === run) return seg;
+    }
+    const seg = { type: 'call', run: run };
+    segs.push(seg);
+    return seg;
+  }
+
+  // Coalesce redraws to one per animation frame: an LLM can emit many deltas
+  // per frame, and re-parsing the whole buffer each time would be wasteful.
+  function scheduleMarkdownRedraw(el) {
+    if (el._mdDirty) return;
+    el._mdDirty = true;
+    el._mdRAF = requestAnimationFrame(function() {
+      el._mdDirty = false;
+      redrawMarkdown(el);
+    });
+  }
+
+  function redrawMarkdown(el) {
+    const segs = el._mdSegments || [];
+    while (el.firstChild) el.removeChild(el.firstChild);
+    for (const seg of segs) {
+      if (seg.type === 'text') {
+        const d = document.createElement('div');
+        d.className = 'md-seg';
+        d.innerHTML = mdText.render(seg.text);
+        el.appendChild(d);
+      } else {
+        renderCall(seg.run, el);
+      }
+    }
   }
 
   function renderToolCalls(calls) {
@@ -574,7 +643,6 @@
       run.callEl = document.createElement('details');
       run.callEl.className = 'tool-call';
       run.callEl.innerHTML = '<summary class="tool-call-name"></summary><pre><code class="tool-call-args"></code></pre>';
-      contentEl.appendChild(run.callEl);
     }
     // The summary mirrors the tool-result header (name + args snippet) but with
     // no duration or exit status: this is a request, not a result.
@@ -582,6 +650,10 @@
                     (run.args ? ' ' + argsSnippet(run.args) : '');
     run.callEl.querySelector('.tool-call-name').textContent = summary;
     run.callEl.querySelector('.tool-call-args').textContent = run.args;
+    // Always re-append: redrawMarkdown detaches call blocks when it clears the
+    // msg-content, and appendChild on an already-attached node is a cheap
+    // no-op move, so this is safe on every path.
+    contentEl.appendChild(run.callEl);
   }
 
   // argsSnippet flattens a tool call's JSON arguments into a short single-line
@@ -823,12 +895,13 @@
 
   function finalizeAssistant(m, html) {
     // Replace the live text with the committed version (server-rendered
-    // markdown when supplied, escaped plaintext otherwise) and ensure tool
-    // calls are present. html is carried on the message_committed envelope so
-    // the committed copy matches exactly what /view renders on reload — single
-    // source of truth = goldmark on the server. The fallback only fires when
-    // no rendered copy is supplied (e.g. an older server or empty content).
-    const contentHTML = html || (m.content ? escapeHTML(m.content).replace(/\n/g, '<br>') : '');
+    // markdown when supplied) and ensure tool calls are present. html is
+    // carried on the message_committed envelope so the committed copy matches
+    // exactly what /view renders on reload — single source of truth = goldmark
+    // on the server. The fallback only fires when no rendered copy is supplied
+    // (e.g. an older server); it renders markdown client-side so it still
+    // matches, with html:false keeping injected markup inert.
+    const contentHTML = html || mdText.render(m.content || '');
     // Reasoning was already rendered live, chunk by chunk, when it streamed
     // (currentReasoning is set until here). A committed copy that arrives with
     // no live stream (SSE replay after a reconnect, or a reload) carries
@@ -848,6 +921,11 @@
         content._toolRuns.forEach(run => { run.callEl = null; });
         content._toolRuns = null;
       }
+      // Stop any pending live redraw: the committed copy replaces the streamed
+      // render, and a late frame must not rebuild the old segments on top.
+      if (content._mdRAF) cancelAnimationFrame(content._mdRAF);
+      content._mdDirty = false;
+      content._mdSegments = null;
       content.innerHTML = contentHTML;
       // Remove any stale tool-call details so we can re-render from the commit.
       div.querySelectorAll('.tool-call').forEach(el => el.remove());
@@ -934,7 +1012,13 @@
         const ev = env.event;
         if (!ev) break;
         if (ev.type === 'message_delta') {
-          ensureAssistant().insertAdjacentText('beforeend', ev.delta);
+          // Accumulate the raw markdown and redraw through mdText once per
+          // frame, so the live view shows styled markdown (headings, code,
+          // lists) instead of plain text. The committed copy rendered by the
+          // server (finalizeAssistant) remains the authoritative end state.
+          const contentEl = ensureAssistant();
+          appendTextDelta(contentEl, ev.delta);
+          scheduleMarkdownRedraw(contentEl);
           hadNewContent = true;
         } else if (ev.type === 'reasoning_delta') {
           // Accumulate the raw text and redraw: collapsed shows the live last line,
@@ -954,7 +1038,10 @@
           const run = getRunByIndex(contentEl, ev.index || 0, ev.tool_call_id);
           run.name = ev.name;
           run.args = ev.arguments;
-          renderCall(run, contentEl);
+          // Record the run as a call segment so the next markdown redraw keeps
+          // it (redraw rebuilds the msg-content from segments).
+          ensureCallSegment(contentEl, run);
+          scheduleMarkdownRedraw(contentEl);
           hadNewContent = true;
         } else if (ev.type === 'tool_call_delta') {
           // Streamed tool-call fragment: accumulate per-index state and redraw
@@ -965,7 +1052,8 @@
           const run = getRunByIndex(contentEl, index, ev.tool_call_id);
           if (ev.name) run.name = ev.name; // last non-empty wins, like the decoder
           run.args += ev.arguments;
-          renderCall(run, contentEl);
+          ensureCallSegment(contentEl, run);
+          scheduleMarkdownRedraw(contentEl);
           hadNewContent = true;
         }
         break;

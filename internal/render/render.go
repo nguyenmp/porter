@@ -1,7 +1,10 @@
 // Package render owns how message text becomes HTML for the web UI. It is the
-// single source of truth for both render paths — the initial history render
-// (GET /view) and the live SSE stream (message_committed envelopes) — so the
-// two can never drift apart. Assistant replies are markdown (rendered with
+// single source of truth for the committed render path — the initial history
+// render (GET /view) and the message_committed envelopes the live SSE stream
+// swaps in when a message finishes — so the two can never drift apart. The
+// live in-progress view is rendered client-side with markdown-it (see
+// index.tmpl) and is deliberately transient: the server-rendered committed
+// copy replaces it on commit. Assistant replies are markdown (rendered with
 // goldmark); user messages and tool output are escaped plaintext with <br>
 // line breaks.
 package render

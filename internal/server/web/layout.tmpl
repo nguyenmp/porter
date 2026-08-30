@@ -6,6 +6,11 @@
 	<title>{{.Title}}</title>
 	<script src="https://unpkg.com/htmx.org@2.0.6"></script>
 	<script src="https://unpkg.com/htmx-ext-sse@2.2.2/sse.js"></script>
+	<!-- markdown-it renders the live streaming view client-side (the server
+	     renders the committed copy with goldmark). Vendored into the embedded
+	     web/ dir so the binary stays self-contained; served from /web/*. -->
+	<script src="/web/markdown-it.min.js"></script>
+	<script src="/web/markdown-it-task-lists.min.js"></script>
 	<style>
 		html, body { height: 100%; }
 		body { font-family: sans-serif; margin: 0; overflow: hidden; }
@@ -99,6 +104,15 @@
 		.msg-content ul, .msg-content ol { padding-left: 1.5em; }
 		.msg-content blockquote { border-left: 3px solid #ccc; margin: 0.5em 0; padding-left: 1em; color: #666; }
 		.msg-content h1, .msg-content h2, .msg-content h3 { margin: 0.5em 0 0.3em; }
+		/* Live-streamed markdown is rendered per segment (.md-seg) while the
+		   committed copy is one contiguous block, so normalize the first/last
+		   element margins to match .msg-content p:first-child/:last-child and
+		   avoid the text jumping on the final swap. */
+		.msg-content .md-seg > :first-child { margin-top: 0; }
+		.msg-content .md-seg:last-child > :last-child { margin-bottom: 0; }
+		/* GFM task lists (markdown-it-task-lists): drop the bullets and the
+		   list indent so checkboxes align like goldmark's committed output. */
+		.msg-content ul.contains-task-list { list-style: none; padding-left: 0.2em; }
 		/* Message form */
 		.msg-form { display: flex; gap: 0.5rem; width: 100%; max-width: 1000px; margin: 0 auto; padding: 1rem 0.5rem; box-sizing: border-box; }
 		.msg-form input[type="text"] { flex: 1; padding: 0.5rem; border: 1px solid #ccc; border-radius: 4px; font-size: 1rem; }

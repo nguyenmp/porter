@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"html/template"
+	"io/fs"
 	"log"
 	"net/http"
 	"strconv"
@@ -29,6 +30,17 @@ import (
 
 //go:embed web
 var webFS embed.FS
+
+// mustSub returns an fs.FS rooted at sub within webFS, panicking on failure.
+// webFS is embedded at build time, so the only failure mode is a typo in the
+// subdirectory name, which should fail loudly at startup.
+func mustSub(fsys embed.FS, dir string) fs.FS {
+	sub, err := fs.Sub(fsys, dir)
+	if err != nil {
+		panic(err)
+	}
+	return sub
+}
 
 // nl2br converts newlines to <br> tags after HTML-escaping. Used in the view
 // template to render plaintext (user messages) with line breaks. It is a thin
@@ -259,6 +271,10 @@ func (s *Server) ListenAndServe() error {
 func (s *Server) Handler() http.Handler {
 	r := chi.NewRouter()
 	r.Get("/", s.handleIndex)
+	// Static assets for the web UI (vendored client libraries). webFS embeds
+	// the whole web/ directory, so markdown-it ships inside the binary; /web/*
+	// serves it with the directory prefix stripped.
+	r.Handle("/web/*", http.StripPrefix("/web/", http.FileServer(http.FS(mustSub(webFS, "web")))))
 	r.Get(api.SessionsPath, s.handleList)
 	r.Post(api.SessionsPath, s.handleCreate)
 	r.Post(api.SessionMessagesPath, s.handleAppend)
