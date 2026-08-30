@@ -168,6 +168,17 @@ func (c *Client) Subscribe(ctx context.Context, id string, since uint64, onEvent
 	return nil
 }
 
+// ExecConn is the identity a client registers under when it connects as a
+// session's execution provider: ID is the stable id the selector addresses
+// (e.g. the hostname), Name is the human-readable label shown in the picker,
+// and Kind is "remote" (cloud providers later). A zero ExecConn registers
+// under a server-generated id, for legacy clients.
+type ExecConn struct {
+	ID   string
+	Name string
+	Kind string
+}
+
 // ServeExec registers this client as the session's execution provider and
 // blocks, reading exec requests from the server and running each via dispatch.
 // It streams the output back to the server. Each request runs in its own
@@ -176,8 +187,25 @@ func (c *Client) Subscribe(ctx context.Context, id string, since uint64, onEvent
 // command is in flight); cancelling aborts the running command's context,
 // which for the local dispatcher kills its process group. It returns when the
 // connection ends (or ctx is cancelled); callers should retry to re-register.
-func (c *Client) ServeExec(ctx context.Context, id string, dispatch func(ctx context.Context, name string, args []byte) (io.ReadCloser, error)) error {
+// An optional ExecConn names the provider in the session's registry (the web
+// picker); callers that pass none are registered under a server-generated id.
+func (c *Client) ServeExec(ctx context.Context, id string, dispatch func(ctx context.Context, name string, args []byte) (io.ReadCloser, error), conn ...ExecConn) error {
 	u := c.path(api.SessionExecPath, id)
+	if len(conn) > 0 {
+		q := url.Values{}
+		if conn[0].ID != "" {
+			q.Set("id", conn[0].ID)
+		}
+		if conn[0].Name != "" {
+			q.Set("name", conn[0].Name)
+		}
+		if conn[0].Kind != "" {
+			q.Set("kind", conn[0].Kind)
+		}
+		if len(q) > 0 {
+			u += "?" + q.Encode()
+		}
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return fmt.Errorf("build exec: %w", err)

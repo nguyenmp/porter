@@ -51,6 +51,20 @@
 			</div>
 			<button id="follow-btn" type="button" hidden>Follow new output</button>
 		</div>
+		{{/* Execution provider picker: shows where this session's commands run
+		     (the local server or a connected client like the REPL on a laptop)
+		     and lets the user switch. Seeded from GET /exec/status on page load
+		     (exec_status envelopes are live-only, never replayed), then kept
+		     live by exec_status envelopes. */}}
+		<div id="exec-bar" class="exec-bar">
+			<span class="exec-label">Commands run on</span>
+			<button type="button" id="exec-picker-btn" class="exec-picker-btn"
+			        aria-haspopup="listbox" aria-expanded="false" title="Choose where commands run">
+				<span id="exec-picker-name">local</span>
+				<span class="exec-caret">&#9662;</span>
+			</button>
+			<div id="exec-picker" class="exec-picker" role="listbox" hidden></div>
+		</div>
 		<div id="sse-processor"
 		     hx-ext="sse"
 		     sse-connect="/api/sessions/{{.Session}}/stream?since={{.Seq}}"
@@ -268,12 +282,9 @@
     } else if (queueDepth > 0) {
       text = queueDepth + ' queued';
       cls = 'status-run';
-    } else if (execProvider && execProvider.kind === 'remote') {
-      // A remote execution provider is connected; surface it (with its cwd) so
-      // the user knows where commands actually run.
-      text = 'exec: ' + (execProvider.context && execProvider.context.cwd ? execProvider.context.cwd : 'remote');
-      cls = 'status-ok';
     } else {
+      // The sidebar shows connection/turn status only; where commands run is
+      // the execution picker's job, below the chat.
       text = 'connected';
       cls = 'status-ok';
     }
@@ -284,6 +295,135 @@
   }
 
   updateStatus();
+
+  // --- Execution provider picker ---
+  // A bar below the chat shows where the session's commands run (the local
+  // server or a connected client like the REPL on a laptop) and lets the user
+  // switch. It is seeded from GET /exec/status on page load — exec_status
+  // envelopes are live-only, never replayed from history, so a provider that
+  // connected before the page loaded must be fetched — then reconciled live
+  // from exec_status envelopes via renderExecPicker. Switching posts to
+  // /exec/select; the server commits a system notice (so the model sees the
+  // change) and broadcasts the authoritative status back.
+  const execBar = document.getElementById('exec-bar');
+  const execPickerBtn = document.getElementById('exec-picker-btn');
+  const execPickerName = document.getElementById('exec-picker-name');
+  const execPicker = document.getElementById('exec-picker');
+
+  // execSystemShort trims the parenthetical detail off a reported system
+  // ("darwin/arm64 (macOS — BSD userland…)" -> "darwin/arm64").
+  function execSystemShort(system) {
+    if (!system) return '';
+    const i = system.indexOf(' (');
+    return i > 0 ? system.slice(0, i) : system;
+  }
+
+  // clientDetail renders a provider's "system @ cwd" line for the picker row.
+  function clientDetail(c) {
+    const ctx = c.context || {};
+    const parts = [];
+    const sys = execSystemShort(ctx.system);
+    if (sys) parts.push(sys);
+    if (ctx.cwd) parts.push(ctx.cwd);
+    return parts.join(' @ ') || '…';
+  }
+
+  // renderExecPicker redraws the picker from an ExecStatus payload: the button
+  // names the active provider, and the popover lists every provider (local
+  // first, then connected clients) with the active one checked.
+  function renderExecPicker(status) {
+    if (!execBar || !status) return;
+    execProvider = status;
+    const clients = Array.isArray(status.clients) ? status.clients : [];
+    const activeId = status.active_id || 'local';
+    const active = clients.find(function(c) { return c.id === activeId; });
+    if (execPickerName) {
+      execPickerName.textContent = (active && (active.name || active.id)) || 'local';
+    }
+    if (!execPicker) return;
+    execPicker.innerHTML = '';
+    for (const c of clients) {
+      const name = c.name || c.id || 'provider';
+      const isActive = c.id === activeId;
+      const row = document.createElement('button');
+      row.type = 'button';
+      row.className = 'exec-picker-row' + (isActive ? ' active' : '');
+      row.setAttribute('role', 'option');
+      row.setAttribute('aria-selected', isActive ? 'true' : 'false');
+      row.dataset.execId = c.id;
+      const nameLine = document.createElement('span');
+      nameLine.className = 'row-name';
+      const kind = document.createElement('span');
+      kind.className = 'row-kind';
+      kind.textContent = c.kind || 'remote';
+      nameLine.appendChild(kind);
+      nameLine.appendChild(document.createTextNode(' ' + name));
+      if (isActive) {
+        const check = document.createElement('span');
+        check.className = 'row-check';
+        check.textContent = '✓';
+        nameLine.appendChild(check);
+      }
+      row.appendChild(nameLine);
+      const detail = document.createElement('div');
+      detail.className = 'row-detail';
+      detail.textContent = clientDetail(c);
+      row.appendChild(detail);
+      row.addEventListener('click', function() { selectExec(c.id); });
+      execPicker.appendChild(row);
+    }
+  }
+
+  // selectExec posts the user's choice to /exec/select and closes the popover.
+  // The server's exec_status broadcast re-renders the picker authoritatively.
+  function selectExec(id) {
+    const sess = app ? app.dataset.session : null;
+    if (!sess) return;
+    closeExecPicker();
+    fetch('/api/sessions/' + encodeURIComponent(sess) + '/exec/select', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: id })
+    }).catch(function() {});
+  }
+
+  function openExecPicker() {
+    if (!execPicker || !execPickerBtn) return;
+    execPicker.hidden = false;
+    execPickerBtn.setAttribute('aria-expanded', 'true');
+  }
+  function closeExecPicker() {
+    if (!execPicker || !execPickerBtn) return;
+    execPicker.hidden = true;
+    execPickerBtn.setAttribute('aria-expanded', 'false');
+  }
+  function toggleExecPicker() {
+    if (!execPicker) return;
+    if (execPicker.hidden) openExecPicker(); else closeExecPicker();
+  }
+
+  if (execPickerBtn) {
+    execPickerBtn.addEventListener('click', function(evt) {
+      evt.stopPropagation();
+      toggleExecPicker();
+    });
+  }
+  // A click outside the bar closes the popover; Escape closes it too.
+  document.addEventListener('click', function(evt) {
+    if (execBar && !execBar.contains(evt.target)) closeExecPicker();
+  });
+  document.addEventListener('keydown', function(evt) {
+    if (evt.key === 'Escape') closeExecPicker();
+  });
+
+  // Seed on load: fetch the current provider status. The button shows "local"
+  // until then; exec_status envelopes keep it live afterward.
+  if (app && app.dataset.session) {
+    fetch('/api/sessions/' + encodeURIComponent(app.dataset.session) + '/exec/status')
+      .then(function(resp) { return resp.ok ? resp.json() : null; })
+      .then(function(status) { if (status) renderExecPicker(status); })
+      .catch(function() {});
+  }
 
   // Stop button: POST to the session's stop endpoint to abort the running
   // turn. The server commits any partial reply (marked interrupted), stops any
@@ -1240,13 +1380,14 @@
         hadNewContent = true;
         break;
 		case 'exec_status':
-		  // The session's execution provider changed (connected, disconnected, or
-		  // swapped in). Update the sidebar status line with a live hint; the
-		  // committed system notice carries the human-readable text.
+		  // The session's execution provider changed (connected, disconnected,
+		  // or swapped in). Re-render the picker from the authoritative
+		  // registry; the committed system notice carries the human-readable
+		  // text in history.
 		  const es = env.exec_status;
 		  if (es) {
 		    execProvider = es;
-		    updateStatus();
+		    renderExecPicker(es);
 		  }
 		  break;
 	      case 'resync':

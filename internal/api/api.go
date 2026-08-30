@@ -57,6 +57,9 @@ const (
 	// SessionExecStatusPath returns the session's current execution provider
 	// status (connected/local + its reported context): GET.
 	SessionExecStatusPath = "/api/sessions/{id}/exec/status"
+	// SessionExecSelectPath switches the session's active execution provider
+	// to the client named in the body ("local" for the server process): POST.
+	SessionExecSelectPath = "/api/sessions/{id}/exec/select"
 )
 
 // ExecRequest is one message the server pushes to a session's execution
@@ -253,20 +256,48 @@ type Skill struct {
 // connects: what system it runs on, the working directory, files there, and
 // the skills it can load. The server injects it into the model's context and
 // exposes a load_skill tool backed by the reported skills, so the model knows
-// where commands will run and what skills exist without guessing.
+// where commands will run and what skills exist without guessing. ID/Name
+// identify the reporting client so the server can attach the context to the
+// right registry entry; the REPL posts its context before opening the exec
+// connection, so these fields are how the context finds its client.
 type ExecContext struct {
+	ID     string   `json:"id,omitempty"`
+	Name   string   `json:"name,omitempty"`
 	System string   `json:"system"`
 	CWD    string   `json:"cwd"`
 	Files  []string `json:"files"`
 	Skills []Skill  `json:"skills"`
 }
 
-// ExecStatus describes a session's current execution provider. Connected
-// reports whether a remote execution client is registered; Kind is "remote"
-// when one is, else "local". Context is the environment the connected provider
-// reported, set only while it is connected.
+// ExecClient describes one execution provider a session can run tools with:
+// the local server process (always present) or a connected remote client.
+// Name is a human-readable label (e.g. the client's hostname), shown in the
+// picker; ID is the stable identity the selector addresses.
+type ExecClient struct {
+	ID        string       `json:"id"`
+	Name      string       `json:"name,omitempty"`
+	Kind      string       `json:"kind"` // "local" | "remote" (future: "cloud")
+	Connected bool         `json:"connected"`
+	Context   *ExecContext `json:"context,omitempty"`
+}
+
+// ExecStatus describes a session's execution provider state. Connected
+// reports whether the active provider is a remote execution client; Kind is
+// "remote" when one is active, else "local". Context is the environment the
+// active provider reported (the local server's own context when local is
+// active). ActiveID is the id of the active provider ("local" for the server
+// process), and Clients is the full registry of providers the selector
+// renders — local plus every connected remote client.
 type ExecStatus struct {
 	Connected bool         `json:"connected"`
 	Kind      string       `json:"kind"`
 	Context   *ExecContext `json:"context,omitempty"`
+	ActiveID  string       `json:"active_id,omitempty"`
+	Clients   []ExecClient `json:"clients,omitempty"`
+}
+
+// ExecSelectRequest is the body of POST /api/sessions/{id}/exec/select. ID is
+// the execution client to make active; "local" selects the server process.
+type ExecSelectRequest struct {
+	ID string `json:"id"`
 }

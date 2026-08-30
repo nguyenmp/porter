@@ -3221,3 +3221,147 @@ func TestIndexArchiveButtonState(t *testing.T) {
 		t.Errorf("archived session page should show the Restore action")
 	}
 }
+
+// TestExecSelectEndpoint verifies POST /exec/select end to end: two named
+// clients connect, the second takes over (as before the registry), and
+// selecting the first via the endpoint switches the active provider without
+// either client disconnecting.
+func TestExecSelectEndpoint(t *testing.T) {
+	srv := newTestServer(t, plainLLM())
+	c := client.New(srv.URL)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	info, err := c.Create(ctx)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// Two execution providers with distinct identities and contexts. Each is
+	// connected and verified in turn, so the takeover order is deterministic.
+	laptopCtx, laptopCancel := context.WithCancel(ctx)
+	defer laptopCancel()
+	go func() {
+		_ = c.ServeExec(laptopCtx, info.ID, tools.NewDispatcher().Run,
+			client.ExecConn{ID: "laptop", Name: "laptop", Kind: "remote"})
+	}()
+	time.Sleep(150 * time.Millisecond)
+
+	st, err := c.ExecStatus(ctx, info.ID)
+	if err != nil {
+		t.Fatalf("ExecStatus: %v", err)
+	}
+	if st.ActiveID != "laptop" || !st.Connected {
+		t.Fatalf("status after laptop connect = %+v, want laptop active/connected", st)
+	}
+
+	serverCtx, serverCancel := context.WithCancel(ctx)
+	defer serverCancel()
+	go func() {
+		_ = c.ServeExec(serverCtx, info.ID, tools.NewDispatcher().Run,
+			client.ExecConn{ID: "server", Name: "server", Kind: "remote"})
+	}()
+	time.Sleep(150 * time.Millisecond)
+
+	// The second connection (server) takes over, and the status lists both.
+	st, err = c.ExecStatus(ctx, info.ID)
+	if err != nil {
+		t.Fatalf("ExecStatus: %v", err)
+	}
+	if st.ActiveID != "server" || !st.Connected {
+		t.Errorf("status after connects = %+v, want server active/connected", st)
+	}
+	if len(st.Clients) != 3 {
+		t.Errorf("clients = %d, want 3 (local + laptop + server)", len(st.Clients))
+	}
+
+	// Select the laptop through the endpoint.
+	body, _ := json.Marshal(api.ExecSelectRequest{ID: "laptop"})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		srv.URL+"/api/sessions/"+info.ID+"/exec/select", strings.NewReader(string(body)))
+	if err != nil {
+		t.Fatalf("build select request: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("select request: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("select status = %d, want 200", resp.StatusCode)
+	}
+
+	st, err = c.ExecStatus(ctx, info.ID)
+	if err != nil {
+		t.Fatalf("ExecStatus after select: %v", err)
+	}
+	if st.ActiveID != "laptop" || !st.Connected {
+		t.Errorf("status after select = %+v, want laptop active/connected", st)
+	}
+	if len(st.Clients) != 3 {
+		t.Errorf("clients after select = %d, want 3 (both remotes still connected)", len(st.Clients))
+	}
+
+	// Selecting an unknown provider is rejected.
+	body, _ = json.Marshal(api.ExecSelectRequest{ID: "ghost"})
+	req, _ = http.NewRequestWithContext(ctx, http.MethodPost,
+		srv.URL+"/api/sessions/"+info.ID+"/exec/select", strings.NewReader(string(body)))
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("ghost select request: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("ghost select status = %d, want 404", resp.StatusCode)
+	}
+}
+
+// TestWebRendersExecPicker verifies the chat page renders the execution
+// picker: the "Commands run on" bar below the chat, seeded by the status
+// endpoint's registry (local + connected clients with the active id).
+func TestWebRendersExecPicker(t *testing.T) {
+	srv := newTestServer(t, plainLLM())
+	c := client.New(srv.URL)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	info, err := c.Create(ctx)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	// A named remote provider with context, so the picker has something to show
+	// besides local.
+	execCtx := api.ExecContext{ID: "laptop", Name: "laptop", System: "darwin/arm64", CWD: "/Users/mark"}
+	if err := c.PostExecContext(ctx, info.ID, execCtx); err != nil {
+		t.Fatalf("PostExecContext: %v", err)
+	}
+	execCtx2, execCancel := context.WithCancel(ctx)
+	go func() {
+		_ = c.ServeExec(execCtx2, info.ID, tools.NewDispatcher().Run, client.ExecConn{ID: "laptop", Name: "laptop", Kind: "remote"})
+	}()
+	time.Sleep(150 * time.Millisecond)
+	defer func() { execCancel(); time.Sleep(50 * time.Millisecond) }()
+
+	// The status endpoint carries the registry the picker renders.
+	st, err := c.ExecStatus(ctx, info.ID)
+	if err != nil {
+		t.Fatalf("ExecStatus: %v", err)
+	}
+	if st.ActiveID != "laptop" || len(st.Clients) != 2 {
+		t.Errorf("status = %+v, want laptop active with local + laptop clients", st)
+	}
+
+	// The chat page renders the picker bar and button.
+	resp, err := http.Get(srv.URL + "/?session=" + info.ID)
+	if err != nil {
+		t.Fatalf("GET /: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	page := string(body)
+	for _, want := range []string{"Commands run on", "exec-picker-btn", "exec-picker", "exec/status", "exec/select"} {
+		if !strings.Contains(page, want) {
+			t.Errorf("index missing %q in the picker; got:\n%s", want, page[:600])
+		}
+	}
+}

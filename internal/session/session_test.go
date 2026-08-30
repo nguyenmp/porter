@@ -231,9 +231,15 @@ func TestSetProviderDefaultsToLocal(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
+	// With no remote client connected, the provider is the local one: it runs
+	// tools in the server process and reports the server's own environment, so
+	// "local" is a first-class provider rather than an anonymous fallback.
 	p := s.provider()
-	if _, ok := p.(*tools.Dispatcher); !ok {
-		t.Errorf("default provider = %T, want *tools.Dispatcher", p)
+	if _, ok := p.(*localProvider); !ok {
+		t.Errorf("default provider = %T, want *localProvider", p)
+	}
+	if env := p.Environment(); !strings.Contains(env, "Working directory") {
+		t.Errorf("local provider environment = %q, want the server's context", env)
 	}
 
 	registered := &tools.Dispatcher{}
@@ -441,7 +447,7 @@ func TestExecStatusReflectsProvider(t *testing.T) {
 
 	s.SetExecContext(api.ExecContext{System: "linux/amd64", CWD: "/work", Files: []string{"README.md"}})
 	ch := make(chan api.ExecRequest, 1)
-	s.RegisterExec(ch)
+	id := s.RegisterExec(ch, "", "", "")
 
 	st := s.ExecStatus()
 	if !st.Connected || st.Kind != "remote" {
@@ -451,7 +457,7 @@ func TestExecStatusReflectsProvider(t *testing.T) {
 		t.Errorf("registered status context = %+v, want the reported cwd", st.Context)
 	}
 
-	s.UnregisterExec()
+	s.UnregisterExec(id)
 	if st := s.ExecStatus(); st.Connected || st.Kind != "local" {
 		t.Errorf("after unregister status = %+v, want local/disconnected", st)
 	}
@@ -463,8 +469,8 @@ func TestExecStatusReflectsProvider(t *testing.T) {
 func TestProviderChangeCommitsSystemNotices(t *testing.T) {
 	s := newTestSession(t, "s")
 	s.SetExecContext(api.ExecContext{System: "linux/amd64", CWD: "/work"})
-	s.RegisterExec(make(chan api.ExecRequest, 1))
-	s.UnregisterExec()
+	id := s.RegisterExec(make(chan api.ExecRequest, 1), "", "", "")
+	s.UnregisterExec(id)
 
 	snap := s.Snapshot()
 	if len(snap.History) != 2 {
@@ -499,8 +505,8 @@ func TestProviderChangePublishesStatus(t *testing.T) {
 		}
 	}()
 
-	s.RegisterExec(make(chan api.ExecRequest, 1))
-	s.UnregisterExec()
+	id := s.RegisterExec(make(chan api.ExecRequest, 1), "", "", "")
+	s.UnregisterExec(id)
 
 	// Give the publish goroutine a moment, then stop the stream.
 	time.Sleep(50 * time.Millisecond)
@@ -526,7 +532,7 @@ func TestRemoteProviderDefsAndEnvironmentFromContext(t *testing.T) {
 
 	// No context yet: remote provider (once registered) exposes only shell and
 	// no environment.
-	s.RegisterExec(make(chan api.ExecRequest, 1))
+	id := s.RegisterExec(make(chan api.ExecRequest, 1), "", "", "")
 	p := s.provider()
 	if len(p.Defs()) != 1 {
 		t.Errorf("Defs with no context = %d tools, want 1 (shell)", len(p.Defs()))
@@ -534,7 +540,7 @@ func TestRemoteProviderDefsAndEnvironmentFromContext(t *testing.T) {
 	if env := p.Environment(); env != "" {
 		t.Errorf("Environment with no context = %q, want empty", env)
 	}
-	s.UnregisterExec()
+	s.UnregisterExec(id)
 
 	// With a skill reported, the same provider exposes load_skill and a context
 	// system message mentioning the skill and cwd.
@@ -544,7 +550,7 @@ func TestRemoteProviderDefsAndEnvironmentFromContext(t *testing.T) {
 		Files:  []string{"README.md"},
 		Skills: []api.Skill{{Name: "my-skill", Description: "does things", Path: "/work/skills/my-skill/SKILL.md"}},
 	})
-	s.RegisterExec(make(chan api.ExecRequest, 1))
+	id = s.RegisterExec(make(chan api.ExecRequest, 1), "", "", "")
 	p = s.provider()
 	defs := p.Defs()
 	if len(defs) != 2 || defs[1].Function.Name != "load_skill" {
@@ -742,5 +748,208 @@ func TestStoreArchiveUnarchive(t *testing.T) {
 	}
 	if err := st.Unarchive("session_9999"); err != db.ErrNotFound {
 		t.Errorf("Unarchive unknown = %v, want db.ErrNotFound", err)
+	}
+}
+
+// TestExecStatusListsAllClients verifies the status carries the full registry —
+// local plus every connected client, with the active id — so the web picker
+// can render every provider without polling.
+func TestExecStatusListsAllClients(t *testing.T) {
+	s := newTestSession(t, "s")
+	s.RegisterExec(make(chan api.ExecRequest, 1), "laptop", "laptop", "remote")
+	s.RegisterExec(make(chan api.ExecRequest, 1), "server", "server", "remote")
+
+	st := s.ExecStatus()
+	if st.ActiveID != "server" {
+		t.Errorf("active after connects = %q, want server (last connect takes over)", st.ActiveID)
+	}
+	if len(st.Clients) != 3 {
+		t.Fatalf("clients = %d, want 3 (local + laptop + server)", len(st.Clients))
+	}
+	// Local is always present and listed first.
+	if st.Clients[0].ID != "local" || !st.Clients[0].Connected {
+		t.Errorf("clients[0] = %+v, want the local provider first", st.Clients[0])
+	}
+	seen := map[string]bool{}
+	for _, c := range st.Clients {
+		seen[c.ID] = true
+	}
+	for _, want := range []string{"local", "laptop", "server"} {
+		if !seen[want] {
+			t.Errorf("clients missing %q: %+v", want, st.Clients)
+		}
+	}
+}
+
+// TestSelectExecSwitchesActiveProvider is the picker's core: selecting a
+// connected client makes it the active provider (the model's Environment
+// switches to it), the deselected client stays registered (no reconnect
+// needed to switch back), and selecting local runs tools in the server process
+// while remotes stay connected.
+func TestSelectExecSwitchesActiveProvider(t *testing.T) {
+	s := newTestSession(t, "s")
+	s.SetExecContext(api.ExecContext{ID: "laptop", System: "darwin/arm64", CWD: "/Users/mark"})
+	s.RegisterExec(make(chan api.ExecRequest, 1), "laptop", "laptop", "remote")
+	s.SetExecContext(api.ExecContext{ID: "server", System: "linux/amd64", CWD: "/app"})
+	s.RegisterExec(make(chan api.ExecRequest, 1), "server", "server", "remote")
+
+	// The second client to connect takes over, same as before the registry.
+	if st := s.ExecStatus(); st.ActiveID != "server" {
+		t.Errorf("active after connects = %q, want server", st.ActiveID)
+	}
+	if env := s.provider().Environment(); !strings.Contains(env, "/app") {
+		t.Errorf("environment after connects = %q, want the server context", env)
+	}
+
+	// Select the laptop: the provider's environment switches to it, and both
+	// remotes remain in the registry (the laptop never disconnected).
+	if err := s.SelectExec("laptop"); err != nil {
+		t.Fatalf("SelectExec(laptop): %v", err)
+	}
+	st := s.ExecStatus()
+	if st.ActiveID != "laptop" {
+		t.Errorf("active after select = %q, want laptop", st.ActiveID)
+	}
+	if env := s.provider().Environment(); !strings.Contains(env, "/Users/mark") {
+		t.Errorf("environment after select = %q, want the laptop context", env)
+	}
+	if len(st.Clients) != 3 {
+		t.Errorf("clients after select = %d, want 3 (local + laptop + server)", len(st.Clients))
+	}
+
+	// Select local: tools run in the server process; the remotes stay listed.
+	if err := s.SelectExec("local"); err != nil {
+		t.Fatalf("SelectExec(local): %v", err)
+	}
+	st = s.ExecStatus()
+	if st.ActiveID != "local" || st.Connected {
+		t.Errorf("after select local = %+v, want local/disconnected", st)
+	}
+	if _, ok := s.provider().(*localProvider); !ok {
+		t.Errorf("provider after select local = %T, want *localProvider", s.provider())
+	}
+	if len(st.Clients) != 3 {
+		t.Errorf("clients after select local = %d, want 3 (remotes still connected)", len(st.Clients))
+	}
+
+	// And back to the laptop: it was standing by the whole time.
+	if err := s.SelectExec("laptop"); err != nil {
+		t.Fatalf("SelectExec(laptop) again: %v", err)
+	}
+	if st := s.ExecStatus(); st.ActiveID != "laptop" {
+		t.Errorf("active after reselect = %q, want laptop", st.ActiveID)
+	}
+}
+
+// TestSelectExecErrorsOnUnknown verifies selecting a provider that isn't
+// connected is rejected, and selecting the already-active provider is a no-op
+// success (no error, no duplicate notice).
+func TestSelectExecErrorsOnUnknown(t *testing.T) {
+	s := newTestSession(t, "s")
+	if err := s.SelectExec("ghost"); err == nil {
+		t.Error("SelectExec(ghost) = nil, want error for an unknown client")
+	}
+	if err := s.SelectExec("local"); err != nil {
+		t.Errorf("SelectExec(local) when already active = %v, want nil", err)
+	}
+}
+
+// TestSelectExecCommitsSystemNotices verifies selecting a provider commits a
+// short role-"system" notice naming it, so the model sees the environment
+// change on its next turn.
+func TestSelectExecCommitsSystemNotices(t *testing.T) {
+	s := newTestSession(t, "s")
+	s.SetExecContext(api.ExecContext{ID: "laptop", System: "darwin/arm64", CWD: "/Users/mark"})
+	s.RegisterExec(make(chan api.ExecRequest, 1), "laptop", "laptop", "remote")
+
+	if err := s.SelectExec("local"); err != nil {
+		t.Fatalf("SelectExec(local): %v", err)
+	}
+	snap := s.Snapshot()
+	last := snap.History[len(snap.History)-1]
+	if last.Role != "system" || !strings.Contains(last.Content, "execution provider") || !strings.Contains(last.Content, "local") {
+		t.Errorf("select-local notice = %+v, want a system notice naming local", last)
+	}
+
+	if err := s.SelectExec("laptop"); err != nil {
+		t.Fatalf("SelectExec(laptop): %v", err)
+	}
+	snap = s.Snapshot()
+	last = snap.History[len(snap.History)-1]
+	if last.Role != "system" || !strings.Contains(last.Content, "laptop") || !strings.Contains(last.Content, "darwin/arm64") {
+		t.Errorf("select-laptop notice = %+v, want a system notice naming the laptop", last)
+	}
+}
+
+// TestUnregisterNonActiveKeepsActiveProvider verifies a standby client's
+// disconnect doesn't change the active provider — it just drops out of the
+// registry — while the active client's disconnect reverts to local.
+func TestUnregisterNonActiveKeepsActiveProvider(t *testing.T) {
+	s := newTestSession(t, "s")
+	laptop := s.RegisterExec(make(chan api.ExecRequest, 1), "laptop", "laptop", "remote")
+	server := s.RegisterExec(make(chan api.ExecRequest, 1), "server", "server", "remote")
+
+	s.UnregisterExec(laptop)
+	st := s.ExecStatus()
+	if st.ActiveID != "server" {
+		t.Errorf("active after standby disconnect = %q, want server", st.ActiveID)
+	}
+	if len(st.Clients) != 2 {
+		t.Errorf("clients after standby disconnect = %d, want 2 (local + server)", len(st.Clients))
+	}
+
+	s.UnregisterExec(server)
+	st = s.ExecStatus()
+	if st.ActiveID != "local" || st.Connected {
+		t.Errorf("after active disconnect = %+v, want local/disconnected", st)
+	}
+	if len(st.Clients) != 1 {
+		t.Errorf("clients after active disconnect = %d, want 1 (local only)", len(st.Clients))
+	}
+}
+
+// TestRemoteProviderRunsOnActiveClient verifies tool calls route to the active
+// client's channel only: a deselected client's channel receives nothing, and
+// switching selection routes the next call to the newly active client.
+func TestRemoteProviderRunsOnActiveClient(t *testing.T) {
+	s := newTestSession(t, "s")
+	laptopCh := make(chan api.ExecRequest, 4)
+	serverCh := make(chan api.ExecRequest, 4)
+	s.RegisterExec(laptopCh, "laptop", "laptop", "remote")
+	s.RegisterExec(serverCh, "server", "server", "remote")
+
+	rc, err := s.provider().Run(context.Background(), "shell", []byte(`{"command":"pwd"}`))
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	defer rc.Close()
+
+	select {
+	case req := <-serverCh:
+		if req.Name != "shell" {
+			t.Errorf("server got call %q, want shell", req.Name)
+		}
+	default:
+		t.Error("active server client never received the call")
+	}
+	select {
+	case <-laptopCh:
+		t.Error("standby laptop client received a call; only the active provider should")
+	default:
+	}
+
+	// Switching to the laptop routes the next call there.
+	if err := s.SelectExec("laptop"); err != nil {
+		t.Fatalf("SelectExec(laptop): %v", err)
+	}
+	rc2, err := s.provider().Run(context.Background(), "shell", []byte(`{"command":"pwd"}`))
+	if err != nil {
+		t.Fatalf("Run after select: %v", err)
+	}
+	defer rc2.Close()
+	select {
+	case <-laptopCh:
+	default:
+		t.Error("laptop client never received the call after selection")
 	}
 }

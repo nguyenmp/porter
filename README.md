@@ -47,10 +47,21 @@ A tree of turns. Each turn has a single parent and can fork into many children.
   **load_skill** tool whose description lists every skill; calling it returns
   the full SKILL.md body.
 - Provider status is real-time: an `exec_status` bus envelope and
-  `GET /api/sessions/{id}/exec/status` show whether a remote provider is
-  connected (and where it runs). Connecting a new provider swaps it in; each
-  change commits a short role-`system` notice so the model knows the environment
-  changed.
+  `GET /api/sessions/{id}/exec/status` show the active provider, where it runs,
+  and every provider that could run this session's tools.
+- **Choosing where commands run (web).** A session can have several providers
+  connected at once — the server process itself (always available, listed as
+  **local**) plus any execution clients (e.g. a REPL on a laptop). A bar below
+  the chat shows where commands run; opening it lists every provider (name,
+  system, working directory) and clicking one switches execution via
+  `POST /api/sessions/{id}/exec/select`. A connecting client takes over
+  automatically, matching the original behavior; after that you can switch
+  freely — including back to a provider you switched away from, which stays
+  connected (it simply receives no tool calls while deselected). Switching
+  takes effect on the next message, and commits a short role-`system` notice so
+  the model sees the environment change. A provider's environment context is
+  injected fresh with each request, so the model always knows where commands
+  will run.
 
 ### MCP (Model Context Protocol)
 
@@ -198,6 +209,12 @@ Terms used throughout this README, grouped by the part of the system they belong
 
 ### Clients (rendering + commands)
 
+- **Execution provider** — where a session's commands run. The local server
+  process (always available) or a connected execution client, e.g. the REPL on
+  a laptop. A session can have several connected at once; one is **active** and
+  receives the tool calls. The web picker switches the active provider; a
+  deselected client stays connected, so it can be picked again without
+  reconnecting.
 - **Command** — what a client sends instead of its own copy of history: create a session, append a user message. *(Planned: stop, fork.)*
 - **Poll / Subscribe** — poll = fetch History; subscribe = watch the bus for new lines.
 - **Resync** — the bus telling a client its position is too old; refetch History and resubscribe.
@@ -216,6 +233,9 @@ Build order:
 - [x] Web UI (render from history poll + event bus, send commands)
 - [x] SQLite-backed history (persist the server-owned session state)
 - [ ] Handoff / async execution
+  - [x] Execution context selector for the web UI (choose where commands run:
+        local server or any connected client; switching takes effect on the
+        next message)
 - [ ] Metrics & performance (tokens/sec, tool timing, worktree cache)
 - [x] Tool output trimming (`tool_output` head+tail model view, `read_output` recall) — full output kept in History/DB, only the model view trimmed
 - [ ] Token budget before send

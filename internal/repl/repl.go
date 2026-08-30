@@ -65,6 +65,13 @@ func Run(ctx context.Context, cfg config.ClientConfig, in io.Reader, out, jsonl 
 	if err != nil {
 		return fmt.Errorf("discover execution environment: %w", err)
 	}
+	// Identify this host as the execution provider so the web picker can name
+	// it (and select it back) instead of showing a generated id: the hostname
+	// is stable per machine and matches what a human calls this computer.
+	if host, err := os.Hostname(); err == nil {
+		env.ID = host
+		env.Name = host
+	}
 	fmt.Fprintf(jsonl, "execution provider: %s @ %s (%d skills)\n", env.System, env.CWD, len(env.Skills))
 
 	// Act as the session's execution provider: hold the exec connection open and
@@ -77,7 +84,7 @@ func Run(ctx context.Context, cfg config.ClientConfig, in io.Reader, out, jsonl 
 			if err := c.PostExecContext(ctx, info.ID, env); err != nil && ctx.Err() == nil {
 				fmt.Fprintf(jsonl, "execution provider: context register failed: %v\n", err)
 			}
-			if err := c.ServeExec(ctx, info.ID, dispatcher.Run); err != nil {
+			if err := c.ServeExec(ctx, info.ID, dispatcher.Run, client.ExecConn{ID: env.ID, Name: env.Name, Kind: "remote"}); err != nil {
 				if ctx.Err() != nil {
 					return
 				}

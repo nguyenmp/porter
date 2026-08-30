@@ -296,6 +296,7 @@ func (s *Server) Handler() http.Handler {
 	r.Post(api.SessionUnarchivePath, s.handleUnarchive)
 	r.Post(api.SessionExecContextPath, s.handleExecContext)
 	r.Get(api.SessionExecStatusPath, s.handleExecStatus)
+	r.Post(api.SessionExecSelectPath, s.handleExecSelect)
 	return r
 }
 
@@ -485,6 +486,11 @@ func Serve(cfg config.Config) error {
 
 // handleExec registers a client as the session's execution provider and holds
 // the connection open, pushing each tool call the agent makes down it as NDJSON.
+// The client identifies itself on the connection (?id=&name=&kind=) so the
+// session can register it as a named provider in its registry; a client that
+// doesn't (legacy binaries) is registered under a server-generated id. The
+// returned id is what the deferred UnregisterExec names, so the cleanup always
+// removes exactly this registration.
 func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
 	ses, ok := s.store.Get(chi.URLParam(r, "id"))
 	if !ok {
@@ -492,8 +498,9 @@ func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ch := make(chan api.ExecRequest, 8)
-	ses.RegisterExec(ch)
-	defer ses.UnregisterExec()
+	q := r.URL.Query()
+	id := ses.RegisterExec(ch, q.Get("id"), q.Get("name"), q.Get("kind"))
+	defer ses.UnregisterExec(id)
 
 	w.Header().Set("Content-Type", "application/x-ndjson")
 	w.WriteHeader(http.StatusOK)
@@ -624,6 +631,28 @@ func (s *Server) handleExecStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(ses.ExecStatus())
+}
+
+// handleExecSelect switches the session's active execution provider to the
+// client named in the body ("local" for the server process). The deselected
+// client stays connected, so it can be selected back without reconnecting. It
+// is the backend for the web picker.
+func (s *Server) handleExecSelect(w http.ResponseWriter, r *http.Request) {
+	ses, ok := s.store.Get(chi.URLParam(r, "id"))
+	if !ok {
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+	var req api.ExecSelectRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid exec select: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := ses.SelectExec(req.ID); err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
 }
 
 // render executes the named template with the given data and writes the result

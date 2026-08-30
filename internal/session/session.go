@@ -20,6 +20,7 @@ import (
 	"porter/internal/agent"
 	"porter/internal/api"
 	"porter/internal/db"
+	"porter/internal/exec"
 	"porter/internal/llm"
 	"porter/internal/mcp"
 	"porter/internal/render"
@@ -263,15 +264,33 @@ type Session struct {
 	log           []api.Envelope
 	subs          []chan api.Envelope
 
-	// Execution provider connection state.
-	execCh    chan api.ExecRequest
+	// Execution provider registry. execClients maps every provider that can
+	// run this session's tools to its descriptor, keyed by id; activeExec is
+	// the id of the active one ("local" for the server process, the default).
+	// Remote clients are added on connect and removed on disconnect; a client
+	// the user deselects stays connected (its ch is live) but receives no
+	// tool calls until selected again. pendingCtx holds a client's reported
+	// environment context for the window between its context POST (which
+	// happens before the exec connection, see the REPL) and its RegisterExec,
+	// keyed by client id ("" is the legacy slot for clients that don't
+	// identify themselves).
+	execClients map[string]*execClient
+	activeExec  string
+	pendingCtx  map[string]*api.ExecContext
+	// local is the execution provider used when no remote client is active —
+	// the server process running tools itself. It is built lazily from the
+	// server's own discovered context (localProvider) so "local" is a
+	// first-class provider in the selector; SetProvider replaces it (tests,
+	// embedders).
+	local tools.Provider
+	// localCtx is the cached discovery of the server process's own
+	// environment (system, cwd, files, skills), reported for the local
+	// provider and the picker.
+	localCtx  *api.ExecContext
+	clientSeq int
+
 	execCalls map[string]*execCall
 	execSeq   int
-	// execCtx is the environment context the connected execution client
-	// reported (system, working directory, files, skills). It drives both the
-	// model context the remote provider injects and the load_skill tool
-	// definitions it exposes. Nil until a client registers one.
-	execCtx *api.ExecContext
 
 	// In-flight tool runs keyed by call_id. The agent's live envelopes are
 	// recorded here (started/delta/result) so a client that connects or
@@ -302,45 +321,75 @@ type toolRun struct {
 }
 
 func newSession(id string, client *llm.Client, js tools.Provider, persist Persister, dbID int64, createdAt int64, archivedAt int64, hub *mcp.Hub) *Session {
-	if js == nil {
-		js = tools.NewDispatcher()
-	}
+	// A nil js means no local provider was injected (the server's own
+	// process); it is built lazily on first use from the discovered local
+	// context, so "local" reports the same system/cwd/files/skills a remote
+	// client would.
 	return &Session{
-		id:        id,
-		dbID:      dbID,
-		client:    client,
-		js:        js,
-		persist:   persist,
-		createdAt: createdAt,
-		hub:       hub,
-		queue:     make(chan string, 16),
+		id:          id,
+		dbID:        dbID,
+		client:      client,
+		local:       js,
+		persist:     persist,
+		createdAt:   createdAt,
+		archivedAt:  archivedAt,
+		hub:         hub,
+		execClients: map[string]*execClient{},
+		activeExec:  "local",
+		queue:       make(chan string, 16),
 	}
 }
 
-// SetProvider sets the execution provider this session runs tools with. It is
-// guarded by mu so a connected client can take over execution mid-session
-// without racing a running turn.
+// SetProvider replaces the session's local execution provider — the one used
+// when no remote client is active, and the default before any client
+// connects. It is guarded by mu so a test or embedder can swap local
+// execution mid-session without racing a running turn.
 func (s *Session) SetProvider(js tools.Provider) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.js = js
+	s.local = js
 }
 
-// provider returns the current execution provider, defaulting to local
-// execution when none has been registered. When the session has an MCP hub,
-// the execution provider is wrapped in a composite that also exposes the hub
-// tools (FindMCP, CallMCP); hub calls are served on the server and never
-// cross the exec channel.
+// provider returns the current execution provider — routing to the active
+// remote client when one is selected, else the local provider — wrapped in a
+// composite that also exposes the MCP hub tools when a hub is configured (hub
+// calls are served on the server and never cross the exec channel).
 func (s *Session) provider() tools.Provider {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.js == nil {
-		s.js = tools.NewDispatcher()
-	}
+	js := s.activeProviderLocked()
 	if s.hub == nil {
-		return s.js
+		return js
 	}
-	return &mcp.Composite{Exec: s.js, Hub: s.hub}
+	return &mcp.Composite{Exec: js, Hub: s.hub}
+}
+
+// activeProviderLocked returns the provider for the session's active
+// execution client: a remoteProvider routing to that client when a remote is
+// selected, else the local provider (the server process).
+func (s *Session) activeProviderLocked() tools.Provider {
+	if c, ok := s.execClients[s.activeExec]; ok && c.connected && c.kind != "local" {
+		return &remoteProvider{sess: s}
+	}
+	if s.local == nil {
+		ctx := s.localContextLocked()
+		s.local = &localProvider{d: tools.NewDispatcherWithSkills(ctx.Skills), ctx: ctx}
+	}
+	return s.local
+}
+
+// localContextLocked returns the server process's own environment context,
+// discovered once and cached. Discovery is best-effort: on failure an empty
+// context is reported rather than failing the request.
+func (s *Session) localContextLocked() api.ExecContext {
+	if s.localCtx == nil {
+		ctx, err := exec.Discover("")
+		if err != nil {
+			ctx = api.ExecContext{}
+		}
+		s.localCtx = &ctx
+	}
+	return *s.localCtx
 }
 
 // loop is the turn scheduler. It consumes queued user messages one at a time,
@@ -790,12 +839,12 @@ func (s *Session) CancelRun(callID string) error {
 		return fmt.Errorf("unknown run %q", callID)
 	}
 	cancel := run.cancel
-	// If a remote execution client is connected, it runs the command and must
-	// be told to stop it. The agent runs tools sequentially, so at most one
+	// If a remote execution client is active, it runs the command and must be
+	// told to stop it. The agent runs tools sequentially, so at most one
 	// command is in flight and a bare Cancel=true reaches it.
 	var execCh chan api.ExecRequest
-	if s.execCh != nil {
-		execCh = s.execCh
+	if c, ok := s.execClients[s.activeExec]; ok && c.ch != nil {
+		execCh = c.ch
 	}
 	s.mu.Unlock()
 

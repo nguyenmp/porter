@@ -204,6 +204,37 @@
 			z-index: 10;
 		}
 		#follow-btn:hover { background: #f0f0f0; }
+		/* Execution provider picker: a slim bar between the chat and the
+		   message form showing where the session's commands run. The button
+		   opens a popover (anchored above the bar so it never covers the
+		   input) listing every provider; clicking one switches execution. */
+		.exec-bar { position: relative; display: flex; align-items: center; gap: 0.4rem; width: 100%; max-width: 1000px; margin: 0 auto; padding: 0.25rem 0.5rem 0; box-sizing: border-box; font-size: 0.78em; color: #888; }
+		.exec-label { flex-shrink: 0; }
+		.exec-picker-btn { position: relative; display: inline-flex; align-items: center; gap: 0.3rem; padding: 0.15rem 0.55rem; border: 1px solid #ccc; border-radius: 999px; background: #fff; color: #333; font-size: 0.85em; cursor: pointer; }
+		.exec-picker-btn:hover { background: #f0f0f0; }
+		.exec-caret { font-size: 0.7em; color: #999; }
+		.exec-picker {
+			position: absolute;
+			bottom: calc(100% + 0.4rem);
+			right: 0;
+			z-index: 30;
+			min-width: 260px;
+			max-width: min(320px, calc(100vw - 1rem));
+			background: #fff;
+			border: 1px solid #ddd;
+			border-radius: 8px;
+			box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+			padding: 0.25rem;
+			max-height: 60vh;
+			overflow-y: auto;
+		}
+		.exec-picker-row { display: block; width: 100%; text-align: left; border: none; background: none; padding: 0.45rem 0.6rem; border-radius: 6px; cursor: pointer; font-size: 0.9em; color: #333; }
+		.exec-picker-row:hover { background: #f0f0f0; }
+		.exec-picker-row.active { font-weight: bold; }
+		.exec-picker-row .row-name { display: flex; align-items: center; gap: 0.4rem; }
+		.exec-picker-row .row-kind { font-size: 0.68em; text-transform: uppercase; letter-spacing: 0.04em; color: #999; border: 1px solid #ddd; border-radius: 3px; padding: 0 0.3em; flex-shrink: 0; }
+		.exec-picker-row .row-check { margin-left: auto; color: #2e8b57; font-size: 0.9em; }
+		.exec-picker-row .row-detail { font-size: 0.8em; color: #888; font-weight: normal; margin-top: 0.15rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 		.empty-state { text-align: center; color: #666; margin-top: 4rem; }
 		/* Hamburger that toggles the sidebar drawer on small screens. Hidden on
 		   desktop, where the sidebar is always visible. */
@@ -287,6 +318,12 @@
 			.msg-form button { padding: 0.75rem 1.1rem; font-size: 1rem; }
 			.stop-btn { padding: 0.75rem 1.1rem; font-size: 1rem; }
 			#follow-btn { bottom: calc(0.75rem + env(safe-area-inset-bottom, 0px)); padding: 0.6rem 1.1rem; }
+			/* Execution picker: touch-sized targets, a full-width tap area on
+			   the button, and a popover that never covers the input above. */
+			.exec-bar { padding: 0.35rem 0.6rem 0; font-size: 0.9rem; }
+			.exec-picker-btn { padding: 0.5rem 0.75rem; font-size: 0.95rem; }
+			.exec-picker { min-width: min(280px, calc(100vw - 1rem)); max-width: calc(100vw - 1rem); }
+			.exec-picker-row { padding: 0.7rem 0.6rem; font-size: 1rem; }
 		}
 	</style>
 </head>
