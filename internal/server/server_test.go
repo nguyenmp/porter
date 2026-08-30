@@ -801,8 +801,13 @@ func TestIndexContainsSidebar(t *testing.T) {
 	if !strings.Contains(s, "safe-area-inset-bottom") {
 		t.Errorf("index does not account for mobile safe-area insets")
 	}
+	// viewport-fit=cover is what makes the env(safe-area-inset-*) values above
+	// actually take effect on iOS Safari (they are 0 without it), so the mobile
+	// layout's notch/home-indicator handling is inert unless it is present.
+	if !strings.Contains(s, `content="width=device-width, initial-scale=1, viewport-fit=cover"`) {
+		t.Errorf("index viewport meta does not enable viewport-fit=cover for iOS safe-area insets")
+	}
 }
-
 func TestIndexEmptyStateHasNoActiveSession(t *testing.T) {
 	srv := newTestServer(t, plainLLM())
 
