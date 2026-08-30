@@ -42,13 +42,13 @@ server:
 porter-macos: $(SRC)
 	$(DEV) sh -c 'CGO_ENABLED=0 GOOS=darwin GOARCH=$(GOARCH) go build -o porter-macos ./cmd/porter'
 
-## repl: interactive REPL client against the running server
+## repl: interactive REPL client against the server (URL + basic auth from .env)
 repl: porter-macos
-	PORTER_SERVER_URL=http://127.0.0.1:8787 PORTER_LOG=porter.log ./porter-macos
+	$(if $(wildcard .env),set -a; . ./.env; set +a;) ./porter-macos
 
-## run: one-shot client against the running server. Usage: make run PROMPT="say hi"
+## run: one-shot client against the server. Usage: make run PROMPT="say hi"
 run: porter-macos
-	PORTER_SERVER_URL=http://127.0.0.1:8787 PORTER_LOG=porter.log ./porter-macos "$(PROMPT)"
+	$(if $(wildcard .env),set -a; . ./.env; set +a;) ./porter-macos "$(PROMPT)"
 
 ## shell: interactive shell in the dev container
 shell: build
