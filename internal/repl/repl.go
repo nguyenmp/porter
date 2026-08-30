@@ -47,7 +47,7 @@ func Run(ctx context.Context, cfg config.ClientConfig, in io.Reader, out, jsonl 
 		jsonl = f
 	}
 
-	c := client.New(cfg.ServerURL)
+	c := client.New(cfg.ServerURL, client.BasicAuth{Username: cfg.Username, Password: cfg.Password})
 	info, err := c.Create(ctx)
 	if err != nil {
 		return fmt.Errorf("create session: %w", err)

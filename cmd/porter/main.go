@@ -63,7 +63,7 @@ func runCLI(args []string, stdout io.Writer, stdin io.Reader) error {
 // run sends a one-shot prompt to the server and streams the model's events to
 // out as structured JSONL. Connect/timing progress goes to stderr.
 func run(ctx context.Context, cfg config.ClientConfig, prompt string, out io.Writer) error {
-	c := client.New(cfg.ServerURL)
+	c := client.New(cfg.ServerURL, client.BasicAuth{Username: cfg.Username, Password: cfg.Password})
 	info, err := c.Create(ctx)
 	if err != nil {
 		return err

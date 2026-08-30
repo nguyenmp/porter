@@ -8,6 +8,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -25,15 +26,42 @@ import (
 // buffer. The caller must refetch history and resubscribe with the new seq.
 var ErrResync = errors.New("resync required: refetch history and resubscribe")
 
+// BasicAuth carries the credentials a client sends to a password-protected
+// porter server (see the server's PORTER_AUTH_USERNAME/PORTER_AUTH_PASSWORD).
+// When Username is empty the client sends no Authorization header.
+type BasicAuth struct {
+	Username string
+	Password string
+}
+
 // Client talks to a porter server.
 type Client struct {
 	base string
 	http *http.Client
 }
 
-// New returns a Client for the given server base URL.
-func New(base string) *Client {
-	return &Client{base: base, http: http.DefaultClient}
+// New returns a Client for the given server base URL. Pass BasicAuth to have
+// every request (including long-lived exec and SSE streams) carry the header.
+func New(base string, auth ...BasicAuth) *Client {
+	c := &Client{base: base, http: http.DefaultClient}
+	if len(auth) > 0 && auth[0].Username != "" {
+		token := "Basic " + base64.StdEncoding.EncodeToString([]byte(auth[0].Username+":"+auth[0].Password))
+		c.http = &http.Client{Transport: authTransport{token: token}}
+	}
+	return c
+}
+
+// authTransport injects the Authorization header into every request, so the
+// exec provider connection and SSE streams authenticate just like the REST
+// calls do.
+type authTransport struct {
+	token string
+}
+
+func (t authTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	req = req.Clone(req.Context())
+	req.Header.Set("Authorization", t.token)
+	return http.DefaultTransport.RoundTrip(req)
 }
 
 // Create makes a new session and returns its id, initial (empty) history, and

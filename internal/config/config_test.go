@@ -25,3 +25,13 @@ func TestValidate(t *testing.T) {
 		})
 	}
 }
+
+func TestClientEnvReadsAuth(t *testing.T) {
+	t.Setenv("PORTER_SERVER_URL", "http://example:8787")
+	t.Setenv("PORTER_AUTH_USERNAME", "porter")
+	t.Setenv("PORTER_AUTH_PASSWORD", "hunter2")
+	c := ClientEnv()
+	if c.Username != "porter" || c.Password != "hunter2" {
+		t.Fatalf("ClientEnv auth = %q/%q, want porter/hunter2", c.Username, c.Password)
+	}
+}

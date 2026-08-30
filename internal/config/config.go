@@ -56,6 +56,10 @@ type ClientConfig struct {
 	// instead of stderr, to keep the REPL terminal quiet (e.g. inside a
 	// container).
 	LogFile string
+	// Username/Password, when set, are sent as HTTP Basic Auth on every request
+	// so a reverse proxy (e.g. Caddy basic_auth) can authenticate the client.
+	Username string
+	Password string
 }
 
 // ClientEnv reads client configuration from environment variables.
@@ -63,6 +67,8 @@ func ClientEnv() ClientConfig {
 	return ClientConfig{
 		ServerURL: getenv("PORTER_SERVER_URL", DefaultServerURL),
 		LogFile:   os.Getenv("PORTER_LOG"),
+		Username:  os.Getenv("PORTER_AUTH_USERNAME"),
+		Password:  os.Getenv("PORTER_AUTH_PASSWORD"),
 	}
 }
 
