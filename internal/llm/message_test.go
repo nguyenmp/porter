@@ -107,3 +107,80 @@ func TestToolResultSerialization(t *testing.T) {
 		}
 	}
 }
+
+// TestContentAlwaysSerialized is the regression test for a production 400 from
+// DeepSeek: an assistant turn that is pure tool calls has no prose, and with
+// `json:"content,omitempty"` the wire payload dropped the `content` key
+// entirely ({"role":"assistant","tool_calls":[...]}). DeepSeek's strict
+// deserializer requires `content` on every message object and rejected the
+// whole request deep into a conversation. Every message shape must therefore
+// serialize with a `content` key — an explicit empty string satisfies DeepSeek
+// and is accepted by all OpenAI-compatible backends.
+func TestContentAlwaysSerialized(t *testing.T) {
+	cases := []struct {
+		name string
+		msg  ChatMessage
+	}{
+		{
+			name: "assistant with tool calls and no prose",
+			msg: AssistantMessage("", "", []ToolCall{
+				{ID: "call_1", Type: "function", Function: ToolFunction{Name: "shell", Arguments: `{"command":"ls"}`}},
+			}),
+		},
+		{
+			name: "assistant with reasoning only",
+			msg:  AssistantMessage("", "hidden chain of thought", nil),
+		},
+		{
+			name: "empty tool result",
+			msg:  ToolResult("call_1", ""),
+		},
+		{
+			name: "empty user message",
+			msg:  UserMessage(""),
+		},
+		{
+			name: "empty system message",
+			msg:  SystemMessage(""),
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			data, err := json.Marshal(tc.msg)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			got := string(data)
+			if !strings.Contains(got, `"content":""`) {
+				t.Errorf("message serialized without a content key; DeepSeek rejects this. got: %s", got)
+			}
+			// The key must be present as a string, never null.
+			if strings.Contains(got, `"content":null`) {
+				t.Errorf("content must be an explicit empty string, not null. got: %s", got)
+			}
+		})
+	}
+}
+
+// TestAssistantToolCallNoProse is a focused version of the production failure:
+// the exact wire shape that 400'd, {"role":"assistant","tool_calls":[...]} with
+// no content key, must never be produced.
+func TestAssistantToolCallNoProse(t *testing.T) {
+	msg := AssistantMessage("", "", []ToolCall{
+		{ID: "call_1", Type: "function", Function: ToolFunction{Name: "shell", Arguments: `{}`}},
+	})
+	data, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	got := string(data)
+	if !strings.Contains(got, `"role":"assistant"`) {
+		t.Fatalf("expected assistant role; got: %s", got)
+	}
+	if !strings.Contains(got, `"content":""`) {
+		t.Errorf("assistant tool-call message must carry an explicit empty content; got: %s", got)
+	}
+	if !strings.Contains(got, `"tool_calls"`) {
+		t.Errorf("tool_calls missing; got: %s", got)
+	}
+}

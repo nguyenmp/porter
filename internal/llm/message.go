@@ -4,10 +4,15 @@ package llm
 //
 // A message carries text, a tool call request (role "assistant"), or a tool
 // result (role "tool"). Empty fields are omitted so only the relevant payload
-// is serialized.
+// is serialized — except Content, which is ALWAYS present on the wire: an
+// assistant turn that is pure tool calls has no prose, and some providers
+// (notably DeepSeek) reject a message object that lacks the `content` key
+// entirely, while every OpenAI-compatible backend accepts an explicit empty
+// string. So Content is tagged `json:"content"` (no omitempty), and an empty
+// value serializes as "content":"".
 type ChatMessage struct {
 	Role    string `json:"role"`
-	Content string `json:"content,omitempty"`
+	Content string `json:"content"`
 	// Reasoning is the model's private chain-of-thought, streamed separately
 	// from Content by reasoning-capable providers. It is persisted on the
 	// committed assistant message so it survives a reload (server-side /view
