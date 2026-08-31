@@ -212,7 +212,10 @@ Terms used throughout this README, grouped by the part of the system they belong
 
 - **Execution provider** — where a session's commands run. The local server
   process (always available) or a connected execution client, e.g. the REPL on
-  a laptop. A session can have several connected at once; one is **active** and
+  a laptop. An **execution host** (`make host`) is a persistent agent that can
+  provision these per-chat: given a repo path it creates a git worktree sandbox
+  (its own branch) so multiple chats can work on the same repo independently,
+  and serves that sandbox as the chat's provider. A session can have several connected at once; one is **active** and
   receives the tool calls. The web picker switches the active provider; a
   deselected client stays connected, so it can be picked again without
   reconnecting.
@@ -237,6 +240,11 @@ Build order:
   - [x] Execution context selector for the web UI (choose where commands run:
         local server or any connected client; switching takes effect on the
         next message)
+  - [x] Execution Host (`make host`): a persistent agent on a machine that
+        provisions a per-chat sandbox — a working directory, or a git worktree
+        on a shared repo (each chat gets its own branch) — and serves it as
+        that chat's execution provider; archiving a sandboxed chat releases
+        its worktree
 - [ ] Metrics & performance (tokens/sec, tool timing, worktree cache)
 - [x] Tool output trimming (`tool_output` head+tail model view, `read_output` recall) — full output kept in History/DB, only the model view trimmed
 - [ ] Token budget before send

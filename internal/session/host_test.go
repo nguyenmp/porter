@@ -124,6 +124,78 @@ func TestHostProviderError(t *testing.T) {
 	}
 }
 
+func TestReleaseSessionSendsRelease(t *testing.T) {
+	st := newTestStore(t)
+	ch := make(chan api.HostRequest, 8)
+	st.RegisterHost(ch, "mac", "macbook", "host")
+
+	// A sandboxed provision (repo named) is recorded when the provider
+	// registers, so archiving the session can release the worktree.
+	go func() {
+		req := <-ch
+		st.ProvisionRegistered("session_1", req.ProviderID)
+	}()
+	if err := st.Provision(context.Background(), "session_1", "mac", api.HostRequest{Repo: "/tmp/repo"}); err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+
+	got := make(chan api.HostRequest, 1)
+	go func() { got <- <-ch }()
+	st.ReleaseSession("session_1")
+	req := <-got
+	if req.Kind != "release" || req.SessionID != "session_1" || !strings.HasPrefix(req.ProviderID, "mac-provider-") {
+		t.Fatalf("release request = %+v, want kind=release for session_1", req)
+	}
+
+	// Releasing again is a no-op: nothing is sent.
+	select {
+	case r := <-ch:
+		t.Fatalf("unexpected request after second release: %+v", r)
+	case <-time.After(20 * time.Millisecond):
+	}
+}
+
+func TestReleaseSessionNoSandbox(t *testing.T) {
+	st := newTestStore(t)
+	ch := make(chan api.HostRequest, 8)
+	st.RegisterHost(ch, "mac", "macbook", "host")
+
+	// A plain-dir provision (no repo) has no sandbox to release: archiving
+	// the session must not send anything to the host.
+	go func() {
+		req := <-ch
+		st.ProvisionRegistered("session_1", req.ProviderID)
+	}()
+	if err := st.Provision(context.Background(), "session_1", "mac", api.HostRequest{}); err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+
+	st.ReleaseSession("session_1")
+	select {
+	case r := <-ch:
+		t.Fatalf("unexpected release for non-sandboxed session: %+v", r)
+	case <-time.After(20 * time.Millisecond):
+	}
+}
+
+func TestReleaseSessionHostGone(t *testing.T) {
+	st := newTestStore(t)
+	ch := make(chan api.HostRequest, 8)
+	st.RegisterHost(ch, "mac", "macbook", "host")
+	go func() {
+		req := <-ch
+		st.ProvisionRegistered("session_1", req.ProviderID)
+	}()
+	if err := st.Provision(context.Background(), "session_1", "mac", api.HostRequest{Repo: "/tmp/repo"}); err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+
+	// The host disconnects (which also drops its sandbox records); releasing
+	// afterwards must not block, panic, or send.
+	st.UnregisterHost("mac")
+	st.ReleaseSession("session_1")
+}
+
 func TestUnregisterHostFailsPending(t *testing.T) {
 	st := newTestStore(t)
 	ch := make(chan api.HostRequest, 8)

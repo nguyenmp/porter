@@ -12,10 +12,12 @@ import (
 
 // provisionTimeout bounds how long creating a session waits for a host to
 // provision its execution provider. A connected host responds in well under a
-// second (today's sandbox is a working directory); the bound leaves room for
-// phase-2 worktree creation while still surfacing a dead host promptly. It is
-// a var so tests can shorten it.
-var provisionTimeout = 15 * time.Second
+// second for a working-directory sandbox, and git worktree creation on a
+// large repo can take tens of seconds; the bound covers both while still
+// surfacing a dead host promptly (a timeout is non-fatal: the session is
+// created with a warning and the provider attaches whenever it arrives). It
+// is a var so tests can shorten it.
+var provisionTimeout = 60 * time.Second
 
 // host is one persistent execution agent (e.g. on a laptop) that can
 // provision execution contexts for sessions. It is machine-level — a single
@@ -48,6 +50,18 @@ type pendingProvision struct {
 	hostID     string
 	done       chan struct{}
 	err        error
+	// sandbox reports whether the provision requested a repo sandbox (a git
+	// worktree on the host), which is recorded in st.sandboxes when the
+	// provider registers so the server can release it when the session ends.
+	sandbox bool
+}
+
+// sandbox is one session's provisioned worktree on a host, recorded once the
+// provider registers so a later ReleaseSession can tell that host to tear the
+// worktree down.
+type sandbox struct {
+	hostID     string
+	providerID string
 }
 
 // RegisterHost adds a connected execution host to the registry. A connecting
@@ -99,6 +113,11 @@ func (st *Store) UnregisterHost(id string) {
 			delete(st.pending, pid)
 			p.err = errors.New("execution host disconnected")
 			close(p.done)
+		}
+	}
+	for sid, sb := range st.sandboxes {
+		if sb.hostID == id {
+			delete(st.sandboxes, sid)
 		}
 	}
 	st.mu.Unlock()
@@ -166,7 +185,7 @@ func (st *Store) Provision(ctx context.Context, sessionID, hostID string, req ap
 	req.Kind = "provision"
 	req.ProviderID = fmt.Sprintf("%s-provider-%d", hostID, st.hostSeq)
 	req.SessionID = sessionID
-	p := &pendingProvision{providerID: req.ProviderID, sessionID: sessionID, hostID: hostID, done: make(chan struct{})}
+	p := &pendingProvision{providerID: req.ProviderID, sessionID: sessionID, hostID: hostID, done: make(chan struct{}), sandbox: req.Repo != ""}
 	st.pending[req.ProviderID] = p
 	ch := h.ch
 	st.mu.Unlock()
@@ -212,8 +231,43 @@ func (st *Store) ProvisionRegistered(sessionID, providerID string) {
 	if ok && p.sessionID == sessionID {
 		delete(st.pending, providerID)
 		close(p.done)
+		// A sandboxed provision is recorded so archiving the session can
+		// release the worktree. Plain-dir provisions are not: their serve
+		// loop lives for the host process and nothing needs releasing.
+		if p.sandbox {
+			st.sandboxes[sessionID] = &sandbox{hostID: p.hostID, providerID: providerID}
+		}
 	}
 	st.mu.Unlock()
+}
+
+// ReleaseSession tells the execution host that provisioned a session's
+// worktree sandbox to tear it down (the server sends this when the session is
+// archived). It is best-effort and non-blocking: the session is already gone
+// from the user's flow, so a missed release (host disconnected, channel full)
+// only leaks the sandbox until the host restarts (startup cleanup) — never
+// blocks or fails the archive. Idempotent: a session with no sandbox (plain
+// dir, or already released) is a no-op.
+func (st *Store) ReleaseSession(sessionID string) {
+	st.mu.Lock()
+	sb, ok := st.sandboxes[sessionID]
+	if !ok {
+		st.mu.Unlock()
+		return
+	}
+	delete(st.sandboxes, sessionID)
+	h, ok := st.hosts[sb.hostID]
+	if !ok || !h.connected || h.ch == nil {
+		st.mu.Unlock()
+		return
+	}
+	ch := h.ch
+	st.mu.Unlock()
+
+	select {
+	case ch <- api.HostRequest{Kind: "release", ProviderID: sb.providerID, SessionID: sessionID}:
+	default: // host channel full: the host will reconnect; startup cleanup covers the leak
+	}
 }
 
 // HostProviderError resolves a pending provision as failed: the host could

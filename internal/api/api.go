@@ -80,12 +80,17 @@ const (
 // over its persistent exec connection. Kind "provision" asks the host to
 // create an execution environment (a sandbox) for a session and register
 // itself as that session's execution provider — the roadmap's Execution Host:
-// provisioning creates an environment and returns an Execution Provider. CWD
-// names a working directory for the environment ("" = the host's default);
-// Repo/Branch request a sandboxed checkout (phase 2: a git worktree per
-// session on a shared repo) and are ignored today.
+// provisioning creates an environment and returns an Execution Provider. Kind
+// "release" asks the host to tear down a sandbox it created earlier (sent
+// when the session that owns it is archived). CWD names a working directory
+// for the environment ("" = the host's default). Repo names a local git
+// repository to sandbox the session in: the host provisions a git worktree — a
+// fresh branch porter/<provider_id> based at Branch (or the repo's HEAD when
+// empty) — and serves the session from it, so many chats can work on the same
+// repo without trampling each other. With no Repo, the environment is just the
+// working directory.
 type HostRequest struct {
-	Kind string `json:"kind"` // "provision"
+	Kind string `json:"kind"` // "provision" | "release"
 	// ProviderID is the id the host's provisioned provider registers under on
 	// the session. The server generates it so it is unique and safe.
 	ProviderID string `json:"provider_id,omitempty"`
@@ -331,10 +336,16 @@ type Skill struct {
 // right registry entry; the REPL posts its context before opening the exec
 // connection, so these fields are how the context finds its client.
 type ExecContext struct {
-	ID     string   `json:"id,omitempty"`
-	Name   string   `json:"name,omitempty"`
-	System string   `json:"system"`
-	CWD    string   `json:"cwd"`
+	ID     string `json:"id,omitempty"`
+	Name   string `json:"name,omitempty"`
+	System string `json:"system"`
+	CWD    string `json:"cwd"`
+	// Repos lists the local git repositories the provider can sandbox
+	// sessions in (a git worktree per session). Execution hosts discover the
+	// repos under the user's home directory and report them so the web UI's
+	// "new chat on" picker can offer them; the list is not part of the model's
+	// environment message.
+	Repos  []string `json:"repos,omitempty"`
 	Files  []string `json:"files"`
 	Skills []Skill  `json:"skills"`
 }

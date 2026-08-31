@@ -94,6 +94,10 @@ type Store struct {
 	pendingHostCtx map[string]*api.ExecContext
 	pending        map[string]*pendingProvision
 	hostSeq        int
+	// sandboxes tracks, per session, the worktree sandbox a host provisioned
+	// for it (recorded when the provider registers), so archiving the session
+	// can release the sandbox.
+	sandboxes map[string]*sandbox
 }
 
 // NewStore returns an empty store backed by persist, serving MCP tools from
@@ -106,13 +110,14 @@ func NewStore(persist Persister, hub *mcp.Hub, ctxs ...context.Context) *Store {
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	return &Store{
-		ctx:      ctx,
-		cancel:   cancel,
-		persist:  persist,
-		hub:      hub,
-		sessions: map[string]*Session{},
-		hosts:    map[string]*host{},
-		pending:  map[string]*pendingProvision{},
+		ctx:       ctx,
+		cancel:    cancel,
+		persist:   persist,
+		hub:       hub,
+		sessions:  map[string]*Session{},
+		hosts:     map[string]*host{},
+		pending:   map[string]*pendingProvision{},
+		sandboxes: map[string]*sandbox{},
 	}
 }
 

@@ -620,10 +620,13 @@ func (s *Server) handleStop(w http.ResponseWriter, r *http.Request) {
 // handleArchive marks the session archived, folding it out of the active
 // sidebar list into the Archived folder (most recently archived first). The
 // chat itself is unaffected — history, running turns, and streaming all
-// continue; archive is purely organizational. Idempotent: archiving an
+// continue. For a session provisioned on an execution host as a worktree
+// sandbox, archiving releases the sandbox: the host removes the worktree (so
+// the repo does not accumulate abandoned sandboxes). Idempotent: archiving an
 // already-archived session is a no-op success.
 func (s *Server) handleArchive(w http.ResponseWriter, r *http.Request) {
-	if err := s.store.Archive(chi.URLParam(r, "id")); err != nil {
+	id := chi.URLParam(r, "id")
+	if err := s.store.Archive(id); err != nil {
 		if errors.Is(err, db.ErrNotFound) {
 			http.Error(w, "session not found", http.StatusNotFound)
 			return
@@ -631,6 +634,9 @@ func (s *Server) handleArchive(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	// Best-effort, non-blocking: the archive already succeeded; a missed
+	// release only leaks the sandbox until the host's next startup cleanup.
+	s.store.ReleaseSession(id)
 	w.WriteHeader(http.StatusOK)
 }
 

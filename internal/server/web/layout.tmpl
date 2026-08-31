@@ -30,7 +30,7 @@
 		/* "Run on" picker under the new-chat button: which execution host (if
 		   any) provisions this session's context. Populated from GET /api/hosts;
 		   hidden when no hosts are registered. */
-		.new-chat select { width: 100%; margin-top: 0.35rem; padding: 0.3rem 0.4rem; border: 1px solid #ccc; border-radius: 4px; background: #fff; color: #333; font-size: 0.85em; }
+		.new-chat select, .new-chat input { width: 100%; margin-top: 0.35rem; padding: 0.3rem 0.4rem; border: 1px solid #ccc; border-radius: 4px; background: #fff; color: #333; font-size: 0.85em; box-sizing: border-box; }
 		#session-list, #archived-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.25rem; }
 		#session-list a, #archived-list a { display: block; padding: 0.35rem 0.5rem; border-radius: 4px; color: #333; text-decoration: none; font-size: 0.9em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 		#session-list a:hover, #archived-list a:hover { background: #f0f0f0; }
