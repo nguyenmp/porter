@@ -26,13 +26,13 @@ import (
 
 // Run starts the persistent execution host agent and blocks until ctx is
 // cancelled. The agent identifies itself by hostname (override with
-// PORTER_HOST_ID), reports its default working directory (PORTER_HOST_CWD,
-// else the process cwd) and the git repositories it discovered under the
-// user's home (for the web UI's sandbox picker), and reconnects to the
-// server forever, provisioning a provider for every session the server asks
-// for. A provision that names a repo is served from a fresh git worktree
-// sandbox under ~/.porter/sandboxes (not configurable); stale sandboxes left
-// by a previous run are cleaned up on startup.
+// PORTER_HOST_ID), reports its working directory (the process cwd) and the
+// git repositories it discovered under the user's home (for the web UI's
+// sandbox picker), and reconnects to the server forever, provisioning a
+// provider for every session the server asks for. A provision that names a
+// repo is served from a fresh git worktree sandbox under ~/.porter/sandboxes
+// (not configurable); stale sandboxes left by a previous run are cleaned up
+// on startup.
 func Run(ctx context.Context, cfg config.ClientConfig) error {
 	c := client.New(cfg.ServerURL, client.BasicAuth{Username: cfg.Username, Password: cfg.Password})
 
@@ -44,11 +44,12 @@ func Run(ctx context.Context, cfg config.ClientConfig) error {
 			hostID = "porter-host"
 		}
 	}
-	cwd := os.Getenv("PORTER_HOST_CWD")
-	if cwd == "" {
-		if wd, err := os.Getwd(); err == nil {
-			cwd = wd
-		}
+	// The host's default working directory is the directory the host process
+	// runs from (there is no PORTER_HOST_CWD); a chat can still request a
+	// different one when it's created.
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("get host working directory: %w", err)
 	}
 	root := worktreeRoot()
 	cleanupStaleWorktrees(root)

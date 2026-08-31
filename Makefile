@@ -44,8 +44,9 @@ porter-macos: $(SRC)
 
 ## host: run the persistent execution host agent on this machine (URL + basic
 ## auth from .env). The web UI's "New chat" picker then lists this host, and
-## new chats can run their agent loops here. Set PORTER_HOST_CWD to the default
-## working directory for provisioned contexts.
+## new chats can run their agent loops here. Run it from the directory you
+## want provisioned chats to work in; a chat can request a different one when
+## it's created.
 host: porter-macos
 	$(if $(wildcard .env),set -a; . ./.env; set +a;) ./porter-macos host
 
