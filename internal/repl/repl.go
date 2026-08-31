@@ -48,12 +48,30 @@ func Run(ctx context.Context, cfg config.ClientConfig, in io.Reader, out, jsonl 
 	}
 
 	c := client.New(cfg.ServerURL, client.BasicAuth{Username: cfg.Username, Password: cfg.Password})
-	info, err := c.Create(ctx)
-	if err != nil {
-		return fmt.Errorf("create session: %w", err)
-	}
 
-	fmt.Fprintf(out, "session %s\n", info.ID)
+	// Attach to an existing session (replaying its history and resuming its bus
+	// position) when one was requested via --session or PORTER_SESSION, so a
+	// REPL can reconnect to a chat it (or another client) started earlier.
+	// Otherwise create a fresh session.
+	var (
+		id      string
+		history []llm.ChatMessage
+		seq     uint64
+	)
+	if cfg.Session != "" {
+		h, err := c.History(ctx, cfg.Session)
+		if err != nil {
+			return fmt.Errorf("load session %s: %w", cfg.Session, err)
+		}
+		id, history, seq = cfg.Session, h.History, h.Seq
+	} else {
+		info, err := c.Create(ctx)
+		if err != nil {
+			return fmt.Errorf("create session: %w", err)
+		}
+		id, history, seq = info.ID, info.History, info.Seq
+	}
+	fmt.Fprintf(out, "session %s\n", id)
 
 	// Discover the environment this client runs in (system, working directory,
 	// files, skills) so it can report it to the server as the session's
@@ -81,10 +99,10 @@ func Run(ctx context.Context, cfg config.ClientConfig, in io.Reader, out, jsonl 
 	dispatcher := tools.NewDispatcherWithSkills(env.Skills)
 	go func() {
 		for {
-			if err := c.PostExecContext(ctx, info.ID, env); err != nil && ctx.Err() == nil {
+			if err := c.PostExecContext(ctx, id, env); err != nil && ctx.Err() == nil {
 				fmt.Fprintf(jsonl, "execution provider: context register failed: %v\n", err)
 			}
-			if err := c.ServeExec(ctx, info.ID, dispatcher.Run, client.ExecConn{ID: env.ID, Name: env.Name, Kind: "remote"}); err != nil {
+			if err := c.ServeExec(ctx, id, dispatcher.Run, client.ExecConn{ID: env.ID, Name: env.Name, Kind: "remote"}); err != nil {
 				if ctx.Err() != nil {
 					return
 				}
@@ -108,7 +126,7 @@ func Run(ctx context.Context, cfg config.ClientConfig, in io.Reader, out, jsonl 
 	// connection is live; if it never comes up (e.g. the exec endpoint is
 	// unreachable) log it and continue — the session falls back to running
 	// tools in the server process, matching a client that never connected.
-	if err := waitForExec(ctx, c, info.ID); err != nil {
+	if err := waitForExec(ctx, c, id); err != nil {
 		fmt.Fprintf(jsonl, "execution provider: %v\n", err)
 	}
 
@@ -119,10 +137,10 @@ func Run(ctx context.Context, cfg config.ClientConfig, in io.Reader, out, jsonl 
 	// JSONL stream, and — crucially — renders a committed assistant message that
 	// missed its live stream (the subscribe connected after the reply already
 	// streamed) instead of dropping it.
-	view := &liveView{out: out, jsonl: jsonl, dim: agent.IsTerminal(out), seq: info.Seq}
+	view := &liveView{out: out, jsonl: jsonl, dim: agent.IsTerminal(out), seq: seq}
 	untilTurnDone := func(env api.Envelope) bool { return env.Kind == api.KindTurnDone }
 
-	for _, m := range info.History {
+	for _, m := range history {
 		renderMessage(out, m)
 	}
 
@@ -147,13 +165,13 @@ func Run(ctx context.Context, cfg config.ClientConfig, in io.Reader, out, jsonl 
 			return nil
 		}
 
-		if err := c.Append(ctx, info.ID, text); err != nil {
+		if err := c.Append(ctx, id, text); err != nil {
 			return fmt.Errorf("append: %w", err)
 		}
 		for {
-			err := c.Subscribe(ctx, info.ID, view.seq, view.emit, untilTurnDone)
+			err := c.Subscribe(ctx, id, view.seq, view.emit, untilTurnDone)
 			if errors.Is(err, client.ErrResync) {
-				h, herr := c.History(ctx, info.ID)
+				h, herr := c.History(ctx, id)
 				if herr != nil {
 					return herr
 				}

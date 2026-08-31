@@ -25,6 +25,7 @@ A tree of turns. Each turn has a single parent and can fork into many children.
 
 - With no TTY, output as JSONL.
 - TTY REPL mode: stdout shows input/output, stderr shows JSONL. Fork by targeting an old `turn_uuid`.
+- Reconnect to a previous chat: `porter --session <id>` starts the REPL attached to that session — it replays the committed history and appends new turns to it instead of creating a new session. The one-shot path takes the same flag (`porter --session <id> "prompt"`, or `PORTER_SESSION`), and the session id is always printed on startup (`session <id>`).
 
 ### Handoff
 

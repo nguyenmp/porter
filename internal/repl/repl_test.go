@@ -9,6 +9,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -53,6 +55,103 @@ func TestRunReadsAndQuits(t *testing.T) {
 	if !strings.Contains(out.String(), "> ") {
 		t.Errorf("no prompt printed; got:\n%s", out.String())
 	}
+}
+
+// TestRunResumesExistingSession verifies a REPL started with cfg.Session set
+// attaches to that session instead of creating a new one: it prints the same
+// session id, replays the committed history, and appends new turns to it (the
+// reply sees the grown history) without creating a new session.
+func TestRunResumesExistingSession(t *testing.T) {
+	srv := newReplServer(t)
+
+	// First REPL creates a session and has one turn ("hello"): the model sees
+	// the injected environment context + the committed provider-connect notice
+	// + the user message = 3 messages -> "reply 3".
+	var firstOut, firstJSONL bytes.Buffer
+	if err := Run(context.Background(), config.ClientConfig{ServerURL: srv.URL}, strings.NewReader("hello\nquit\n"), &firstOut, &firstJSONL); err != nil {
+		t.Fatalf("first Run: %v", err)
+	}
+	id := sessionIDFromOutput(t, firstOut.String())
+	if id == "" {
+		t.Fatalf("no session id in first REPL output:\n%s", firstOut.String())
+	}
+	if !strings.Contains(firstOut.String(), "reply 3") {
+		t.Fatalf("first turn should see 3 messages; got:\n%s", firstOut.String())
+	}
+
+	// Reconnecting REPL: the committed history replays (so "reply 3" shows up
+	// again), and the new turn sees the grown history — old connect notice +
+	// hello + reply + the new connect notice + again (and, once the first
+	// REPL's connection teardown lands, a disconnect notice too), so the reply
+	// count strictly grows past 3.
+	cfg := config.ClientConfig{ServerURL: srv.URL, Session: id}
+	var out, jsonl bytes.Buffer
+	if err := Run(context.Background(), cfg, strings.NewReader("again\nquit\n"), &out, &jsonl); err != nil {
+		t.Fatalf("resumed Run: %v", err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "session "+id) {
+		t.Errorf("resumed REPL should print the same session id %q; got:\n%s", id, got)
+	}
+	if !strings.Contains(got, "reply 3") {
+		t.Errorf("resumed REPL should replay the old reply; got:\n%s", got)
+	}
+	if max := maxReplyCount(got); max <= 3 {
+		t.Errorf("new turn on resumed session should see a grown history (reply count > 3); got max reply %d in:\n%s", max, got)
+	}
+
+	// The resumed REPL must not have created a new session: the server-side
+	// session count is unchanged by resuming.
+	before := countSessions(t, srv.URL)
+	if err := Run(context.Background(), cfg, strings.NewReader("quit\n"), &out, &jsonl); err != nil {
+		t.Fatalf("second resumed Run: %v", err)
+	}
+	if after := countSessions(t, srv.URL); after != before {
+		t.Errorf("resuming an existing session created a new one: sessions before=%d after=%d", before, after)
+	}
+}
+
+// countSessions returns how many sessions the server currently has.
+func countSessions(t *testing.T, base string) int {
+	t.Helper()
+	resp, err := http.Get(base + api.SessionsPath)
+	if err != nil {
+		t.Fatalf("list sessions: %v", err)
+	}
+	defer resp.Body.Close()
+	var list api.SessionsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
+		t.Fatalf("decode sessions: %v", err)
+	}
+	return len(list.Sessions)
+}
+
+// maxReplyCount returns the largest "reply N" (the fake LLM's message count)
+// found in a REPL transcript.
+func maxReplyCount(s string) int {
+	max := 0
+	for _, m := range replyRe.FindAllStringSubmatch(s, -1) {
+		if n, err := strconv.Atoi(m[1]); err == nil && n > max {
+			max = n
+		}
+	}
+	return max
+}
+
+// replyRe matches the fake LLM's "reply N" content, where N is the number of
+// messages the turn saw.
+var replyRe = regexp.MustCompile(`reply (\d+)`)
+
+// sessionIDFromOutput extracts the "session <id>" line the REPL prints on
+// startup from its human-readable output.
+func sessionIDFromOutput(t *testing.T, out string) string {
+	t.Helper()
+	for _, line := range strings.Split(out, "\n") {
+		if rest, ok := strings.CutPrefix(line, "session "); ok && strings.TrimSpace(rest) != "" {
+			return strings.TrimSpace(rest)
+		}
+	}
+	return ""
 }
 
 func TestRunEOF(t *testing.T) {

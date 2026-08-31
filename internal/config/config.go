@@ -60,6 +60,10 @@ type ClientConfig struct {
 	// so a reverse proxy (e.g. Caddy basic_auth) can authenticate the client.
 	Username string
 	Password string
+	// Session, when set, resumes this existing session (a session id) instead
+	// of creating a new one: the REPL and one-shot CLI replay its history and
+	// append new turns to it.
+	Session string
 }
 
 // ClientEnv reads client configuration from environment variables.
@@ -69,6 +73,7 @@ func ClientEnv() ClientConfig {
 		LogFile:   os.Getenv("PORTER_LOG"),
 		Username:  os.Getenv("PORTER_AUTH_USERNAME"),
 		Password:  os.Getenv("PORTER_AUTH_PASSWORD"),
+		Session:   os.Getenv("PORTER_SESSION"),
 	}
 }
 
