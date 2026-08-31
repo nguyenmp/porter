@@ -20,8 +20,18 @@ import (
 // imperceptible in a terminal while keeping CPU use negligible.
 const pollInterval = 30 * time.Millisecond
 
-// runShell runs a shell command and returns a stream of its combined
-// stdout/stderr, with a trailing exit-status line appended once it finishes.
+// runShell runs a shell command in the process's working directory and
+// returns a stream of its combined stdout/stderr, with a trailing exit-status
+// line appended once it finishes.
+func runShell(ctx context.Context, args []byte) (io.ReadCloser, error) {
+	return runShellDir(ctx, args, "")
+}
+
+// runShellDir is runShell with an explicit working directory. Execution hosts
+// run each provisioned sandbox's commands in the sandbox's directory this
+// way; an empty dir inherits the process cwd. It returns a stream of the
+// command's combined stdout/stderr, with a trailing exit-status line appended
+// once it finishes.
 //
 // Output goes to a temp file (not a pipe) and the returned stream tails it.
 // The point is what "the command is done" means. A pipe delivers EOF only when
@@ -33,7 +43,7 @@ const pollInterval = 30 * time.Millisecond
 // drains whatever output arrived, appends the exit-status line, and returns
 // EOF. Descendants that outlive the tool call keep writing to the (unlinked)
 // temp file; their late output is not part of the stream.
-func runShell(ctx context.Context, args []byte) (io.ReadCloser, error) {
+func runShellDir(ctx context.Context, args []byte, dir string) (io.ReadCloser, error) {
 	var in struct {
 		Command string `json:"command"`
 	}
@@ -57,6 +67,9 @@ func runShell(ctx context.Context, args []byte) (io.ReadCloser, error) {
 	}
 
 	cmd := exec.CommandContext(ctx, "sh", "-c", in.Command)
+	if dir != "" {
+		cmd.Dir = dir
+	}
 	// Run the whole tree in its own process group so that stopping the run can
 	// reach every descendant, not just the shell. A shell command that forks
 	// (foo; bar, backgrounded jobs, test runners) keeps its children in the

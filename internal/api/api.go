@@ -60,7 +60,41 @@ const (
 	// SessionExecSelectPath switches the session's active execution provider
 	// to the client named in the body ("local" for the server process): POST.
 	SessionExecSelectPath = "/api/sessions/{id}/exec/select"
+
+	// HostsPath lists the registered execution hosts — persistent agents (e.g.
+	// on a laptop) that can provision execution contexts for new sessions: GET.
+	HostsPath = "/api/hosts"
+	// HostExecPath is a host's persistent connection: the server pushes
+	// provision requests down it as NDJSON. The host's id is its path segment,
+	// like a session's exec connection: GET.
+	HostExecPath = "/api/hosts/{host_id}/exec"
+	// HostContextPath registers a host's base environment context (system,
+	// default working directory, files, skills): POST.
+	HostContextPath = "/api/hosts/{host_id}/context"
+	// HostProviderErrorPath reports that a host failed to provision a provider
+	// (e.g. the requested working directory does not exist): POST.
+	HostProviderErrorPath = "/api/hosts/{host_id}/providers/{provider_id}/error"
 )
+
+// HostRequest is one message the server pushes to a registered execution host
+// over its persistent exec connection. Kind "provision" asks the host to
+// create an execution environment (a sandbox) for a session and register
+// itself as that session's execution provider — the roadmap's Execution Host:
+// provisioning creates an environment and returns an Execution Provider. CWD
+// names a working directory for the environment ("" = the host's default);
+// Repo/Branch request a sandboxed checkout (phase 2: a git worktree per
+// session on a shared repo) and are ignored today.
+type HostRequest struct {
+	Kind string `json:"kind"` // "provision"
+	// ProviderID is the id the host's provisioned provider registers under on
+	// the session. The server generates it so it is unique and safe.
+	ProviderID string `json:"provider_id,omitempty"`
+	// SessionID is the session the provider will serve.
+	SessionID string `json:"session_id,omitempty"`
+	CWD       string `json:"cwd,omitempty"`
+	Repo      string `json:"repo,omitempty"`
+	Branch    string `json:"branch,omitempty"`
+}
 
 // ExecRequest is one message the server pushes to a session's execution
 // provider over its exec subscription. A normal request carries a tool call to
@@ -80,6 +114,42 @@ type SessionInfo struct {
 	ID      string            `json:"id"`
 	History []llm.ChatMessage `json:"history"`
 	Seq     uint64            `json:"seq"`
+	// Warning, when set, reports a non-fatal problem from session creation —
+	// today: a requested execution host could not be provisioned, so the
+	// session falls back to local execution until the host connects.
+	Warning string `json:"warning,omitempty"`
+}
+
+// CreateRequest is the optional body of POST /api/sessions. Host names an
+// execution host to provision the new session's execution provider on ("" or
+// "local" uses the server process); CWD and Repo/Branch are passed to the
+// host so it can create the right environment.
+type CreateRequest struct {
+	Host   string `json:"host,omitempty"`
+	CWD    string `json:"cwd,omitempty"`
+	Repo   string `json:"repo,omitempty"`
+	Branch string `json:"branch,omitempty"`
+}
+
+// HostSummary describes one registered execution host for the web UI's "new
+// chat on" picker: a persistent agent (e.g. on a laptop) that can provision
+// execution contexts.
+type HostSummary struct {
+	ID        string       `json:"id"`
+	Name      string       `json:"name,omitempty"`
+	Kind      string       `json:"kind"` // "host"
+	Connected bool         `json:"connected"`
+	Context   *ExecContext `json:"context,omitempty"`
+}
+
+// HostsResponse is returned by GET /api/hosts.
+type HostsResponse struct {
+	Hosts []HostSummary `json:"hosts"`
+}
+
+// ProviderErrorRequest is the body of POST .../providers/{provider_id}/error.
+type ProviderErrorRequest struct {
+	Error string `json:"error"`
 }
 
 // AppendRequest is the body of POST /api/sessions/{id}/messages.

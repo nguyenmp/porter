@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"html/template"
+	"io"
 	"io/fs"
 	"log"
 	"net/http"
@@ -297,6 +298,10 @@ func (s *Server) Handler() http.Handler {
 	r.Post(api.SessionExecContextPath, s.handleExecContext)
 	r.Get(api.SessionExecStatusPath, s.handleExecStatus)
 	r.Post(api.SessionExecSelectPath, s.handleExecSelect)
+	r.Get(api.HostsPath, s.handleHosts)
+	r.Get(api.HostExecPath, s.handleHostExec)
+	r.Post(api.HostContextPath, s.handleHostContext)
+	r.Post(api.HostProviderErrorPath, s.handleHostProviderError)
 	return r
 }
 
@@ -324,12 +329,33 @@ func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(api.SessionsResponse{Sessions: s.store.List()})
 }
 
-// handleCreate makes a new session and returns its id, history, and resume seq.
+// handleCreate makes a new session and returns its id, history, and resume
+// seq. When the request names an execution host ({"host": "macbook"}), the
+// server asks that host to provision an execution context for the session and
+// waits (bounded) for its provider to register, so the first message in a
+// chat created "on" a host runs there. A provisioning failure is not fatal:
+// the session is returned with a Warning and keeps its local fallback until
+// the host's provider (if ever) connects.
 func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
+	req, err := readCreateRequest(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	ses, err := s.store.Create(s.client)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+	warning := ""
+	if req.Host != "" && req.Host != "local" {
+		if err := s.store.Provision(r.Context(), ses.ID(), req.Host, api.HostRequest{
+			CWD:    req.CWD,
+			Repo:   req.Repo,
+			Branch: req.Branch,
+		}); err != nil {
+			warning = fmt.Sprintf("could not create execution context on %s: %v", req.Host, err)
+		}
 	}
 	snap := ses.Snapshot()
 	w.Header().Set("Content-Type", "application/json")
@@ -337,7 +363,34 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		ID:      ses.ID(),
 		History: snap.History,
 		Seq:     snap.Seq,
+		Warning: warning,
 	})
+}
+
+// readCreateRequest extracts the optional create body from either a JSON body
+// (api.CreateRequest) or a form-encoded body ("host" field), matching
+// handleAppend's dual-format handling so the HTMX new-chat form can post
+// directly without a JS shim.
+func readCreateRequest(r *http.Request) (api.CreateRequest, error) {
+	var req api.CreateRequest
+	ct := r.Header.Get("Content-Type")
+	if strings.HasPrefix(ct, "application/x-www-form-urlencoded") {
+		if err := r.ParseForm(); err != nil {
+			return req, fmt.Errorf("invalid form: %w", err)
+		}
+		req.Host = r.PostForm.Get("host")
+		req.CWD = r.PostForm.Get("cwd")
+		req.Repo = r.PostForm.Get("repo")
+		req.Branch = r.PostForm.Get("branch")
+		return req, nil
+	}
+	if r.Body == nil {
+		return req, nil
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err != io.EOF {
+		return req, fmt.Errorf("invalid create request: %w", err)
+	}
+	return req, nil
 }
 
 // handleAppend queues a user message for the session's scheduler. It accepts
@@ -500,6 +553,10 @@ func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
 	ch := make(chan api.ExecRequest, 8)
 	q := r.URL.Query()
 	id := ses.RegisterExec(ch, q.Get("id"), q.Get("name"), q.Get("kind"))
+	// A provider that registers in response to a provision request (the
+	// persistent host agent's flow) resolves the session-create wait; a
+	// plain REPL connection has no pending provision and this is a no-op.
+	s.store.ProvisionRegistered(ses.ID(), id)
 	defer ses.UnregisterExec(id)
 
 	w.Header().Set("Content-Type", "application/x-ndjson")

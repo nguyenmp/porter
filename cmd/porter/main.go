@@ -14,6 +14,7 @@ import (
 	"porter/internal/client"
 	"porter/internal/codec"
 	"porter/internal/config"
+	"porter/internal/hostagent"
 	"porter/internal/repl"
 	"porter/internal/server"
 )
@@ -49,6 +50,16 @@ func runCLI(args []string, stdout io.Writer, stdin io.Reader) error {
 			return err
 		}
 		return server.Serve(cfg)
+	}
+
+	// `porter host` runs the persistent execution host agent: a long-running
+	// process on a machine (e.g. the laptop) that connects to the server once
+	// and provisions execution contexts for new sessions on demand. The web
+	// UI's "new chat on" picker lists connected hosts; choosing one runs that
+	// chat's agent loop on the host's machine.
+	if len(args) > 0 && args[0] == "host" {
+		cfg := config.ClientEnv()
+		return hostagent.Run(context.Background(), cfg)
 	}
 
 	cfg := config.ClientEnv()

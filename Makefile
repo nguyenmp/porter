@@ -18,7 +18,7 @@ GOARCH   := $(if $(filter x86_64,$(UNAME_M)),amd64,arm64)
 # Go sources; the native binary rebuilds when these change
 SRC      := $(shell find cmd internal -name '*.go' -not -name '*_test.go') go.mod go.sum
 
-.PHONY: test vet build server repl run shell
+.PHONY: test vet build server host repl run shell
 
 ## test: run the Go test suite in the pinned dev container
 test:
@@ -41,6 +41,13 @@ server:
 ## porter-macos: native macOS binary built with the pinned Go, run on the host so the shell is the Mac's
 porter-macos: $(SRC)
 	$(DEV) sh -c 'CGO_ENABLED=0 GOOS=darwin GOARCH=$(GOARCH) go build -o porter-macos ./cmd/porter'
+
+## host: run the persistent execution host agent on this machine (URL + basic
+## auth from .env). The web UI's "New chat" picker then lists this host, and
+## new chats can run their agent loops here. Set PORTER_HOST_CWD to the default
+## working directory for provisioned contexts.
+host: porter-macos
+	$(if $(wildcard .env),set -a; . ./.env; set +a;) ./porter-macos host
 
 ## repl: interactive REPL client against the server (URL + basic auth from .env)
 repl: porter-macos

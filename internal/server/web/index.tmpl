@@ -1,5 +1,6 @@
 {{define "content"}}
 <div id="app" data-session="{{.Session}}">
+	<div id="toast" class="toast" hidden></div>
 	<button id="menu-btn" type="button" aria-label="Toggle session list" aria-expanded="false" title="Sessions">&#9776;</button>
 	<nav class="sidebar">
 		<span class="brand">porter</span>
@@ -11,6 +12,13 @@
 		{{end}}
 		<form class="new-chat" hx-post="/api/sessions" hx-swap="none" hx-on::after-request="onNewChat(event)">
 			<button type="submit">+ New chat</button>
+			{{/* "Run on" picker: every registered execution host (persistent
+			     agents, e.g. the laptop agent) that can provision this chat's
+			     execution context. The value rides as the form's "host" field;
+			     an empty value creates the chat on the server itself. */}}
+			<select id="new-chat-host" name="host" title="Run on" aria-label="Run on">
+				<option value="">local</option>
+			</select>
 		</form>
 		<ul id="session-list" hidden></ul>
 		{{/* Archived folder: sessions the user archived, folded below the active
@@ -103,13 +111,52 @@
 (function() {
   // New chat button: POST /api/sessions, then follow the freshly created
   // session id to its chat page. All client-side; no server change needed.
+  // A Warning on the response (e.g. the chosen execution host couldn't
+  // provision) is toasted so the user knows the chat fell back to local.
   window.onNewChat = function(evt) {
     if (evt.detail.xhr.status < 200 || evt.detail.xhr.status >= 300) return;
     try {
-      const id = JSON.parse(evt.detail.xhr.responseText).id;
-      if (id) window.location = '/?session=' + encodeURIComponent(id);
+      const data = JSON.parse(evt.detail.xhr.responseText);
+      if (data.id) window.location = '/?session=' + encodeURIComponent(data.id);
+      if (data.warning) showToast(data.warning);
     } catch (e) {}
   };
+
+  // showToast shows a transient status message (used for session-create
+  // warnings; the session still opens, so the chat is never blocked).
+  function showToast(msg) {
+    const t = document.getElementById('toast');
+    if (!t) return;
+    t.textContent = msg;
+    t.hidden = false;
+    clearTimeout(showToast.timer);
+    showToast.timer = setTimeout(function() { t.hidden = true; }, 8000);
+  }
+
+  // --- "Run on" picker (execution hosts) ---
+  // The new-chat form's select lists every registered execution host — the
+  // persistent agents (e.g. the laptop) that can provision an execution
+  // context for a new chat. Choosing one sends host=<id> with the create
+  // POST; the server provisions a provider on that host before returning, so
+  // the first message runs there. Disconnected hosts are greyed out.
+  (function() {
+    const sel = document.getElementById('new-chat-host');
+    if (!sel) return;
+    fetch('/api/hosts').then(function(r) { return r.json(); }).then(function(resp) {
+      const hosts = (resp && resp.hosts) || [];
+      for (const h of hosts) {
+        const opt = document.createElement('option');
+        opt.value = h.id;
+        const ctx = h.context || {};
+        let label = h.name || h.id;
+        if (ctx.cwd) label += ' @ ' + ctx.cwd;
+        opt.textContent = label;
+        opt.disabled = !h.connected;
+        sel.appendChild(opt);
+      }
+      if (hosts.length === 0) sel.hidden = true;
+    }).catch(function() {});
+  })();
 
   // --- Sidebar sessions (Step 5) ---
   // The server is the source of truth for which sessions exist: GET /api/sessions

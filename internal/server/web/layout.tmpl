@@ -27,6 +27,10 @@
 		.new-chat { margin-bottom: 0.75rem; }
 		.new-chat button { width: 100%; padding: 0.4rem 0.75rem; border: 1px solid #ccc; border-radius: 4px; background: #fff; color: #333; cursor: pointer; }
 		.new-chat button:hover { background: #f0f0f0; }
+		/* "Run on" picker under the new-chat button: which execution host (if
+		   any) provisions this session's context. Populated from GET /api/hosts;
+		   hidden when no hosts are registered. */
+		.new-chat select { width: 100%; margin-top: 0.35rem; padding: 0.3rem 0.4rem; border: 1px solid #ccc; border-radius: 4px; background: #fff; color: #333; font-size: 0.85em; }
 		#session-list, #archived-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.25rem; }
 		#session-list a, #archived-list a { display: block; padding: 0.35rem 0.5rem; border-radius: 4px; color: #333; text-decoration: none; font-size: 0.9em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 		#session-list a:hover, #archived-list a:hover { background: #f0f0f0; }
@@ -324,6 +328,21 @@
 			.exec-picker-btn { padding: 0.5rem 0.75rem; font-size: 0.95rem; }
 			.exec-picker { min-width: min(280px, calc(100vw - 1rem)); max-width: calc(100vw - 1rem); }
 			.exec-picker-row { padding: 0.7rem 0.6rem; font-size: 1rem; }
+		}
+		/* Transient status toast (session-create warnings): fixed to the
+		   bottom center, above everything, auto-dismissed by JS. */
+		.toast {
+			position: fixed;
+			bottom: 1rem;
+			left: 50%;
+			transform: translateX(-50%);
+			background: #333;
+			color: #fff;
+			padding: 0.5rem 1rem;
+			border-radius: 4px;
+			font-size: 0.9rem;
+			z-index: 100;
+			max-width: min(480px, 90vw);
 		}
 	</style>
 </head>

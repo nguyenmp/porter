@@ -166,9 +166,17 @@ func (d *Dispatcher) Environment() string {
 
 // Run executes the named tool, streaming its output.
 func (d *Dispatcher) Run(ctx context.Context, name string, args []byte) (io.ReadCloser, error) {
+	return d.RunDir(ctx, name, args, "")
+}
+
+// RunDir is Run with an explicit working directory, used by execution hosts
+// that run tools inside a provisioned sandbox (each session's environment on
+// the host has its own directory). An empty dir runs in the process's working
+// directory, like Run.
+func (d *Dispatcher) RunDir(ctx context.Context, name string, args []byte, dir string) (io.ReadCloser, error) {
 	switch name {
 	case "shell":
-		return runShell(ctx, args)
+		return runShellDir(ctx, args, dir)
 	case "load_skill":
 		return d.runLoadSkill(args)
 	default:

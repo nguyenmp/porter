@@ -82,6 +82,18 @@ type Store struct {
 	// porter.mcp.json. Nil when no MCP hub was configured.
 	hub      *mcp.Hub
 	sessions map[string]*Session
+
+	// Execution hosts: persistent agents (e.g. on a laptop) that can
+	// provision execution contexts for new sessions. hosts maps every
+	// registered host by id; pendingHostCtx holds a host's base context for
+	// the window between its context POST and its RegisterHost, keyed by host
+	// id. pending maps in-flight provisions by provider id, so both the host
+	// channel (Provision) and the session's RegisterExec (ProvisionRegistered,
+	// called by the server) can resolve them.
+	hosts          map[string]*host
+	pendingHostCtx map[string]*api.ExecContext
+	pending        map[string]*pendingProvision
+	hostSeq        int
 }
 
 // NewStore returns an empty store backed by persist, serving MCP tools from
@@ -93,7 +105,15 @@ func NewStore(persist Persister, hub *mcp.Hub, ctxs ...context.Context) *Store {
 		ctx = ctxs[0]
 	}
 	ctx, cancel := context.WithCancel(ctx)
-	return &Store{ctx: ctx, cancel: cancel, persist: persist, hub: hub, sessions: map[string]*Session{}}
+	return &Store{
+		ctx:      ctx,
+		cancel:   cancel,
+		persist:  persist,
+		hub:      hub,
+		sessions: map[string]*Session{},
+		hosts:    map[string]*host{},
+		pending:  map[string]*pendingProvision{},
+	}
 }
 
 // Create makes a new session and starts its turn scheduler. The session is

@@ -64,14 +64,37 @@ func (t authTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	return http.DefaultTransport.RoundTrip(req)
 }
 
-// Create makes a new session and returns its id, initial (empty) history, and
-// the seq to subscribe from.
+// Create makes a new session on the server process ("local" execution) and
+// returns its id, initial (empty) history, and the seq to subscribe from.
 func (c *Client) Create(ctx context.Context) (api.SessionInfo, error) {
+	return c.CreateHost(ctx, api.CreateRequest{})
+}
+
+// CreateHost makes a new session whose execution provider is provisioned on
+// the named execution host (persistent agent, e.g. a laptop) before the
+// server returns — so the first message runs there. req.Host "" or "local"
+// uses the server process (Create). A provisioning failure is not fatal: the
+// returned SessionInfo carries a Warning and the session falls back to local
+// execution until the host's provider connects.
+func (c *Client) CreateHost(ctx context.Context, req api.CreateRequest) (api.SessionInfo, error) {
 	var info api.SessionInfo
-	if err := c.doJSON(ctx, http.MethodPost, c.base+api.SessionsPath, nil, &info); err != nil {
+	if err := c.doJSON(ctx, http.MethodPost, c.base+api.SessionsPath, jsonMarshal(req), &info); err != nil {
 		return api.SessionInfo{}, err
 	}
 	return info, nil
+}
+
+// jsonMarshal encodes v, returning a nil slice (instead of "null") when v is
+// the zero value, so a body-less POST stays body-less.
+func jsonMarshal(v any) []byte {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return nil
+	}
+	if string(b) == "{}" || string(b) == "null" {
+		return nil
+	}
+	return b
 }
 
 // History returns the session's authoritative committed history and its seq.
@@ -347,4 +370,75 @@ func (c *Client) ExecStatus(ctx context.Context, id string) (api.ExecStatus, err
 	var out api.ExecStatus
 	err := c.doJSON(ctx, http.MethodGet, c.path(api.SessionExecStatusPath, id), nil, &out)
 	return out, err
+}
+
+// Hosts returns every registered execution host (persistent agents that can
+// provision execution contexts), for the web UI's "new chat on" picker.
+func (c *Client) Hosts(ctx context.Context) (api.HostsResponse, error) {
+	var out api.HostsResponse
+	err := c.doJSON(ctx, http.MethodGet, c.base+api.HostsPath, nil, &out)
+	return out, err
+}
+
+// PostHostContext registers the host's base environment context (system,
+// default working directory, files, skills) with the server, so the "new
+// chat on" picker can show where the host runs. It is called when the host
+// connects.
+func (c *Client) PostHostContext(ctx context.Context, hostID string, execCtx api.ExecContext) error {
+	body, err := json.Marshal(execCtx)
+	if err != nil {
+		return fmt.Errorf("marshal host context: %w", err)
+	}
+	u := strings.Replace(api.HostContextPath, "{host_id}", url.PathEscape(hostID), 1)
+	return c.doJSON(ctx, http.MethodPost, c.base+u, body, nil)
+}
+
+// PostHostProviderError reports that provisioning a provider failed (e.g. the
+// requested working directory does not exist), so the waiting session-create
+// request gets the error instead of timing out.
+func (c *Client) PostHostProviderError(ctx context.Context, hostID, providerID, msg string) error {
+	body, err := json.Marshal(api.ProviderErrorRequest{Error: msg})
+	if err != nil {
+		return fmt.Errorf("marshal provider error: %w", err)
+	}
+	u := strings.Replace(api.HostProviderErrorPath, "{host_id}", url.PathEscape(hostID), 1)
+	u = strings.Replace(u, "{provider_id}", url.PathEscape(providerID), 1)
+	return c.doJSON(ctx, http.MethodPost, c.base+u, body, nil)
+}
+
+// ServeHost registers this client as an execution host and blocks, reading
+// provision requests from the server. Each request is passed to provision;
+// the host is expected to create the requested execution environment and
+// register itself as that session's execution provider (see ServeExec). It
+// returns when the connection ends (or ctx is cancelled); callers should
+// retry to re-register.
+func (c *Client) ServeHost(ctx context.Context, hostID string, provision func(api.HostRequest) error) error {
+	u := strings.Replace(api.HostExecPath, "{host_id}", url.PathEscape(hostID), 1)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+u, nil)
+	if err != nil {
+		return fmt.Errorf("build host exec: %w", err)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("host exec: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return c.statusError(resp)
+	}
+
+	sc := bufio.NewScanner(resp.Body)
+	for sc.Scan() {
+		var hr api.HostRequest
+		if err := json.Unmarshal(sc.Bytes(), &hr); err != nil {
+			return fmt.Errorf("decode host request: %w", err)
+		}
+		if err := provision(hr); err != nil {
+			return fmt.Errorf("provision: %w", err)
+		}
+	}
+	if err := sc.Err(); err != nil {
+		return err
+	}
+	return nil
 }
