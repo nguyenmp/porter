@@ -70,6 +70,30 @@ func discoverRepos(home string) []string {
 	return repos
 }
 
+// resolveRepo turns a repo path from the web UI into an absolute path on the
+// host. Repos are named relative to the user's home directory — the same root
+// discoverRepos scans — so a bare name like "porter" resolves to ~/porter, and
+// a leading "~/" (or "~") is expanded to the home directory. Absolute paths
+// pass through unchanged; the result is cleaned. A path that doesn't exist or
+// isn't a repo is not an error here: provisionWorktree reports it, so the
+// user sees the real git failure instead of a guessed path.
+func resolveRepo(repo string) string {
+	if repo == "" {
+		return repo
+	}
+	if repo == "~" || strings.HasPrefix(repo, "~/") {
+		if home, err := os.UserHomeDir(); err == nil && home != "" {
+			repo = filepath.Join(home, strings.TrimPrefix(repo, "~"))
+		}
+	}
+	if !filepath.IsAbs(repo) {
+		if home, err := os.UserHomeDir(); err == nil && home != "" {
+			repo = filepath.Join(home, repo)
+		}
+	}
+	return filepath.Clean(repo)
+}
+
 // skipDir reports whether a directory tree should be skipped during repo
 // discovery: hidden dirs are handled by the caller; this is for common heavy
 // or irrelevant trees that are not user projects.

@@ -229,3 +229,59 @@ func TestRepoOfWorktree(t *testing.T) {
 		t.Errorf("repoOfWorktree on plain dir = %q, want empty", got)
 	}
 }
+
+func TestResolveRepo(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	abs := filepath.Join(home, "porter")
+
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"bare name resolves to home", "porter", abs},
+		{"tilde-slash expands", "~/porter", abs},
+		{"tilde alone expands", "~", home},
+		{"absolute passes through", abs, abs},
+		{"dot-slash resolves to home", "./porter", abs},
+		{"empty stays empty", "", ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := resolveRepo(c.in); got != c.want {
+				t.Errorf("resolveRepo(%q) = %q, want %q", c.in, got, c.want)
+			}
+		})
+	}
+}
+
+// TestProvisionWorktreeResolvesRepoFromHome covers the bug where typing a bare
+// repo name (e.g. "porter") in the web UI failed because it was resolved
+// against the host process's cwd instead of the user's home directory: a bare
+// name must mean ~/porter, matching how discoverRepos finds repos.
+func TestProvisionWorktreeResolvesRepoFromHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	repo := filepath.Join(home, "porter")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "init", "-b", "main")
+	runGit(t, repo, "config", "user.email", "test@example.com")
+	runGit(t, repo, "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(repo, "hello.txt"), []byte("main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "add", ".")
+	runGit(t, repo, "commit", "-m", "initial")
+
+	path, branch, err := provisionWorktree(context.Background(), resolveRepo("porter"), "", t.TempDir(), "mac-provider-5")
+	if err != nil {
+		t.Fatalf("provisionWorktree with resolved repo: %v", err)
+	}
+	defer removeWorktree(repo, path, branch)
+	if _, err := os.Stat(filepath.Join(path, "hello.txt")); err != nil {
+		t.Fatalf("sandbox should have the repo's files: %v", err)
+	}
+}

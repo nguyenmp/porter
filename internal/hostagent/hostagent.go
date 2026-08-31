@@ -144,14 +144,19 @@ func (p *provisioner) provision(req api.HostRequest) error {
 
 	var serveCtx context.Context = context.Background()
 	if req.Repo != "" {
-		path, branch, err := provisionWorktree(ctx, req.Repo, req.Branch, p.worktrees, req.ProviderID)
+		// Resolve the repo against the user's home directory (the same root
+		// discoverRepos scans), so a bare name like "porter" means ~/porter
+		// regardless of where the host process runs. The resolved path is also
+		// what release/cleanup tear down, so they agree on the repo.
+		repo := resolveRepo(req.Repo)
+		path, branch, err := provisionWorktree(ctx, repo, req.Branch, p.worktrees, req.ProviderID)
 		if err != nil {
 			_ = p.c.PostHostProviderError(ctx, p.hostID, req.ProviderID, err.Error())
 			return nil
 		}
 		sctx, scancel := context.WithCancel(context.Background())
 		p.mu.Lock()
-		p.serves[req.ProviderID] = &serveState{cancel: scancel, repo: req.Repo, path: path, branch: branch}
+		p.serves[req.ProviderID] = &serveState{cancel: scancel, repo: repo, path: path, branch: branch}
 		p.mu.Unlock()
 		dir = path
 		serveCtx = sctx
