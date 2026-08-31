@@ -561,6 +561,11 @@ func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/x-ndjson")
 	w.WriteHeader(http.StatusOK)
+	// Flush the 200 now so the client's ServeExec sees the connection accepted
+	// without waiting for the first tool call to arrive on the stream.
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
 
 	enc := json.NewEncoder(flushWriter{w})
 	for {

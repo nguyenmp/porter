@@ -30,6 +30,12 @@ func (s *Server) handleHostExec(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/x-ndjson")
 	w.WriteHeader(http.StatusOK)
+	// Flush the 200 now so the host's ServeHost sees the connection accepted
+	// immediately, instead of only when the first provision request arrives
+	// (an idle host could otherwise never observe its own registration).
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
 
 	enc := json.NewEncoder(flushWriter{w})
 	for {

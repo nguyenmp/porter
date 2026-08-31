@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -231,10 +232,19 @@ func (h *Hub) Refresh(ctx context.Context) {
 		wg.Add(1)
 		go func(s *Server) {
 			defer wg.Done()
+			log.Printf("mcp: connecting to %s (%s)", s.Name, s.URL)
 			s.fetch(ctx, h.client)
+			if status, msg := s.Status(); status == "ok" {
+				log.Printf("mcp: connected to %s (%d tools)", s.Name, len(s.Tools()))
+			} else {
+				log.Printf("mcp: failed to connect to %s: %s", s.Name, msg)
+			}
 		}(s)
 	}
 	wg.Wait()
+	if n := len(servers); n > 0 {
+		log.Printf("mcp: loaded %d server(s)", n)
+	}
 }
 
 // Server returns the server with the given name, or nil.

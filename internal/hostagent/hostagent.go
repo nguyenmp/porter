@@ -63,10 +63,13 @@ func Run(ctx context.Context, cfg config.ClientConfig) error {
 		if ctx.Err() != nil {
 			return nil
 		}
+		log.Printf("execution host %s: connecting to %s", hostID, cfg.ServerURL)
 		if err := c.PostHostContext(ctx, hostID, env); err != nil && ctx.Err() == nil {
 			log.Printf("execution host: context register failed: %v", err)
 		}
-		if err := c.ServeHost(ctx, hostID, prov.provision); err != nil {
+		if err := c.ServeHost(ctx, hostID, prov.provision, func() {
+			log.Printf("execution host %s: connected", hostID)
+		}); err != nil {
 			if ctx.Err() != nil {
 				return nil
 			}

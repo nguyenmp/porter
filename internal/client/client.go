@@ -411,8 +411,10 @@ func (c *Client) PostHostProviderError(ctx context.Context, hostID, providerID, 
 // the host is expected to create the requested execution environment and
 // register itself as that session's execution provider (see ServeExec). It
 // returns when the connection ends (or ctx is cancelled); callers should
-// retry to re-register.
-func (c *Client) ServeHost(ctx context.Context, hostID string, provision func(api.HostRequest) error) error {
+// retry to re-register. onConnect, when non-nil, is called exactly once once
+// the exec connection is established (the server accepted the registration),
+// before any provision request is read, so callers can log readiness.
+func (c *Client) ServeHost(ctx context.Context, hostID string, provision func(api.HostRequest) error, onConnect func()) error {
 	u := strings.Replace(api.HostExecPath, "{host_id}", url.PathEscape(hostID), 1)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+u, nil)
 	if err != nil {
@@ -425,6 +427,9 @@ func (c *Client) ServeHost(ctx context.Context, hostID string, provision func(ap
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		return c.statusError(resp)
+	}
+	if onConnect != nil {
+		onConnect()
 	}
 
 	sc := bufio.NewScanner(resp.Body)
