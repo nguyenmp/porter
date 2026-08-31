@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -272,6 +273,35 @@ func memPersister(t *testing.T) Persister {
 	t.Cleanup(func() { d.Close() })
 	return d
 }
+
+// startLoop runs the session's scheduler, matching production (Store.Create and
+// Store.Load start it). Provider notices are committed by this goroutine, so
+// tests that assert on notices must run it and wait (see waitForHistory).
+func startLoop(t *testing.T, s *Session) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go s.loop(ctx)
+}
+
+// waitForHistory polls the session's committed history until want is satisfied.
+// Notices commit asynchronously on the scheduler goroutine, so assertions on
+// them must wait rather than read immediately after the triggering call.
+func waitForHistory(t *testing.T, s *Session, want func([]llm.ChatMessage) bool) []llm.ChatMessage {
+	t.Helper()
+	deadline := time.After(5 * time.Second)
+	for {
+		msgs, _ := s.loadMessages()
+		if want(msgs) {
+			return msgs
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("timed out waiting for history condition; history = %+v", msgs)
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+}
 func TestTrackToolRunsForReconnect(t *testing.T) {
 	s := newTestSession(t, "s")
 
@@ -468,19 +498,36 @@ func TestExecStatusReflectsProvider(t *testing.T) {
 // the model sees the environment change on its next turn.
 func TestProviderChangeCommitsSystemNotices(t *testing.T) {
 	s := newTestSession(t, "s")
+	startLoop(t, s)
 	s.SetExecContext(api.ExecContext{System: "linux/amd64", CWD: "/work"})
 	id := s.RegisterExec(make(chan api.ExecRequest, 1), "", "", "")
 	s.UnregisterExec(id)
 
-	snap := s.Snapshot()
-	if len(snap.History) != 2 {
-		t.Fatalf("history = %+v, want 2 system notices", snap.History)
+	// The notices are queued and committed by the scheduler, possibly coalesced
+	// into one message; wait until the disconnect notice has landed.
+	msgs := waitForHistory(t, s, func(h []llm.ChatMessage) bool {
+		for _, m := range h {
+			if m.Role == "system" && strings.Contains(m.Content, "disconnected") {
+				return true
+			}
+		}
+		return false
+	})
+	var sys []llm.ChatMessage
+	for _, m := range msgs {
+		if m.Role != "system" {
+			t.Errorf("non-system message in notice history = %+v", m)
+		}
+		sys = append(sys, m)
 	}
-	if snap.History[0].Role != "system" || !strings.Contains(snap.History[0].Content, "execution provider connected") || !strings.Contains(snap.History[0].Content, "/work") {
-		t.Errorf("connect notice = %+v", snap.History[0])
+	if len(sys) == 0 || len(sys) > 2 {
+		t.Fatalf("history = %+v, want 1-2 system notices", sys)
 	}
-	if snap.History[1].Role != "system" || !strings.Contains(snap.History[1].Content, "disconnected") {
-		t.Errorf("disconnect notice = %+v", snap.History[1])
+	if !strings.Contains(sys[0].Content, "execution provider connected") || !strings.Contains(sys[0].Content, "/work") {
+		t.Errorf("connect notice = %+v", sys[0])
+	}
+	if !strings.Contains(sys[len(sys)-1].Content, "disconnected") {
+		t.Errorf("disconnect notice = %+v", sys[len(sys)-1])
 	}
 }
 
@@ -859,25 +906,42 @@ func TestSelectExecErrorsOnUnknown(t *testing.T) {
 // change on its next turn.
 func TestSelectExecCommitsSystemNotices(t *testing.T) {
 	s := newTestSession(t, "s")
+	startLoop(t, s)
 	s.SetExecContext(api.ExecContext{ID: "laptop", System: "darwin/arm64", CWD: "/Users/mark"})
 	s.RegisterExec(make(chan api.ExecRequest, 1), "laptop", "laptop", "remote")
 
 	if err := s.SelectExec("local"); err != nil {
 		t.Fatalf("SelectExec(local): %v", err)
 	}
-	snap := s.Snapshot()
-	last := snap.History[len(snap.History)-1]
-	if last.Role != "system" || !strings.Contains(last.Content, "execution provider") || !strings.Contains(last.Content, "local") {
-		t.Errorf("select-local notice = %+v, want a system notice naming local", last)
-	}
-
 	if err := s.SelectExec("laptop"); err != nil {
 		t.Fatalf("SelectExec(laptop): %v", err)
 	}
-	snap = s.Snapshot()
-	last = snap.History[len(snap.History)-1]
-	if last.Role != "system" || !strings.Contains(last.Content, "laptop") || !strings.Contains(last.Content, "darwin/arm64") {
+
+	// Notices commit asynchronously on the scheduler, possibly coalesced; wait
+	// until the final laptop-selection notice has landed.
+	msgs := waitForHistory(t, s, func(h []llm.ChatMessage) bool {
+		if len(h) == 0 {
+			return false
+		}
+		// The selection notice is "execution provider: laptop (...)", distinct
+		// from the connect notice "execution provider connected: laptop (...)".
+		last := h[len(h)-1]
+		return last.Role == "system" && strings.Contains(last.Content, "execution provider: laptop") && strings.Contains(last.Content, "darwin/arm64")
+	})
+	last := msgs[len(msgs)-1]
+	if !strings.Contains(last.Content, "execution provider") {
 		t.Errorf("select-laptop notice = %+v, want a system notice naming the laptop", last)
+	}
+	// Somewhere in the (possibly coalesced) notice history, the intermediate
+	// selection of local must be recorded.
+	var sawLocal bool
+	for _, m := range msgs {
+		if m.Role == "system" && strings.Contains(m.Content, "local") {
+			sawLocal = true
+		}
+	}
+	if !sawLocal {
+		t.Errorf("no notice recording the local selection; history = %+v", msgs)
 	}
 }
 
@@ -951,5 +1015,119 @@ func TestRemoteProviderRunsOnActiveClient(t *testing.T) {
 	case <-laptopCh:
 	default:
 		t.Error("laptop client never received the call after selection")
+	}
+}
+
+// TestProviderNoticeDeferredToTurnBoundary is the regression test for the
+// production 400 "An assistant message with 'tool_calls' must be followed by
+// tool messages responding to each 'tool_call_id'": an execution-provider
+// disconnect that lands while a tool is mid-flight must NOT persist a system
+// notice between the assistant tool_calls message and its tool result. The
+// notice is queued and committed by the scheduler only after the turn ends.
+func TestProviderNoticeDeferredToTurnBoundary(t *testing.T) {
+	var mu sync.Mutex
+	reqCount := 0
+	llmSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		reqCount++
+		n := reqCount
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/event-stream")
+		if n == 1 {
+			// First request: the model asks for a shell tool call.
+			fmt.Fprint(w,
+				`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"shell","arguments":"{\"command\":\"echo hi\"}"}}]},"finish_reason":"tool_calls"}]}`+"\n\n"+
+					`data: [DONE]`+"\n")
+			return
+		}
+		// Second request: plain reply, no more tools.
+		fmt.Fprint(w,
+			`data: {"choices":[{"delta":{"content":"done"},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":3}}`+"\n\n"+
+				`data: [DONE]`+"\n")
+	}))
+	defer llmSrv.Close()
+
+	client := llm.NewClient(config.Config{BaseURL: llmSrv.URL + "/v1", Model: "m", APIKey: "k"}, nil)
+	nctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	st := NewStore(memPersister(t), nil, nctx)
+	s, err := st.Create(client)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	ch := make(chan api.ExecRequest, 8)
+	id := s.RegisterExec(ch, "laptop", "laptop", "remote")
+	s.Enqueue("run a tool")
+
+	// Act as the execution client: wait for the tool call, then disconnect
+	// mid-flight. UnregisterExec closes the agent's pipe with
+	// "execution client disconnected", so the tool result lands as an error.
+	var req api.ExecRequest
+	select {
+	case req = <-ch:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for the tool call on the exec channel")
+	}
+	if req.Name != "shell" {
+		t.Fatalf("tool call name = %q, want shell", req.Name)
+	}
+	s.UnregisterExec(id)
+
+	// The turn finishes (tool result + final reply), then the queued disconnect
+	// notice commits at the boundary. Wait for both.
+	msgs := waitForHistory(t, s, func(h []llm.ChatMessage) bool {
+		var done, notice bool
+		for _, m := range h {
+			if m.Role == "assistant" && strings.Contains(m.Content, "done") {
+				done = true
+			}
+			if m.Role == "system" && strings.Contains(m.Content, "disconnected") {
+				notice = true
+			}
+		}
+		return done && notice
+	})
+
+	// The invariant: every assistant message with tool_calls is immediately
+	// followed by a role-"tool" message responding to its first call id — no
+	// system notice (or anything else) wedged in between.
+	var sawToolCall bool
+	for i, m := range msgs {
+		if m.Role != "assistant" || len(m.ToolCalls) == 0 {
+			continue
+		}
+		sawToolCall = true
+		if i+1 >= len(msgs) {
+			t.Fatalf("assistant tool_calls message is last in history = %+v", msgs)
+		}
+		next := msgs[i+1]
+		if next.Role != "tool" {
+			t.Fatalf("message after assistant tool_calls = role %q, want tool (wedge!); history = %+v", next.Role, msgs)
+		}
+		if next.ToolCallID != m.ToolCalls[0].ID {
+			t.Errorf("tool result call id = %q, want %q", next.ToolCallID, m.ToolCalls[0].ID)
+		}
+	}
+	if !sawToolCall {
+		t.Fatalf("no assistant tool_calls message in history: %+v", msgs)
+	}
+
+	// The disconnect notice must exist and must be committed after the tool
+	// result, not between the tool call and its result.
+	var toolIdx, noticeIdx = -1, -1
+	for i, m := range msgs {
+		if m.Role == "tool" {
+			toolIdx = i
+		}
+		if m.Role == "system" && strings.Contains(m.Content, "disconnected") {
+			noticeIdx = i
+		}
+	}
+	if noticeIdx == -1 {
+		t.Fatalf("disconnect notice missing from history: %+v", msgs)
+	}
+	if toolIdx == -1 || noticeIdx < toolIdx {
+		t.Errorf("disconnect notice (idx %d) not after tool result (idx %d); history = %+v", noticeIdx, toolIdx, msgs)
 	}
 }

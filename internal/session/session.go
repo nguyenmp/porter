@@ -305,6 +305,19 @@ type Session struct {
 	turnCancel context.CancelFunc
 
 	queue chan string
+
+	// notices carries execution-provider status changes awaiting commit
+	// (connected/disconnected/selected). The HTTP handlers that observe the
+	// exec connection — RegisterExec, UnregisterExec, SelectExec — only queue
+	// here; the scheduler goroutine commits them at a turn boundary, keeping
+	// the scheduler the session's single history writer. Committing from the
+	// handler goroutine directly could persist a system message into the
+	// middle of a turn's tool-call exchange — between an assistant tool_calls
+	// message and its tool results — which DeepSeek rejects with
+	// "insufficient tool messages following tool_calls message". Best-effort:
+	// a full queue drops the notice (real-time status still streams via
+	// KindExecStatus).
+	notices chan string
 }
 
 // toolRun is the accumulated state of one in-flight tool execution: what was
@@ -337,6 +350,7 @@ func newSession(id string, client *llm.Client, js tools.Provider, persist Persis
 		execClients: map[string]*execClient{},
 		activeExec:  "local",
 		queue:       make(chan string, 16),
+		notices:     make(chan string, 32),
 	}
 }
 
@@ -394,13 +408,25 @@ func (s *Session) localContextLocked() api.ExecContext {
 
 // loop is the turn scheduler. It consumes queued user messages one at a time,
 // so only one turn runs per session and history writes are strictly ordered.
+// Provider notices are committed here too (see flushNotices), so every
+// history write happens on this goroutine and a notice can never land inside
+// a turn's tool-call exchange.
 func (s *Session) loop(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case content := <-s.queue:
+			// Flush any notices queued before this turn so the provider
+			// narrative lands at the boundary, not inside the turn.
+			s.flushNotices()
 			s.runTurn(ctx, content)
+		case n := <-s.notices:
+			// A provider change arrived (possibly mid-turn; it waits in the
+			// channel until the turn ends, then commits at the boundary). The
+			// receive already consumed n; flushNotices drains any that piled up
+			// behind it and commits them together.
+			s.flushNotices(n)
 		}
 	}
 }

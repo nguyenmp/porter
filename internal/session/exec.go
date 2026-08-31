@@ -207,7 +207,7 @@ func (s *Session) ExecStatus() api.ExecStatus {
 // can then pick another provider in the selector). It returns the client's
 // effective id — the server generates one when the client didn't send its own
 // (legacy binaries, tests) — so the caller's deferred UnregisterExec can name
-// the same client. It commits a system notice so the model sees the
+// the same client. It queues a system notice so the model sees the
 // environment change, and broadcasts the new status.
 func (s *Session) RegisterExec(ch chan api.ExecRequest, id, name, kind string) string {
 	s.mu.Lock()
@@ -243,15 +243,15 @@ func (s *Session) RegisterExec(ch chan api.ExecRequest, id, name, kind string) s
 	s.activeExec = id
 	s.mu.Unlock()
 
-	s.commitProviderNotice(s.providerNotice("execution provider connected", c.name, c.ctx))
+	s.queueProviderNotice(s.providerNotice("execution provider connected", c.name, c.ctx))
 	s.publishStatus()
 	return id
 }
 
 // UnregisterExec removes a connected execution client from the registry and,
 // when it was the active provider, closes its in-flight calls (so the agent
-// does not hang) and reverts to local execution with a system notice. A
-// non-active client's disconnect only updates the registry — the model's
+// does not hang) and reverts to local execution with a queued system notice.
+// A non-active client's disconnect only updates the registry — the model's
 // environment didn't change — but the status is still broadcast so the
 // selector drops the entry.
 func (s *Session) UnregisterExec(id string) {
@@ -273,7 +273,7 @@ func (s *Session) UnregisterExec(id string) {
 	s.mu.Unlock()
 
 	if reverted {
-		s.commitProviderNotice("execution provider disconnected; reverting to local execution")
+		s.queueProviderNotice("execution provider disconnected; reverting to local execution")
 	}
 	s.publishStatus()
 }
@@ -315,7 +315,7 @@ func (s *Session) SelectExec(id string) error {
 	if c != nil {
 		name = c.name
 	}
-	s.commitProviderNotice(s.providerNotice("execution provider", name, ctx))
+	s.queueProviderNotice(s.providerNotice("execution provider", name, ctx))
 	s.publishStatus()
 	return nil
 }
@@ -377,14 +377,48 @@ func (s *Session) nextClientID() string {
 	return fmt.Sprintf("client-%d", s.clientSeq)
 }
 
-// commitProviderNotice commits a role-"system" message so the model sees the
-// execution environment change on its next turn. It is best-effort and silent:
-// a persist failure during shutdown (the database is already closed) is
-// expected, and the notice is informational rather than a turn, so it is not
-// worth a log line.
-func (s *Session) commitProviderNotice(content string) {
-	m := llm.SystemMessage(content)
-	_, _ = s.commitEnv(api.Envelope{Kind: api.KindMessage, Message: &m})
+// queueProviderNotice records an execution-provider status change for commit.
+// It is called from the HTTP handlers (RegisterExec/UnregisterExec/SelectExec)
+// on their own goroutines, so the notice is only queued here — never written
+// to history directly. The scheduler goroutine commits it at a turn boundary
+// (see flushNotices), so a provider switch can never land in the middle of a
+// tool-call exchange, which DeepSeek rejects with "insufficient tool messages
+// following tool_calls message". Best-effort and silent: the notice is
+// informational (real-time status already streams via KindExecStatus), and a
+// full queue during a disconnect storm is not worth a log line.
+func (s *Session) queueProviderNotice(content string) {
+	select {
+	case s.notices <- content:
+	default:
+	}
+}
+
+// flushNotices commits every queued provider notice as one coalesced
+// role-"system" message. It must only be called from the scheduler goroutine
+// (the loop), so the session keeps a single history writer and a notice can
+// never be persisted inside a turn's tool-call exchange. Notices that arrive
+// while a turn is running wait in the channel until the turn ends and are
+// flushed at the boundary; a burst of connect/disconnect cycles during a turn
+// is joined into one message instead of littering the transcript. The commit
+// is best-effort and silent (a persist failure during shutdown is expected;
+// the notice is informational rather than a turn).
+func (s *Session) flushNotices(first ...string) {
+	parts := make([]string, 0, 2)
+	if len(first) > 0 {
+		parts = append(parts, first[0])
+	}
+	for {
+		select {
+		case n := <-s.notices:
+			parts = append(parts, n)
+		default:
+			if len(parts) > 0 {
+				m := llm.SystemMessage(strings.Join(parts, "; "))
+				_, _ = s.commitEnv(api.Envelope{Kind: api.KindMessage, Message: &m})
+			}
+			return
+		}
+	}
 }
 
 // publishStatus broadcasts the session's current execution provider status as a
