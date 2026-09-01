@@ -427,7 +427,7 @@ func newTestSession(t *testing.T, id string) *Session {
 	if err != nil {
 		t.Fatalf("create session row: %v", err)
 	}
-	return newSession(id, nil, nil, d, rowID, time.Now().UnixMilli(), 0, nil)
+	return newSession(id, nil, nil, d, rowID, time.Now().UnixMilli(), 0, "", nil)
 }
 
 // memPersister opens a fresh in-memory SQLite database as a Persister.
@@ -895,7 +895,7 @@ func TestCommittedToolEnvelopeCarriesToolOutput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Persisted: %v", err)
 	}
-	s2 := newSession(s.ID(), nil, nil, s.persist, ps.ID, ps.CreatedAt, ps.ArchivedAt, nil)
+	s2 := newSession(s.ID(), nil, nil, s.persist, ps.ID, ps.CreatedAt, ps.ArchivedAt, ps.Name, nil)
 	s2.rebuildFromPersisted(ps)
 
 	ctx2, cancel2 := context.WithCancel(context.Background())
@@ -962,6 +962,81 @@ func TestStoreArchiveUnarchive(t *testing.T) {
 	}
 	if err := st.Unarchive("session_9999"); err != db.ErrNotFound {
 		t.Errorf("Unarchive unknown = %v, want db.ErrNotFound", err)
+	}
+}
+
+func TestStoreRenameBroadcasts(t *testing.T) {
+	st := NewStore(memPersister(t), nil)
+	s, err := st.Create(nil)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// A fresh session has no name.
+	if got := s.Name(); got != "" {
+		t.Fatalf("fresh Name() = %q, want empty", got)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stream := s.From(ctx, 0)
+
+	// Rename: memory updates, and a live session_renamed envelope carries the
+	// new name to subscribers (persist-first ordering is by construction;
+	// the db test covers persistence).
+	if err := st.Rename(s.ID(), "work chat"); err != nil {
+		t.Fatalf("Rename: %v", err)
+	}
+	if got := s.Name(); got != "work chat" {
+		t.Errorf("Name() = %q, want %q", got, "work chat")
+	}
+	select {
+	case env := <-stream:
+		if env.Kind != api.KindSessionRenamed || env.SessionName != "work chat" {
+			t.Fatalf("envelope = %+v, want session_renamed with name", env)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("no session_renamed envelope within 5s")
+	}
+
+	// The name is not part of history: a subscriber that only replays the
+	// committed log sees no session_renamed (it is live-only).
+	ps, err := s.Persisted()
+	if err != nil {
+		t.Fatalf("Persisted: %v", err)
+	}
+	if ps.Name != "work chat" {
+		t.Errorf("persisted name = %q, want %q", ps.Name, "work chat")
+	}
+
+	// Clearing publishes the empty name (falls back to the preview).
+	if err := st.Rename(s.ID(), ""); err != nil {
+		t.Fatalf("Rename clear: %v", err)
+	}
+	if got := s.Name(); got != "" {
+		t.Errorf("Name() after clear = %q, want empty", got)
+	}
+	select {
+	case env := <-stream:
+		if env.Kind != api.KindSessionRenamed || env.SessionName != "" {
+			t.Fatalf("envelope = %+v, want session_renamed with empty name", env)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("no session_renamed envelope within 5s")
+	}
+
+	// The list carries the name for the sidebar.
+	if err := st.Rename(s.ID(), "sidebar name"); err != nil {
+		t.Fatalf("Rename: %v", err)
+	}
+	list := st.List()
+	if len(list) != 1 || list[0].Name != "sidebar name" {
+		t.Fatalf("list after rename = %+v, want one row with name", list)
+	}
+
+	// Unknown session: ErrNotFound, and no broadcast.
+	if err := st.Rename("session_9999", "x"); err != db.ErrNotFound {
+		t.Fatalf("Rename unknown = %v, want db.ErrNotFound", err)
 	}
 }
 

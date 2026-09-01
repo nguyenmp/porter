@@ -175,6 +175,13 @@ type pageData struct {
 	// page's archive/restore button can render the correct initial state
 	// before any JS runs.
 	Archived bool
+	// Name is the session's custom display name ("" when none is set).
+	// Preview is the single-line first-message preview — the fallback when no
+	// name is set, and what the rename input falls back to when cleared. The
+	// template renders Name, else Preview, else the session id: the same chain
+	// the sidebar uses.
+	Name    string
+	Preview string
 }
 
 // ToolRunInfo carries the display details of one tool call for the view,
@@ -296,6 +303,7 @@ func (s *Server) Handler() http.Handler {
 	r.Post(api.SessionStopPath, s.handleStop)
 	r.Post(api.SessionArchivePath, s.handleArchive)
 	r.Post(api.SessionUnarchivePath, s.handleUnarchive)
+	r.Post(api.SessionRenamePath, s.handleRename)
 	r.Post(api.SessionExecContextPath, s.handleExecContext)
 	r.Get(api.SessionExecStatusPath, s.handleExecStatus)
 	r.Post(api.SessionExecSelectPath, s.handleExecSelect)
@@ -673,6 +681,38 @@ func (s *Server) handleUnarchive(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
+// maxSessionName caps a custom session name so the sidebar and header stay
+// single-line sane; longer names are silently truncated (matching the
+// preview's silent truncation).
+const maxSessionName = 200
+
+// handleRename sets (or clears) the session's custom display name. Empty
+// (after trimming) clears it back to the first-message preview. Names are
+// display-only — the id stays the identity, so renaming never affects links,
+// exec, or history — and renaming an archived session keeps it archived. The
+// new name is broadcast live as session_renamed so every open client updates
+// in place.
+func (s *Server) handleRename(w http.ResponseWriter, r *http.Request) {
+	var req api.RenameRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid rename request", http.StatusBadRequest)
+		return
+	}
+	name := strings.TrimSpace(req.Name)
+	if rn := []rune(name); len(rn) > maxSessionName {
+		name = string(rn[:maxSessionName])
+	}
+	if err := s.store.Rename(chi.URLParam(r, "id"), name); err != nil {
+		if errors.Is(err, db.ErrNotFound) {
+			http.Error(w, "session not found", http.StatusNotFound)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
 // handleExecResult streams a client's tool output back to the in-flight call.
 func (s *Server) handleExecResult(w http.ResponseWriter, r *http.Request) {
 	ses, ok := s.store.Get(chi.URLParam(r, "id"))
@@ -838,5 +878,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		TotalUncached: uncached,
 		TotalOutput:   output,
 		Archived:      ses.Archived(),
+		Name:          ses.Name(),
+		Preview:       ses.Preview(),
 	})
 }

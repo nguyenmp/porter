@@ -57,6 +57,11 @@ const (
 	// POST. Idempotent. Sending any message to an archived session also
 	// unarchives it server-side, so this endpoint is the explicit button.
 	SessionUnarchivePath = "/api/sessions/{id}/unarchive"
+	// SessionRenamePath sets (or clears) a session's custom display name:
+	// POST. Names are display-only; an empty (or whitespace-only) name clears
+	// back to the first-message preview. Renaming an archived session keeps it
+	// archived.
+	SessionRenamePath = "/api/sessions/{id}/rename"
 	// SessionExecContextPath registers the environment context of the connected
 	// execution provider (system, working directory, files, skills): POST.
 	SessionExecContextPath = "/api/sessions/{id}/exec/context"
@@ -168,6 +173,13 @@ type AppendRequest struct {
 	Content string `json:"content"`
 }
 
+// RenameRequest is the body of POST /api/sessions/{id}/rename. Name is the
+// session's new custom display name; empty (or whitespace-only) clears it
+// back to the first-message preview.
+type RenameRequest struct {
+	Name string `json:"name"`
+}
+
 // SessionHistory is the authoritative conversation state returned by
 // GET /api/sessions/{id}. History is exactly the committed messages with
 // seq <= Seq; a client that replays the bus with `since=seq` gets the rest with
@@ -249,6 +261,11 @@ const (
 	// status (connected/local + its reported context) whenever it changes. It
 	// comes from our system, not the model.
 	KindExecStatus = "exec_status"
+	// KindSessionRenamed broadcasts that the session's custom display name
+	// changed (set or cleared). It is live-only, like KindExecStatus — never
+	// replayed, because a freshly loaded page gets the name from GET
+	// /api/sessions.
+	KindSessionRenamed = "session_renamed"
 )
 
 // Envelope is a single NDJSON line on a session's event bus. Kind selects which
@@ -319,7 +336,10 @@ type Envelope struct {
 	// whenever it changes (a client connected, disconnected, or swapped in).
 	// KindExecStatus.
 	ExecStatus *ExecStatus `json:"exec_status,omitempty"` // KindExecStatus
-	Queue      int         `json:"queue,omitempty"`       // KindMessage (user)
+	// SessionName is the session's custom display name after a rename ("" when
+	// cleared back to the preview fallback). KindSessionRenamed.
+	SessionName string `json:"session_name,omitempty"` // KindSessionRenamed
+	Queue       int    `json:"queue,omitempty"`        // KindMessage (user)
 }
 
 // SessionSummary is one row of the session list (GET /api/sessions). ID and
@@ -328,7 +348,10 @@ type Envelope struct {
 type SessionSummary struct {
 	ID        string `json:"id"`
 	CreatedAt int64  `json:"created_at"`
-	Preview   string `json:"preview,omitempty"`
+	// Name is the session's custom display name ("" when none is set; the
+	// sidebar falls back to Preview). Omitted from the JSON when empty.
+	Name    string `json:"name,omitempty"`
+	Preview string `json:"preview,omitempty"`
 	// ArchivedAt is the epoch-ms time the session was archived, or 0 when it
 	// is active. Omitted from the JSON for active sessions so the sidebar
 	// response stays terse.

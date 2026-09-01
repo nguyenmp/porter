@@ -785,6 +785,71 @@ func TestArchiveUnarchiveSession(t *testing.T) {
 	}
 }
 
+func TestRenameSession(t *testing.T) {
+	d := openTemp(t)
+
+	id, err := d.CreateSession(10)
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	// Fresh sessions have no name.
+	list, err := d.ListSessions()
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	if len(list) != 1 || list[0].Name != "" {
+		t.Fatalf("fresh session = %+v, want one row with empty name", list)
+	}
+
+	// Rename: the name shows in the list and survives LoadSession.
+	if err := d.RenameSession(id, "My chat"); err != nil {
+		t.Fatalf("RenameSession: %v", err)
+	}
+	list, err = d.ListSessions()
+	if err != nil {
+		t.Fatalf("ListSessions after rename: %v", err)
+	}
+	if len(list) != 1 || list[0].Name != "My chat" {
+		t.Fatalf("renamed session = %+v, want name set", list)
+	}
+	ps, err := d.LoadSession(id)
+	if err != nil {
+		t.Fatalf("LoadSession: %v", err)
+	}
+	if ps.Name != "My chat" {
+		t.Errorf("LoadSession name = %q, want %q", ps.Name, "My chat")
+	}
+
+	// Clearing (empty name) resets to the preview fallback.
+	if err := d.RenameSession(id, ""); err != nil {
+		t.Fatalf("RenameSession clear: %v", err)
+	}
+	list, err = d.ListSessions()
+	if err != nil {
+		t.Fatalf("ListSessions after clear: %v", err)
+	}
+	if len(list) != 1 || list[0].Name != "" {
+		t.Fatalf("cleared session = %+v, want empty name", list)
+	}
+
+	// Renaming never touches the archived flag: an archived session stays
+	// archived with its new name.
+	if err := d.ArchiveSession(id, 50); err != nil {
+		t.Fatalf("ArchiveSession: %v", err)
+	}
+	if err := d.RenameSession(id, "Archived but renamed"); err != nil {
+		t.Fatalf("RenameSession archived: %v", err)
+	}
+	ps, err = d.LoadSession(id)
+	if err != nil {
+		t.Fatalf("LoadSession after rename of archived: %v", err)
+	}
+	if ps.Name != "Archived but renamed" || ps.ArchivedAt != 50 {
+		t.Errorf("after rename of archived: name = %q archived_at = %d, want name set and archive intact", ps.Name, ps.ArchivedAt)
+	}
+}
+
 func TestMigratesFromV6ToV7(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "porter.db")
 

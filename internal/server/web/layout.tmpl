@@ -52,10 +52,27 @@
 		.archived-toggle:focus-visible { outline: 2px solid #007bff; outline-offset: 1px; }
 		.archived-caret { font-style: normal; font-size: 0.7em; }
 		#archived-list { margin-top: 0.25rem; }
-		/* Header row above the chat: the current session's archive/restore
-		   toggle. Always visible, so the action is discoverable and accessible
-		   without a hover gate. */
-		.chat-header { display: flex; justify-content: flex-end; padding: 0.4rem 0.75rem; }
+		/* Header row above the chat: the session's display name with its
+		   rename control on the left, the archive/restore toggle on the right.
+		   Both are always visible, so the actions are discoverable and
+		   accessible without a hover gate. */
+		.chat-header { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; padding: 0.4rem 0.75rem; }
+		.chat-title-wrap { display: flex; align-items: center; gap: 0.3rem; min-width: 0; }
+		.chat-title {
+			font-size: 0.95rem; font-weight: 600; color: #333;
+			white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 24rem;
+		}
+		.rename-btn {
+			padding: 0.15rem 0.45rem; border: none; background: none; color: #888;
+			font-size: 0.9rem; cursor: pointer; border-radius: 4px; flex-shrink: 0;
+		}
+		.rename-btn:hover { background: #f0f0f0; color: #333; }
+		.rename-btn:focus-visible { outline: 2px solid #007bff; outline-offset: 1px; }
+		.rename-input {
+			padding: 0.25rem 0.5rem; border: 1px solid #ccc; border-radius: 4px;
+			font-size: 0.9rem; width: 100%; max-width: 24rem;
+		}
+		.rename-input:focus { outline: 2px solid #007bff; outline-offset: 0; }
 		.archive-btn {
 			padding: 0.3rem 0.75rem; border: 1px solid #ccc; border-radius: 999px;
 			background: #fff; color: #555; font-size: 0.85rem; cursor: pointer;

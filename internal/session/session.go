@@ -64,6 +64,10 @@ type Persister interface {
 	// UnarchiveSession clears a session's archived flag, moving it back to the
 	// active list.
 	UnarchiveSession(id int64) error
+	// RenameSession sets (or clears) a session's custom display name. Empty
+	// clears it back to the preview fallback (the first user message). Names
+	// are display-only: the id stays the session's identity.
+	RenameSession(id int64, name string) error
 }
 
 // Store owns the live set of sessions. Sessions are created by persisting a
@@ -132,7 +136,7 @@ func (st *Store) Create(client *llm.Client) (*Session, error) {
 		return nil, fmt.Errorf("create session: %w", err)
 	}
 	id := fmt.Sprintf("session_%d", dbID)
-	s := newSession(id, client, nil, st.persist, dbID, now, 0, st.hub)
+	s := newSession(id, client, nil, st.persist, dbID, now, 0, "", st.hub)
 	st.mu.Lock()
 	st.sessions[id] = s
 	st.mu.Unlock()
@@ -163,6 +167,7 @@ func (st *Store) List() []api.SessionSummary {
 		out = append(out, api.SessionSummary{
 			ID:         fmt.Sprintf("session_%d", s.ID),
 			CreatedAt:  s.CreatedAt,
+			Name:       s.Name,
 			Preview:    previewOf(s.FirstUser),
 			ArchivedAt: s.ArchivedAt,
 		})
@@ -203,6 +208,26 @@ func (st *Store) Unarchive(id string) error {
 	return nil
 }
 
+// Rename sets (or clears) a session's custom display name, then broadcasts
+// the change live so every open client updates in place. Empty clears the
+// name back to the preview fallback. Names are display-only: the session id
+// stays the identity, so renaming never affects links, exec, or the turn
+// tree. Persist first, then memory, then the bus — a subscriber that handles
+// session_renamed reads the new name. Renaming an archived session keeps it
+// archived (only the name column is touched).
+func (st *Store) Rename(id, name string) error {
+	ses, ok := st.Get(id)
+	if !ok {
+		return db.ErrNotFound
+	}
+	if err := st.persist.RenameSession(ses.dbID, name); err != nil {
+		return fmt.Errorf("rename session: %w", err)
+	}
+	ses.setName(name)
+	ses.publish(api.Envelope{Kind: api.KindSessionRenamed, SessionName: name})
+	return nil
+}
+
 // Load rebuilds the live session set from the persister: one Session per row,
 // reconstructing each session's history, replay buffer, and bus position. It is
 // called once at startup, before the server starts serving.
@@ -217,7 +242,7 @@ func (st *Store) Load(client *llm.Client) error {
 			return fmt.Errorf("load session %d: %w", sm.ID, err)
 		}
 		id := fmt.Sprintf("session_%d", ps.ID)
-		s := newSession(id, client, nil, st.persist, ps.ID, ps.CreatedAt, ps.ArchivedAt, st.hub)
+		s := newSession(id, client, nil, st.persist, ps.ID, ps.CreatedAt, ps.ArchivedAt, ps.Name, st.hub)
 		s.rebuildFromPersisted(ps)
 		st.mu.Lock()
 		st.sessions[id] = s
@@ -268,6 +293,11 @@ type Session struct {
 	// active. It comes from the persister (survives restarts) and is what the
 	// web sidebar uses to fold archived sessions into the Archived folder.
 	archivedAt int64
+	// name is the session's custom display name ("" = none; the sidebar and
+	// chat header fall back to the first-message preview). It is display-only:
+	// the id remains the identity, so renaming never affects links, exec, or
+	// history.
+	name string
 
 	mu      sync.Mutex
 	persist Persister
@@ -372,7 +402,7 @@ type toolRun struct {
 	cancel    func()
 }
 
-func newSession(id string, client *llm.Client, js tools.Provider, persist Persister, dbID int64, createdAt int64, archivedAt int64, hub *mcp.Hub) *Session {
+func newSession(id string, client *llm.Client, js tools.Provider, persist Persister, dbID int64, createdAt int64, archivedAt int64, name string, hub *mcp.Hub) *Session {
 	// A nil js means no local provider was injected (the server's own
 	// process); it is built lazily on first use from the discovered local
 	// context, so "local" reports the same system/cwd/files/skills a remote
@@ -385,6 +415,7 @@ func newSession(id string, client *llm.Client, js tools.Provider, persist Persis
 		persist:     persist,
 		createdAt:   createdAt,
 		archivedAt:  archivedAt,
+		name:        name,
 		hub:         hub,
 		execClients: map[string]*execClient{},
 		activeExec:  "local",
@@ -570,6 +601,38 @@ func (s *Session) setArchived(at int64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.archivedAt = at
+}
+
+// Name returns the session's custom display name ("" when none is set).
+func (s *Session) Name() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.name
+}
+
+// setName updates the session's custom display name. It is called after the
+// rename is persisted, so a subscriber that reads the name sees the new value.
+func (s *Session) setName(name string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.name = name
+}
+
+// Preview returns the single-line preview of the session's first user message
+// ("" when the session has no messages yet). It is the sidebar/header
+// fallback when no custom name is set.
+func (s *Session) Preview() string {
+	ps, err := s.persist.LoadSession(s.dbID)
+	if err != nil {
+		log.Printf("load session %s: %v", s.id, err)
+		return ""
+	}
+	for _, m := range ps.Messages {
+		if m.Role == "user" {
+			return previewOf(m.Content)
+		}
+	}
+	return ""
 }
 
 // QueueDepth returns how many user messages are still waiting in the queue

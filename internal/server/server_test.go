@@ -3232,6 +3232,97 @@ func TestArchiveUnarchiveSession(t *testing.T) {
 	}
 }
 
+func TestRenameSession(t *testing.T) {
+	srv := newTestServer(t, plainLLM())
+	c := client.New(srv.URL)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	info, err := c.Create(ctx)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// A fresh session has no name in the list.
+	var list api.SessionsResponse
+	if err := fetchJSON(srv.URL+api.SessionsPath, &list); err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(list.Sessions) != 1 || list.Sessions[0].Name != "" {
+		t.Fatalf("fresh session = %+v, want one row with empty name", list.Sessions)
+	}
+
+	// A subscriber on the event bus sees the live session_renamed envelope
+	// when the rename fires (it is live-only, so subscribe before renaming).
+	subCtx, subCancel := context.WithTimeout(ctx, 5*time.Second)
+	defer subCancel()
+	subDone := make(chan error, 1)
+	var got api.Envelope
+	go func() {
+		subDone <- c.Subscribe(subCtx, info.ID, 0, func(env api.Envelope) {
+			if env.Kind == api.KindSessionRenamed {
+				got = env
+			}
+		}, func(env api.Envelope) bool { return env.Kind == api.KindSessionRenamed })
+	}()
+	time.Sleep(100 * time.Millisecond) // let the subscription register
+	if err := c.Rename(ctx, info.ID, "My chat"); err != nil {
+		t.Fatalf("Rename: %v", err)
+	}
+	select {
+	case err := <-subDone:
+		if err != nil {
+			t.Fatalf("Subscribe: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("subscriber never saw session_renamed")
+	}
+	if got.Kind != api.KindSessionRenamed || got.SessionName != "My chat" {
+		t.Fatalf("subscriber envelope = %+v, want session_renamed with name", got)
+	}
+
+	// The list row carries the name for the sidebar.
+	list = api.SessionsResponse{}
+	if err := fetchJSON(srv.URL+api.SessionsPath, &list); err != nil {
+		t.Fatalf("list after rename: %v", err)
+	}
+	if len(list.Sessions) != 1 || list.Sessions[0].Name != "My chat" {
+		t.Fatalf("renamed session = %+v, want name set", list.Sessions)
+	}
+
+	// Whitespace-only clears the name back to the preview fallback.
+	if err := c.Rename(ctx, info.ID, "   "); err != nil {
+		t.Fatalf("Rename clear: %v", err)
+	}
+	list = api.SessionsResponse{}
+	if err := fetchJSON(srv.URL+api.SessionsPath, &list); err != nil {
+		t.Fatalf("list after clear: %v", err)
+	}
+	if len(list.Sessions) != 1 || list.Sessions[0].Name != "" {
+		t.Fatalf("cleared session = %+v, want empty name", list.Sessions)
+	}
+
+	// Unknown session: 404.
+	resp, err := http.Post(srv.URL+"/api/sessions/session_9999/rename", "application/json", strings.NewReader(`{"name":"x"}`))
+	if err != nil {
+		t.Fatalf("rename unknown: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("rename unknown status = %d, want 404", resp.StatusCode)
+	}
+
+	// Malformed body: 400.
+	resp, err = http.Post(srv.URL+"/api/sessions/"+info.ID+"/rename", "application/json", strings.NewReader(`{`))
+	if err != nil {
+		t.Fatalf("rename malformed: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("rename malformed status = %d, want 400", resp.StatusCode)
+	}
+}
+
 func TestAppendUnarchivesSession(t *testing.T) {
 	srv := newTestServer(t, plainLLM())
 	c := client.New(srv.URL)

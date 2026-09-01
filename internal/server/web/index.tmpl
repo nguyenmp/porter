@@ -48,12 +48,28 @@
 	<div id="sidebar-backdrop"></div>
 	<main class="main">
 		{{if .Session}}
-		{{/* Header row: the current session's archive/restore toggle. Always
-		     visible (no hover gate) so the action is discoverable,
-		     keyboard-operable, and screen-reader accessible. Archive is purely
-		     organizational — history, running turns, and streaming are
-		     unaffected; sending a message unarchives. */}}
+		{{/* Header row: the session's display name with its rename control on
+		     the left, the archive/restore toggle on the right. Both are always
+		     visible (no hover gate) so the actions are discoverable,
+		     keyboard-operable, and screen-reader accessible. The title shows
+		     the custom name, else the first-message preview, else the session
+		     id — the same chain the sidebar uses. The pencil swaps it for an
+		     inline input; submitting posts the rename (empty clears back to
+		     the preview), and the live session_renamed broadcast updates this
+		     page and the sidebar in place. Archive is purely organizational —
+		     history, running turns, and streaming are unaffected; sending a
+		     message unarchives. */}}
 		<div class="chat-header">
+			<div class="chat-title-wrap">
+				<span id="chat-title" class="chat-title"
+				      data-name="{{.Name}}"
+				      data-preview="{{.Preview}}"
+				      title="{{.Session}}">{{if .Name}}{{.Name}}{{else if .Preview}}{{.Preview}}{{else}}{{.Session}}{{end}}</span>
+				<button type="button" id="rename-btn" class="rename-btn"
+				        title="Rename this session" aria-label="Rename this session">&#9998;</button>
+				<input type="text" id="rename-input" class="rename-input" hidden
+				       maxlength="200" placeholder="Session name" autocomplete="off">
+			</div>
 			<button type="button" id="archive-btn" class="archive-btn"
 			        data-archived="{{if .Archived}}true{{else}}false{{end}}"
 			        aria-pressed="{{if .Archived}}true{{else}}false{{end}}"
@@ -86,7 +102,7 @@
 		<div id="sse-processor"
 		     hx-ext="sse"
 		     sse-connect="/api/sessions/{{.Session}}/stream?since={{.Seq}}"
-		     sse-swap="message_committed,llm,tool_started,tool_result,tool_result_delta,tool_cancelled,turn_completed,exec_status"
+		     sse-swap="message_committed,llm,tool_started,tool_result,tool_result_delta,tool_cancelled,turn_completed,exec_status,session_renamed"
 		     hx-swap="none"
 		     hx-on:htmx:sse-message="sseMessage(event)"
 		     hx-on:htmx:sse-open="onSSEOpen()"
@@ -221,7 +237,15 @@
           (s.archived_at ? archived : active).push(s);
         }
         listEl.innerHTML = '';
-        for (const s of active) listEl.appendChild(sessionLink(s, activeId));
+        for (const s of active) {
+          listEl.appendChild(sessionLink(s, activeId));
+          // Keep the header title's clear-fallback fresh: after a rename is
+          // cleared, the title falls back to the preview, which only the
+          // server knows (it changes as the first message lands).
+          if (chatTitle && s.id === activeId && typeof s.preview === 'string') {
+            chatTitle.dataset.preview = s.preview;
+          }
+        }
         listEl.hidden = active.length === 0;
 
         archList.innerHTML = '';
@@ -234,15 +258,16 @@
   }
 
   // One sidebar row: a plain link to the session. Rows carry no per-session
-  // actions — the archive/restore button lives on the chat page for the
-  // current session only, keeping the sidebar uncluttered. Archived rows are
-  // dimmed (the .archived class) but stay fully clickable.
+  // actions — rename and archive live on the chat page for the current
+  // session only, keeping the sidebar uncluttered. The label is the custom
+  // name when set, else the first-message preview, else the id. Archived rows
+  // are dimmed (the .archived class) but stay fully clickable.
   function sessionLink(s, activeId) {
     const li = document.createElement('li');
     li.className = 'session-row';
     const a = document.createElement('a');
     a.href = '/?session=' + encodeURIComponent(s.id);
-    a.textContent = s.preview || s.id;
+    a.textContent = s.name || s.preview || s.id;
     a.title = s.id;
     a.className = 'session-link' + (s.id === activeId ? ' active' : '') + (s.archived_at ? ' archived' : '');
     li.appendChild(a);
@@ -306,6 +331,66 @@
     });
   }
   updateArchiveBtn();
+
+  // --- Rename the current session ---
+  // The header title shows the session's display name (custom name, else the
+  // first-message preview, else the id — data-name/data-preview carry the
+  // render-time values). The pencil swaps it for an inline input; Enter posts
+  // the new name (empty clears it back to the preview) and Escape/blur
+  // cancels. The server broadcasts session_renamed, which updates the title
+  // and sidebar for every open tab on this session; the fetch fallback below
+  // covers the stream being mid-reconnect.
+  const renameBtn = document.getElementById('rename-btn');
+  const renameInput = document.getElementById('rename-input');
+  const chatTitle = document.getElementById('chat-title');
+  function endRename() {
+    if (renameInput) renameInput.hidden = true;
+    if (renameBtn) renameBtn.hidden = false;
+    if (chatTitle) chatTitle.hidden = false;
+  }
+  function startRename() {
+    if (!chatTitle || !renameInput || !renameBtn) return;
+    renameInput.value = chatTitle.dataset.name || '';
+    chatTitle.hidden = true;
+    renameBtn.hidden = true;
+    renameInput.hidden = false;
+    renameInput.focus();
+    renameInput.select();
+  }
+  // name is the custom name after a rename ("" = cleared). Set the title to
+  // name, else the preview, else the session id — the sidebar's chain — and
+  // remember the name so the next edit pre-fills it.
+  function setChatTitle(name) {
+    if (!chatTitle) return;
+    chatTitle.dataset.name = name;
+    chatTitle.textContent = name || chatTitle.dataset.preview || activeSession;
+  }
+  function submitRename() {
+    if (!renameInput) return;
+    const name = renameInput.value.trim();
+    fetch('/api/sessions/' + encodeURIComponent(activeSession) + '/rename', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: name })
+    })
+      .then(resp => {
+        if (!resp.ok) return;
+        setChatTitle(name);
+        renderSidebar(activeSession);
+      })
+      .catch(function() {});
+    endRename();
+  }
+  if (renameBtn) {
+    renameBtn.addEventListener('click', startRename);
+  }
+  if (renameInput) {
+    renameInput.addEventListener('keydown', function(e) {
+      if (e.key === 'Enter') { e.preventDefault(); submitRename(); }
+      else if (e.key === 'Escape') { endRename(); }
+    });
+    renameInput.addEventListener('blur', endRename);
+  }
 
   // Render the list on load (empty state has no active session). The New chat
   // flow navigates with ?session=, so a fresh load always refetches.
@@ -1588,6 +1673,14 @@
 		    execProvider = es;
 		    renderExecPicker(es);
 		  }
+		  break;
+		case 'session_renamed':
+		  // The session's display name changed (renamed or cleared). Update the
+		  // chat header title in place and re-render the sidebar so the row
+		  // label follows. Other tabs on this session receive the same
+		  // envelope; tabs on other sessions catch up on their next reload.
+		  if (chatTitle) setChatTitle(env.session_name || '');
+		  renderSidebar(activeSession);
 		  break;
 	      case 'resync':
         // The server closed the stream because we fell too far behind its

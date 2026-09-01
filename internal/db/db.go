@@ -22,7 +22,7 @@ var ErrNotFound = errors.New("db: session not found")
 
 // schemaVersion is the current schema revision, tracked in PRAGMA user_version.
 // Bump it and extend migrate when the schema changes.
-const schemaVersion = 7
+const schemaVersion = 8
 
 // DB wraps the SQLite database handle. It deliberately uses a single
 // connection: pragmas like foreign_keys are per-connection, and a single
@@ -211,6 +211,20 @@ ALTER TABLE queries DROP COLUMN input;
 			return fmt.Errorf("set user_version: %w", err)
 		}
 	}
+	if v < 8 {
+		// v8: `name` on sessions — an optional display name that overrides the
+		// sidebar/header preview (the first user message) when set. Empty = no
+		// custom name, matching the ''-means-absent convention of the other
+		// optional text columns. Names are display-only: session ids stay the
+		// identity, so renaming never affects links, exec, or history.
+		const ddl = "ALTER TABLE sessions ADD COLUMN name TEXT NOT NULL DEFAULT ''"
+		if _, err := d.db.Exec(ddl); err != nil {
+			return fmt.Errorf("apply schema v8: %w", err)
+		}
+		if _, err := d.db.Exec("PRAGMA user_version=8"); err != nil {
+			return fmt.Errorf("set user_version: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -250,9 +264,13 @@ type Session struct {
 	ID         int64
 	CreatedAt  int64
 	ArchivedAt int64
-	Messages   []Message
-	Queries    []Query
-	MaxSeq     uint64
+	// Name is the session's custom display name ("" = none; the web UI falls
+	// back to the first-message preview). It is display-only: the id remains
+	// the identity.
+	Name     string
+	Messages []Message
+	Queries  []Query
+	MaxSeq   uint64
 }
 
 // Summary is one row of the session list, newest first. FirstUser is the raw
@@ -262,7 +280,9 @@ type Summary struct {
 	ID         int64
 	CreatedAt  int64
 	ArchivedAt int64
-	FirstUser  string
+	// Name is the session's custom display name ("" = none).
+	Name      string
+	FirstUser string
 }
 
 // boolInt converts a Go bool to the 0/1 integer SQLite stores booleans as.
@@ -345,7 +365,7 @@ func (d *DB) AppendQuery(sessionID int64, q Query) error {
 func (d *DB) LoadSession(id int64) (Session, error) {
 	var s Session
 	s.ID = id
-	if err := d.db.QueryRow("SELECT created_at, archived_at_epoch_ms FROM sessions WHERE id = ?", id).Scan(&s.CreatedAt, &s.ArchivedAt); err != nil {
+	if err := d.db.QueryRow("SELECT created_at, archived_at_epoch_ms, name FROM sessions WHERE id = ?", id).Scan(&s.CreatedAt, &s.ArchivedAt, &s.Name); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Session{}, ErrNotFound
 		}
@@ -418,7 +438,7 @@ func (d *DB) LoadSession(id int64) (Session, error) {
 // session's first user message (the sidebar preview source).
 func (d *DB) ListSessions() ([]Summary, error) {
 	rows, err := d.db.Query(`
-		SELECT s.id, s.created_at, s.archived_at_epoch_ms, COALESCE((
+		SELECT s.id, s.created_at, s.archived_at_epoch_ms, s.name, COALESCE((
 			SELECT m.content FROM messages m
 			WHERE m.session_id = s.id AND m.role = 'user'
 			ORDER BY m.seq ASC LIMIT 1
@@ -435,7 +455,7 @@ func (d *DB) ListSessions() ([]Summary, error) {
 	var out []Summary
 	for rows.Next() {
 		var s Summary
-		if err := rows.Scan(&s.ID, &s.CreatedAt, &s.ArchivedAt, &s.FirstUser); err != nil {
+		if err := rows.Scan(&s.ID, &s.CreatedAt, &s.ArchivedAt, &s.Name, &s.FirstUser); err != nil {
 			return nil, fmt.Errorf("scan session: %w", err)
 		}
 		out = append(out, s)
@@ -465,6 +485,18 @@ func (d *DB) UnarchiveSession(id int64) error {
 	_, err := d.db.Exec("UPDATE sessions SET archived_at_epoch_ms = 0 WHERE id = ?", id)
 	if err != nil {
 		return fmt.Errorf("unarchive session: %w", err)
+	}
+	return nil
+}
+
+// RenameSession sets (or clears) a session's custom display name. Empty
+// clears it back to the preview fallback (the first user message). Names are
+// display-only and never affect the session's identity; renaming an archived
+// session keeps it archived (only the name column is touched).
+func (d *DB) RenameSession(id int64, name string) error {
+	_, err := d.db.Exec("UPDATE sessions SET name = ? WHERE id = ?", name, id)
+	if err != nil {
+		return fmt.Errorf("rename session: %w", err)
 	}
 	return nil
 }

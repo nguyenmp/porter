@@ -151,6 +151,16 @@ func (c *Client) Unarchive(ctx context.Context, id string) error {
 	return c.doJSON(ctx, http.MethodPost, c.path(api.SessionUnarchivePath, id), nil, nil)
 }
 
+// Rename sets (or clears) a session's custom display name. An empty name
+// clears it back to the first-message preview.
+func (c *Client) Rename(ctx context.Context, id, name string) error {
+	body, err := json.Marshal(api.RenameRequest{Name: name})
+	if err != nil {
+		return fmt.Errorf("marshal rename request: %w", err)
+	}
+	return c.doJSON(ctx, http.MethodPost, c.path(api.SessionRenamePath, id), body, nil)
+}
+
 // Subscribe streams the session's event bus as NDJSON, calling onEvent for
 // every envelope until the connection ends, until until(env) reports true, or
 // until a resync is required (returned as ErrResync). onEvent may be nil.
