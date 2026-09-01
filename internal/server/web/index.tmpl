@@ -568,6 +568,24 @@
   let currentAssistant = null;
   let currentReasoning = null;
 
+  // lastLiveSeq is the highest live position (live_seq on KindLLM envelopes)
+  // this client has applied. The server replays the in-flight live tail on
+  // every SSE connection and /live re-seeds it after a /view swap, so an
+  // envelope whose position is not newer than this is already in the DOM and
+  // must be skipped — without it, streamed text double-appends on reconnect.
+  let lastLiveSeq = 0;
+  // seedingLive is true in the brief window after the initial /view swap
+  // while the client fetches the server's live tail to rebuild a streaming
+  // bubble the swap wiped. Live LLM deltas that arrive in that window are
+  // buffered (pendingLive) and applied after the seed, ordered and deduped by
+  // live_seq, so nothing is lost and nothing is applied twice.
+  let seedingLive = false;
+  const pendingLive = [];
+  // viewLoaded marks that the initial /view render has landed. Only that swap
+  // replaces the chat's history content (form submits use hx-swap="none"), so
+  // only it can wipe a live bubble and only it re-seeds.
+  let viewLoaded = false;
+
   // toolRuns is the single source of truth for every tool call's state, keyed
   // by the model's tool-call id once known. A run spans the whole lifecycle:
   // streaming the call (name/args), running it (start clock, partial output),
@@ -669,6 +687,23 @@
       // landed (e.g. opening the page mid-run); re-fetch in-flight runs so
       // running tool blocks are restored after every history render.
       fetchRuns();
+      // The first swap is the initial /view load: it replaced the chat with
+      // server-rendered history, which may have wiped a live streaming bubble
+      // the SSE tail already built (the server's committed history never
+      // contains the uncommitted block). Re-seed it from the server's live
+      // tail so a mid-turn reload catches the active stream immediately
+      // instead of waiting for the turn's next commit. Later swaps (form
+      // submits, hx-swap="none") do not replace history, so only the first
+      // re-seeds. turnRunning is seeded from the page render, so it is
+      // accurate here even before the first message_committed arrives.
+      if (!viewLoaded) {
+        viewLoaded = true;
+        currentAssistant = null;
+        currentReasoning = null;
+        // The DOM's live view is gone: re-apply the tail from scratch.
+        lastLiveSeq = 0;
+        if (turnRunning) seedLiveFromServer();
+      }
       if (autoScroll) chat.scrollTop = chat.scrollHeight;
     });
   }
@@ -1279,6 +1314,116 @@
     currentReasoning = null;
   }
 
+  // applyLLM renders one live LLM envelope (message_delta, reasoning_delta,
+  // tool_call, tool_call_delta) into the in-flight assistant bubble, returning
+  // whether it added content. It is shared by the SSE stream and the /live
+  // re-seed path so a replayed tail and a live delta render identically.
+  function applyLLM(ev) {
+    if (!ev) return false;
+    if (ev.type === 'message_delta') {
+      // Accumulate the raw markdown and redraw through mdText once per
+      // frame, so the live view shows styled markdown (headings, code,
+      // lists) instead of plain text. The committed copy rendered by the
+      // server (finalizeAssistant) remains the authoritative end state.
+      const contentEl = ensureAssistant();
+      appendTextDelta(contentEl, ev.delta);
+      scheduleMarkdownRedraw(contentEl);
+      return true;
+    }
+    if (ev.type === 'reasoning_delta') {
+      // Accumulate the raw text and redraw: collapsed shows the live last line,
+      // expanded shows the full stream growing in place.
+      const r = ensureReasoning();
+      r._reasoningFull = (r._reasoningFull || '') + ev.reasoning;
+      renderReasoning(r);
+      return true;
+    }
+    if (ev.type === 'tool_call') {
+      // The assembled tool call arrives once the stream ends. It may follow
+      // a series of tool_call_delta events that already rendered the block
+      // live; getRunByIndex returns that same run and we finalize it with
+      // the authoritative full arguments (reconciling any drift, e.g. if
+      // deltas were coalesced). finalizeAssistant later reconciles this
+      // against the committed message when it arrives.
+      const contentEl = ensureAssistant();
+      const run = getRunByIndex(contentEl, ev.index || 0, ev.tool_call_id);
+      run.name = ev.name;
+      run.args = ev.arguments;
+      // Record the run as a call segment so the next markdown redraw keeps
+      // it (redraw rebuilds the msg-content from segments).
+      ensureCallSegment(contentEl, run);
+      scheduleMarkdownRedraw(contentEl);
+      return true;
+    }
+    if (ev.type === 'tool_call_delta') {
+      // Streamed tool-call fragment: accumulate per-index state and redraw
+      // in place so the name and JSON arguments fill in live, mirroring how
+      // reasoning_delta redraws the reasoning block.
+      const contentEl = ensureAssistant();
+      const index = ev.index || 0;
+      const run = getRunByIndex(contentEl, index, ev.tool_call_id);
+      if (ev.name) run.name = ev.name; // last non-empty wins, like the decoder
+      run.args += ev.arguments;
+      ensureCallSegment(contentEl, run);
+      scheduleMarkdownRedraw(contentEl);
+      return true;
+    }
+    return false;
+  }
+
+  // seedLiveFromServer rebuilds the in-flight assistant bubble after the
+  // initial /view swap wiped it: on a mid-turn page load the SSE tail may have
+  // streamed the partial reply before the server-rendered history landed, and
+  // that history does not contain the uncommitted block. The server's live
+  // tail is the authoritative partial stream; live deltas that arrive while
+  // the fetch is in flight are buffered and merged afterwards by live_seq, so
+  // the bubble is complete from its first delta and nothing double-appends.
+  function seedLiveFromServer() {
+    const app = document.getElementById('app');
+    const sess = app ? app.dataset.session : null;
+    if (!sess) return;
+    seedingLive = true;
+    fetch('/api/sessions/' + encodeURIComponent(sess) + '/live')
+      .then(function(resp) { return resp.ok ? resp.json() : null; })
+      .then(function(data) {
+        let hadNewContent = false;
+        // Apply the tail (fresh from the server), then whatever streamed in
+        // while we fetched. The same merge rule covers both, so an envelope
+        // the SSE stream already applied (e.g. a reconnect replay beating the
+        // fetch) is skipped, and the seed sets lastLiveSeq to the newest
+        // position so the flush never replays it.
+        const applyMerged = function(env) {
+          if (env.live_seq && env.live_seq <= lastLiveSeq) return;
+          if (env.live_seq) lastLiveSeq = env.live_seq;
+          if (applyLLM(env.event)) hadNewContent = true;
+        };
+        if (data && data.events) {
+          for (const env of data.events) applyMerged(env);
+        }
+        seedingLive = false;
+        while (pendingLive.length) applyMerged(pendingLive.shift());
+        if (autoScroll) chat.scrollTop = chat.scrollHeight;
+        else if (hadNewContent && followBtn) followBtn.hidden = false;
+      })
+      .catch(function() {
+        // The seed failed (network); fall back to applying what streamed.
+        // lastLiveSeq was reset at the swap, so the buffered deltas all pass
+        // the merge and rebuild the tail end of the block; if the fetch's
+        // absence means we start mid-block, the next commit reconciles —
+        // exactly the behavior before /live existed.
+        seedingLive = false;
+        let hadNewContent = false;
+        while (pendingLive.length) {
+          const env = pendingLive.shift();
+          if (env.live_seq && env.live_seq <= lastLiveSeq) continue;
+          if (env.live_seq) lastLiveSeq = env.live_seq;
+          if (applyLLM(env.event)) hadNewContent = true;
+        }
+        if (autoScroll) chat.scrollTop = chat.scrollHeight;
+        else if (hadNewContent && followBtn) followBtn.hidden = false;
+      });
+  }
+
   window.sseMessage = function(evt) {
     const env = JSON.parse(evt.detail.data);
     // Track whether this SSE event actually added content to the DOM. If
@@ -1341,53 +1486,24 @@
         }
         break;
       case 'llm':
-        const ev = env.event;
-        if (!ev) break;
-        if (ev.type === 'message_delta') {
-          // Accumulate the raw markdown and redraw through mdText once per
-          // frame, so the live view shows styled markdown (headings, code,
-          // lists) instead of plain text. The committed copy rendered by the
-          // server (finalizeAssistant) remains the authoritative end state.
-          const contentEl = ensureAssistant();
-          appendTextDelta(contentEl, ev.delta);
-          scheduleMarkdownRedraw(contentEl);
-          hadNewContent = true;
-        } else if (ev.type === 'reasoning_delta') {
-          // Accumulate the raw text and redraw: collapsed shows the live last line,
-          // expanded shows the full stream growing in place.
-          const r = ensureReasoning();
-          r._reasoningFull = (r._reasoningFull || '') + ev.reasoning;
-          renderReasoning(r);
-          hadNewContent = true;
-        } else if (ev.type === 'tool_call') {
-          // The assembled tool call arrives once the stream ends. It may follow
-          // a series of tool_call_delta events that already rendered the block
-          // live; getRunByIndex returns that same run and we finalize it with
-          // the authoritative full arguments (reconciling any drift, e.g. if
-          // deltas were coalesced). finalizeAssistant later reconciles this
-          // against the committed message when it arrives.
-          const contentEl = ensureAssistant();
-          const run = getRunByIndex(contentEl, ev.index || 0, ev.tool_call_id);
-          run.name = ev.name;
-          run.args = ev.arguments;
-          // Record the run as a call segment so the next markdown redraw keeps
-          // it (redraw rebuilds the msg-content from segments).
-          ensureCallSegment(contentEl, run);
-          scheduleMarkdownRedraw(contentEl);
-          hadNewContent = true;
-        } else if (ev.type === 'tool_call_delta') {
-          // Streamed tool-call fragment: accumulate per-index state and redraw
-          // in place so the name and JSON arguments fill in live, mirroring how
-          // reasoning_delta redraws the reasoning block.
-          const contentEl = ensureAssistant();
-          const index = ev.index || 0;
-          const run = getRunByIndex(contentEl, index, ev.tool_call_id);
-          if (ev.name) run.name = ev.name; // last non-empty wins, like the decoder
-          run.args += ev.arguments;
-          ensureCallSegment(contentEl, run);
-          scheduleMarkdownRedraw(contentEl);
-          hadNewContent = true;
+        // Every live LLM envelope carries the session's monotonic live
+        // position. The server replays the in-flight tail on every SSE
+        // connection, so an envelope whose position is not newer than the last
+        // one applied is already in the DOM and is skipped — otherwise
+        // reconnect would double-append the streamed text. (While a /live
+        // re-seed is in flight, deltas are buffered and applied afterwards by
+        // the same rule, so a swap can never split a stream.)
+        if (env.live_seq && env.live_seq <= lastLiveSeq) break;
+        if (seedingLive) {
+          // Buffer without advancing lastLiveSeq: the seed's merge applies
+          // the tail first (against lastLiveSeq as it stood after the swap
+          // reset it), then this buffer by the same rule. Advancing here
+          // would make the seed skip everything it is about to re-apply.
+          pendingLive.push(env);
+          break;
         }
+        if (env.live_seq) lastLiveSeq = env.live_seq;
+        if (applyLLM(env.event)) hadNewContent = true;
         break;
       case 'tool_started':
         // The tool began running on the server. Claim its run and start the

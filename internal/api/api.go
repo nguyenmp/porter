@@ -30,6 +30,12 @@ const (
 	// not yet finished), so a client that connects or reconnects mid-run can
 	// reconstruct running blocks from the server's authoritative state: GET.
 	SessionRunsPath = "/api/sessions/{id}/runs"
+	// SessionLivePath returns a session's in-flight LLM stream tail — every
+	// live LLM envelope since the last commit, plus the newest live position —
+	// so a client whose /view render wiped a live bubble (or that otherwise
+	// missed the stream) can re-seed it instead of waiting for the turn's next
+	// commit: GET.
+	SessionLivePath = "/api/sessions/{id}/live"
 	// SessionExecPath registers a client as the session's execution provider
 	// and holds the connection open for exec requests: GET (NDJSON requests).
 	SessionExecPath = "/api/sessions/{id}/exec"
@@ -190,6 +196,16 @@ type RunsResponse struct {
 	Runs []RunInfo `json:"runs"`
 }
 
+// LiveResponse is returned by GET /api/sessions/{id}/live. Events is the
+// session's in-flight LLM stream tail (every live LLM envelope since the last
+// commit, in order); Seq is the live position of the newest one. A client that
+// re-seeds its streaming view applies Events, skips live envelopes it already
+// applied (live_seq <= Seq), and continues from there.
+type LiveResponse struct {
+	Seq    uint64     `json:"seq"`
+	Events []Envelope `json:"events"`
+}
+
 // Envelope kinds carried on a session's event bus. An Envelope is the union of
 // everything a subscriber can receive: a live LLM Event, a system-side fact
 // (tool results, and later subagent or execution notices), or a session
@@ -238,10 +254,19 @@ const (
 // Envelope is a single NDJSON line on a session's event bus. Kind selects which
 // fields are meaningful.
 type Envelope struct {
-	Kind    string           `json:"kind"`
-	Seq     uint64           `json:"seq,omitempty"`     // KindMessage, KindTurnDone
-	Event   *codec.Event     `json:"event,omitempty"`   // KindLLM
-	Message *llm.ChatMessage `json:"message,omitempty"` // KindMessage
+	Kind string `json:"kind"`
+	Seq  uint64 `json:"seq,omitempty"` // KindMessage, KindTurnDone
+	// LiveSeq is the session's monotonic live-stream position, stamped on
+	// every KindLLM envelope (and only those) as it is published. It is what
+	// lets a client deduplicate the live tail when it is replayed — on an SSE
+	// reconnect, or a /live re-seed after a /view swap: an envelope whose
+	// LiveSeq is not newer than the last one the client applied is skipped, so
+	// streamed text never double-appends. Unlike Seq (committed bus positions),
+	// live positions are not persisted; they are rebuilt from zero at startup,
+	// when no turns are in flight.
+	LiveSeq uint64           `json:"live_seq,omitempty"` // KindLLM
+	Event   *codec.Event     `json:"event,omitempty"`    // KindLLM
+	Message *llm.ChatMessage `json:"message,omitempty"`  // KindMessage
 	// MessageHTML is the server-rendered HTML for a committed assistant
 	// message (KindMessage). It is set only for assistant messages with
 	// content, so the SSE client can render the committed copy exactly as the

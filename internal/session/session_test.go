@@ -12,6 +12,7 @@ import (
 
 	"porter/internal/agent"
 	"porter/internal/api"
+	"porter/internal/codec"
 	"porter/internal/config"
 	"porter/internal/db"
 	"porter/internal/llm"
@@ -163,6 +164,171 @@ func TestLargeReplayDrains(t *testing.T) {
 	}
 	if count != 200 {
 		t.Errorf("replayed %d messages, want 200", count)
+	}
+}
+
+// TestLiveTailReplayedToLateSubscriber is the mid-turn reload case: a
+// subscriber that connects after the stream started must receive the in-flight
+// block's deltas (the live tail) in order, with monotonic live positions, so it
+// catches up immediately instead of waiting for the turn's commit.
+func TestLiveTailReplayedToLateSubscriber(t *testing.T) {
+	s := newTestSession(t, "s")
+	if err := s.commit(llm.UserMessage("hi")); err != nil {
+		t.Fatalf("commit user: %v", err)
+	}
+
+	// The turn streams: two content deltas, then a reasoning delta.
+	s.publish(api.Envelope{Kind: api.KindLLM, Event: &codec.Event{Type: codec.TypeMessageDelta, Delta: "Hel"}})
+	s.publish(api.Envelope{Kind: api.KindLLM, Event: &codec.Event{Type: codec.TypeMessageDelta, Delta: "lo"}})
+	s.publish(api.Envelope{Kind: api.KindLLM, Event: &codec.Event{Type: codec.TypeReasoningDelta, Reasoning: "think"}})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	stream := s.From(ctx, 1) // the user commit is the last committed seq
+	cancel()
+	var got []api.Envelope
+	for env := range stream {
+		got = append(got, env)
+	}
+	if len(got) != 3 {
+		t.Fatalf("late subscriber got %d envelopes %+v, want the 3 tail deltas", len(got), got)
+	}
+	if got[0].LiveSeq != 1 || got[1].LiveSeq != 2 || got[2].LiveSeq != 3 {
+		t.Errorf("live_seq = %d,%d,%d; want 1,2,3", got[0].LiveSeq, got[1].LiveSeq, got[2].LiveSeq)
+	}
+	if got[0].Event.Delta != "Hel" || got[1].Event.Delta != "lo" || got[2].Event.Reasoning != "think" {
+		t.Errorf("tail order/content wrong: %+v", got)
+	}
+}
+
+// TestLiveTailThenLiveContinuity is the no-gap/no-dup property: a subscriber
+// that connects mid-block gets the tail, and deltas published afterwards arrive
+// live — each envelope exactly once, in order.
+func TestLiveTailThenLiveContinuity(t *testing.T) {
+	s := newTestSession(t, "s")
+	if err := s.commit(llm.UserMessage("hi")); err != nil {
+		t.Fatalf("commit user: %v", err)
+	}
+	s.publish(api.Envelope{Kind: api.KindLLM, Event: &codec.Event{Type: codec.TypeMessageDelta, Delta: "Hel"}})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stream := s.From(ctx, 1)
+
+	var mu sync.Mutex
+	var got []api.Envelope
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for env := range stream {
+			mu.Lock()
+			got = append(got, env)
+			mu.Unlock()
+		}
+	}()
+	waitFor := func(n int) bool {
+		t.Helper()
+		deadline := time.Now().Add(2 * time.Second)
+		for {
+			mu.Lock()
+			c := len(got)
+			mu.Unlock()
+			if c >= n {
+				return true
+			}
+			if time.Now().After(deadline) {
+				return false
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+
+	if !waitFor(1) {
+		t.Fatal("tail delta never arrived")
+	}
+	// A delta published after subscription must arrive live, after the tail.
+	s.publish(api.Envelope{Kind: api.KindLLM, Event: &codec.Event{Type: codec.TypeMessageDelta, Delta: "lo"}})
+	if !waitFor(2) {
+		t.Fatal("live delta never arrived")
+	}
+	cancel()
+	<-done
+
+	if len(got) != 2 || got[0].LiveSeq != 1 || got[1].LiveSeq != 2 {
+		t.Fatalf("got %d envelopes %+v, want exactly tail(1) then live(2)", len(got), got)
+	}
+}
+
+// TestLiveTailClearedOnCommit ensures a commit supersedes the in-flight block:
+// the tail is dropped the moment its message commits, so a subscriber that
+// connects after the commit replays only committed history, never stale deltas.
+func TestLiveTailClearedOnCommit(t *testing.T) {
+	s := newTestSession(t, "s")
+	if err := s.commit(llm.UserMessage("hi")); err != nil {
+		t.Fatalf("commit user: %v", err)
+	}
+	s.publish(api.Envelope{Kind: api.KindLLM, Event: &codec.Event{Type: codec.TypeMessageDelta, Delta: "partial"}})
+
+	if seq, events := s.Live(); seq != 1 || len(events) != 1 {
+		t.Fatalf("Live before commit = seq %d, %d events; want 1, 1", seq, len(events))
+	}
+	if err := s.commit(llm.AssistantMessage("partial", "", nil)); err != nil {
+		t.Fatalf("commit assistant: %v", err)
+	}
+	if seq, events := s.Live(); len(events) != 0 {
+		t.Errorf("Live after commit = seq %d, %d events; want empty tail (the commit supersedes the deltas)", seq, len(events))
+	}
+
+	// A late subscriber now replays only committed messages, no LLM deltas.
+	ctx, cancel := context.WithCancel(context.Background())
+	stream := s.From(ctx, 1)
+	cancel()
+	for env := range stream {
+		if env.Kind == api.KindLLM {
+			t.Errorf("replayed LLM envelope after commit: %+v", env)
+		}
+	}
+}
+
+// TestLiveTailSkipsToolEnvelopes pins the tail's scope to the LLM stream: tool
+// envelopes are reconstructed via the in-flight run registry (Runs), so they
+// must not accumulate in the tail.
+func TestLiveTailSkipsToolEnvelopes(t *testing.T) {
+	s := newTestSession(t, "s")
+	if err := s.commit(llm.UserMessage("hi")); err != nil {
+		t.Fatalf("commit user: %v", err)
+	}
+	s.publish(api.Envelope{Kind: api.KindToolStarted, ToolCallID: "c1", Name: "shell"})
+	if _, events := s.Live(); len(events) != 0 {
+		t.Fatalf("Live after tool_started = %+v; want empty (tools come from /runs)", events)
+	}
+	s.publish(api.Envelope{Kind: api.KindLLM, Event: &codec.Event{Type: codec.TypeMessageDelta, Delta: "x"}})
+	seq, events := s.Live()
+	if len(events) != 1 || events[0].LiveSeq != 1 || events[0].Event.Delta != "x" {
+		t.Errorf("Live after LLM = seq %d, %+v; want just the delta at live_seq 1", seq, events)
+	}
+}
+
+// TestLiveSeqMonotonicAcrossCommits ensures live positions never reset: the
+// next block's deltas continue the counter, so a client's lastLiveSeq keeps
+// working as a dedup key across the whole session.
+func TestLiveSeqMonotonicAcrossCommits(t *testing.T) {
+	s := newTestSession(t, "s")
+	if err := s.commit(llm.UserMessage("hi")); err != nil {
+		t.Fatalf("commit user: %v", err)
+	}
+	s.publish(api.Envelope{Kind: api.KindLLM, Event: &codec.Event{Type: codec.TypeMessageDelta, Delta: "a"}})
+	s.publish(api.Envelope{Kind: api.KindLLM, Event: &codec.Event{Type: codec.TypeMessageDelta, Delta: "b"}})
+	if err := s.commit(llm.AssistantMessage("ab", "", nil)); err != nil {
+		t.Fatalf("commit assistant: %v", err)
+	}
+	s.publish(api.Envelope{Kind: api.KindLLM, Event: &codec.Event{Type: codec.TypeMessageDelta, Delta: "c"}})
+
+	seq, events := s.Live()
+	if seq != 3 {
+		t.Errorf("live seq after second block = %d, want 3 (monotonic, not reset)", seq)
+	}
+	if len(events) != 1 || events[0].LiveSeq != 3 {
+		t.Errorf("tail after second block = %+v; want only delta c at live_seq 3", events)
 	}
 }
 

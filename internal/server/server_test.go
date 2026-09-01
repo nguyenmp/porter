@@ -301,6 +301,104 @@ func TestRunsReportsInFlightTool(t *testing.T) {
 	}
 }
 
+// slowStreamLLM streams two content deltas with delays so a test can observe
+// the in-flight live tail mid-stream (the turn stays uncommitted while the
+// deltas accumulate server-side).
+func slowStreamLLM() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		f, _ := w.(http.Flusher)
+		write := func(s string) {
+			fmt.Fprint(w, s)
+			if f != nil {
+				f.Flush()
+			}
+		}
+		write(`data: {"choices":[{"delta":{"content":"Hel"},"finish_reason":null}]}` + "\n\n")
+		time.Sleep(300 * time.Millisecond)
+		write(`data: {"choices":[{"delta":{"content":"lo"},"finish_reason":null}]}` + "\n\n")
+		time.Sleep(300 * time.Millisecond)
+		write(`data: {"choices":[{"delta":{"content":""},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":2}}` + "\n\n")
+		write(`data: [DONE]` + "\n")
+	}
+}
+
+// TestLiveReturnsInFlightStream drives a real streaming turn and checks
+// GET /live serves the in-flight LLM tail (with monotonic live positions)
+// while the model is mid-stream, then empties once the turn commits — the
+// re-seed a mid-turn reload uses to catch the active stream.
+func TestLiveReturnsInFlightStream(t *testing.T) {
+	s, ts := startServerDB(t, filepath.Join(t.TempDir(), "porter.db"), slowStreamLLM())
+
+	ses, err := s.store.Create(s.client)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	ses.Enqueue("stream it")
+
+	var lr api.LiveResponse
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		resp, err := http.Get(ts.URL + "/api/sessions/" + ses.ID() + "/live")
+		if err != nil {
+			t.Fatalf("GET /live: %v", err)
+		}
+		err = json.NewDecoder(resp.Body).Decode(&lr)
+		resp.Body.Close()
+		if err != nil {
+			t.Fatalf("decode /live: %v", err)
+		}
+		if len(lr.Events) >= 2 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if len(lr.Events) != 2 {
+		t.Fatalf("/live had %d events %+v, want the 2 streamed deltas", len(lr.Events), lr.Events)
+	}
+	if lr.Seq != 2 {
+		t.Errorf("/live seq = %d, want 2", lr.Seq)
+	}
+	if lr.Events[0].LiveSeq != 1 || lr.Events[0].Event.Delta != "Hel" {
+		t.Errorf("event 0 = %+v, want live_seq 1 delta Hel", lr.Events[0])
+	}
+	if lr.Events[1].LiveSeq != 2 || lr.Events[1].Event.Delta != "lo" {
+		t.Errorf("event 1 = %+v, want live_seq 2 delta lo", lr.Events[1])
+	}
+
+	// Once the turn commits, the tail is superseded by the committed message.
+	deadline = time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		resp, err := http.Get(ts.URL + "/api/sessions/" + ses.ID() + "/live")
+		if err != nil {
+			t.Fatalf("GET /live: %v", err)
+		}
+		err = json.NewDecoder(resp.Body).Decode(&lr)
+		resp.Body.Close()
+		if err != nil {
+			t.Fatalf("decode /live: %v", err)
+		}
+		if len(lr.Events) == 0 {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("live tail never cleared after the turn committed")
+}
+
+// TestLiveUnknownSession checks GET /live on a missing session returns 404.
+func TestLiveUnknownSession(t *testing.T) {
+	srv := newTestServer(t, plainLLM())
+	resp, err := http.Get(srv.URL + "/api/sessions/session_999/live")
+	if err != nil {
+		t.Fatalf("GET /live: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", resp.StatusCode)
+	}
+}
+
 // TestServerRunsToolViaExecProvider verifies that a client registered as the
 // session's execution provider (via ServeExec) runs the agent's tool calls and
 // streams results back into History, instead of the server running them.

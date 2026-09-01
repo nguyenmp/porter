@@ -289,6 +289,7 @@ func (s *Server) Handler() http.Handler {
 	r.Get(api.SessionEventsPath, s.handleEvents)
 	r.Get(api.SessionStreamPath, s.handleStream)
 	r.Get(api.SessionRunsPath, s.handleRuns)
+	r.Get(api.SessionLivePath, s.handleLive)
 	r.Get(api.SessionExecPath, s.handleExec)
 	r.Post(api.SessionExecResultPath, s.handleExecResult)
 	r.Post(api.SessionCancelPath, s.handleCancel)
@@ -471,6 +472,23 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		Now:  time.Now().UnixMilli(),
 		Runs: ses.Runs(),
 	})
+}
+
+// handleLive returns the session's in-flight LLM stream tail — every live LLM
+// envelope since the last commit, plus the newest live position. It is the
+// stream counterpart of /runs: a client that rendered /view mid-turn (wiping
+// the live bubble the SSE tail had already built) re-seeds its streaming
+// assistant view from here, so a reload catches the active turn immediately
+// instead of waiting for the turn's next commit.
+func (s *Server) handleLive(w http.ResponseWriter, r *http.Request) {
+	ses, ok := s.store.Get(chi.URLParam(r, "id"))
+	if !ok {
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+	seq, events := ses.Live()
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(api.LiveResponse{Seq: seq, Events: events})
 }
 
 // sseEventLine formats one envelope as an SSE event line.

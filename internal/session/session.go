@@ -288,6 +288,20 @@ type Session struct {
 	totalOutput   int
 	log           []api.Envelope
 	subs          []chan api.Envelope
+	// liveSeq is the session's monotonic live-stream position, and liveTail
+	// is the replayable tail of the in-flight assistant block: every KindLLM
+	// envelope published since the last commit, in order, stamped with its
+	// liveSeq. Committed state is not duplicated here — commitEnv clears the
+	// tail — so the tail is bounded by the largest single block (the deltas of
+	// one streaming reply, reasoning, or tool-call sequence), not by session
+	// history or an arbitrary ring. It is what lets a subscriber that connects
+	// mid-turn (or whose /view render wiped a live bubble) catch the current
+	// stream: From replays it after the committed ring and before live events,
+	// and Live exposes it for a fresh fetch. Live events other than KindLLM
+	// (tool runs) are not tailed; they are already reconstructible from the
+	// in-flight run registry (Runs).
+	liveSeq  uint64
+	liveTail []api.Envelope
 
 	// Execution provider registry. execClients maps every provider that can
 	// run this session's tools to its descriptor, keyed by id; activeExec is
@@ -717,6 +731,13 @@ func (s *Session) commitEnv(env api.Envelope) (uint64, error) {
 
 	s.mu.Lock()
 	s.bufferLocked(env)
+	// A commit supersedes the in-flight block: the tail held only that block's
+	// deltas (the agent streams one assistant message at a time, and any other
+	// commit — user, tool result, system notice — lands at a boundary where
+	// the tail is empty), so clear it here. The clear happens under the same
+	// lock as bufferLocked, so From can never snapshot a commit alongside the
+	// deltas it replaced.
+	s.liveTail = nil
 	subs := s.subs
 	s.mu.Unlock()
 	s.sendTo(subs, env)
@@ -787,6 +808,10 @@ func (s *Session) endTurn(env api.Envelope) {
 	env.TotalUncachedInput = s.totalUncached
 	env.TotalOutput = s.totalOutput
 	s.running = false
+	// Defensive clear: a turn that ends without its final message committing
+	// (e.g. a tool cancelled mid-run) must not leave a stale tail that the
+	// next block's replay would prepend to.
+	s.liveTail = nil
 	s.bufferLocked(env)
 	subs := s.subs
 	s.mu.Unlock()
@@ -798,6 +823,16 @@ func (s *Session) endTurn(env api.Envelope) {
 // not replayed to late subscribers.
 func (s *Session) publish(env api.Envelope) {
 	s.mu.Lock()
+	// Live LLM envelopes join the tail so a late subscriber can catch the
+	// current stream (see liveTail). Stamping under the same lock as the
+	// append keeps liveSeq and the tail consistent with what From/Live
+	// snapshot, so a subscriber sees every envelope exactly once: either in
+	// the replayed tail or as a live event, never both and never neither.
+	if env.Kind == api.KindLLM {
+		s.liveSeq++
+		env.LiveSeq = s.liveSeq
+		s.liveTail = append(s.liveTail, env)
+	}
 	subs := s.subs
 	s.mu.Unlock()
 	s.sendTo(subs, env)
@@ -932,6 +967,20 @@ func (s *Session) Stop() error {
 	return nil
 }
 
+// Live returns the session's in-flight LLM stream tail: every live LLM
+// envelope since the last commit, in order, plus the live position of the
+// newest one. It is the stream counterpart of Runs — what lets a client whose
+// live view was wiped (a /view swap, a missed reconnect window) re-seed the
+// streaming assistant bubble from the server's authoritative partial stream
+// instead of waiting for the turn's next commit.
+func (s *Session) Live() (uint64, []api.Envelope) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]api.Envelope, len(s.liveTail))
+	copy(out, s.liveTail)
+	return s.liveSeq, out
+}
+
 // Runs returns a snapshot of the session's in-flight tool runs, ordered by
 // start time. It is what lets a client reconstruct running blocks after a
 // reconnect mid-run.
@@ -998,16 +1047,28 @@ func (s *Session) From(ctx context.Context, since uint64) <-chan api.Envelope {
 			replay = append(replay, env)
 		}
 	}
+	// The live tail rides on the same subscription, between the committed
+	// replay and live events: a subscriber joining mid-turn gets the
+	// in-flight block from its first delta. Snapshotting it under the same
+	// lock as registration guarantees the ordering — an envelope published
+	// before this point is in the tail, one published after arrives live, so
+	// nothing is lost or duplicated. (On resync the tail is skipped: the
+	// caller reloads, and the fresh page reconnects with a current seq.)
+	tail := append([]api.Envelope(nil), s.liveTail...)
 	s.subs = append(s.subs, sub)
 	s.mu.Unlock()
 
-	// Replay buffered positions first, then stream live. Both go through the
-	// forwarder so a large backlog drains concurrently with the HTTP handler
-	// instead of blocking here; registration above ensures no gap between the
-	// caller's snapshot and this subscription.
+	// Replay buffered positions first (committed, then the live tail), then
+	// stream live. Both go through the forwarder so a large backlog drains
+	// concurrently with the HTTP handler instead of blocking here;
+	// registration above ensures no gap between the caller's snapshot and
+	// this subscription.
 	go func() {
 		defer close(out)
 		for _, env := range replay {
+			out <- env
+		}
+		for _, env := range tail {
 			out <- env
 		}
 		forward(ctx, out, sub, func() { s.detach(sub) })
