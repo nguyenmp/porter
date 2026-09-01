@@ -847,11 +847,12 @@ func (s *Session) commitEnv(env api.Envelope) (uint64, error) {
 	return next, nil
 }
 
-// humanizeContext returns a compact transcript of the conversation leading up
-// to the message at msgSeq, so a humanize pass is grounded in what was asked
-// without re-sending raw history (tool traffic, reasoning, and system notices
-// are excluded; see humanize.Transcript). A read failure is best-effort: the
-// pass runs without context rather than failing.
+// humanizeContext returns the full prose transcript of the conversation
+// leading up to the message at msgSeq — every user message and assistant
+// reply with content, unbounded, so a humanize pass is grounded in what was
+// asked without re-sending raw history (tool traffic, reasoning, and system
+// notices are excluded; see humanize.Transcript). A read failure is
+// best-effort: the pass runs without context rather than failing.
 func (s *Session) humanizeContext(msgSeq uint64) string {
 	ps, err := s.persist.LoadSession(s.dbID)
 	if err != nil {

@@ -88,38 +88,32 @@ func TestTranscriptIncludesConversation(t *testing.T) {
 	}
 }
 
-// TestTranscriptBoundedByMessageCount ensures only the most recent
-// MaxContextMessages content messages survive, oldest dropped first.
-func TestTranscriptBoundedByMessageCount(t *testing.T) {
+// TestTranscriptUnbounded ensures the full prose history survives: no message
+// count cap and no per-message truncation — a long session's entire
+// user/assistant thread is included, so grounding is never dropped.
+func TestTranscriptUnbounded(t *testing.T) {
+	// A long session: every prose message must appear, oldest first.
 	var msgs []db.Message
 	for i := 1; i <= 20; i++ {
 		msgs = append(msgs, db.Message{Seq: uint64(i), ChatMessage: llm.UserMessage("m")})
 	}
 	got := Transcript(msgs, 21)
-	if strings.Count(got, "user: m") != MaxContextMessages {
-		t.Errorf("transcript has %d messages, want the last %d", strings.Count(got, "user: m"), MaxContextMessages)
+	if strings.Count(got, "user: m") != 20 {
+		t.Errorf("transcript has %d messages, want all 20", strings.Count(got, "user: m"))
 	}
-	if strings.Contains(got, "user: m") && strings.Index(got, "user: m") == strings.LastIndex(got, "user: m") {
-		// single line only — nothing to check further
+	if !strings.HasPrefix(got, "user: m") {
+		t.Errorf("transcript does not start with the oldest message: %q", got)
 	}
-	// The oldest message must be gone: with 20 sequential seqs, the kept tail
-	// starts at seq 9 (20 - 12 + 1). Seq 1 must not appear.
-	if strings.Contains(got, "1: m") {
-		t.Errorf("transcript kept the oldest message: %q", got)
-	}
-}
 
-// TestTranscriptTruncatesLongMessages ensures a single oversized message is
-// capped at MaxContextRunes with a marker.
-func TestTranscriptTruncatesLongMessages(t *testing.T) {
-	long := strings.Repeat("x", MaxContextRunes*2)
-	msgs := []db.Message{{Seq: 1, ChatMessage: llm.UserMessage(long)}}
-	got := Transcript(msgs, 2)
-	if !strings.Contains(got, "[truncated]") {
-		t.Errorf("transcript did not mark truncation: %q", got)
+	// A single oversized message is not truncated.
+	long := strings.Repeat("x", 10000)
+	msgs2 := []db.Message{{Seq: 1, ChatMessage: llm.UserMessage(long)}}
+	got2 := Transcript(msgs2, 2)
+	if !strings.Contains(got2, strings.Repeat("x", 10000)) {
+		t.Errorf("transcript dropped content from an oversized message (len %d)", len(got2))
 	}
-	if len([]rune(got)) > MaxContextRunes+len("user:  …[truncated]") {
-		t.Errorf("transcript too long: %d runes", len([]rune(got)))
+	if strings.Contains(got2, "[truncated]") {
+		t.Errorf("transcript marked truncation; the unbounded transcript never truncates: %q", got2[:50])
 	}
 }
 

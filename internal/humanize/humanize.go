@@ -1,9 +1,9 @@
 // Package humanize rewrites assistant replies in plain language, in the
 // background, so assistant text blocks get a "Humanized" variant tab in the
 // web UI without interrupting the turn. The pass is deliberately light: one
-// LLM request carrying the text plus a compact transcript of the conversation
-// leading up to it (grounding for the rewrite, bounded and prefix-stable so
-// provider prompt caching makes repeat passes cheap), driven by a hard-coded
+// LLM request carrying the text plus a full transcript of the conversation
+// leading up to it (grounding for the rewrite, prefix-stable so provider
+// prompt caching makes repeat passes cheap), driven by a hard-coded
 // prompt distilled from the plain-language skill — a silent background step
 // must be fast, deterministic, and cheap, not a skill-loading multi-fetch
 // ritual.
@@ -31,15 +31,6 @@ const PromptVersion = "plain-language-v1"
 const (
 	MinWords     = 60
 	MinSentences = 4
-	// MaxContextMessages bounds how many prior conversation messages the
-	// rewrite's transcript includes, and MaxContextRunes caps each message's
-	// contribution, so the context prefix stays cheap. Because the transcript
-	// is built from committed history — append-only — it is a stable prefix
-	// per session, so provider prompt caching makes repeat passes (especially
-	// chained passes on the same message, which share the prefix) mostly cache
-	// hits; only the first pass in a session pays the context cost once.
-	MaxContextMessages = 12
-	MaxContextRunes    = 2000
 )
 
 // systemPrompt is the hard-coded plain-language instruction. It distills the
@@ -113,15 +104,20 @@ func codeLines(text string) int {
 	return n
 }
 
-// Transcript renders a compact, human-readable transcript of the conversation
-// leading up to the message at seq — the grounding context for a rewrite.
-// Only user messages and assistant replies with content are included: system
-// notices, tool calls, tool results, and reasoning are excluded (they are
-// noise for humanizing, and omitting them keeps the request small). Only the
-// most recent MaxContextMessages are kept, each capped at MaxContextRunes, so
-// the prefix is bounded no matter how long the session is.
+// Transcript renders the conversation leading up to the message at seq — the
+// grounding context for a rewrite. It includes every user message and
+// assistant reply with content, in order, unbounded: nothing conversationally
+// relevant is ever dropped, no matter how long the session is (the pass is a
+// fresh request, so it always carries the full prose history). System notices,
+// tool calls, tool results, and reasoning are excluded — they are noise for
+// humanizing, and omitting them keeps the request from being dominated by
+// large tool outputs. Because committed history is append-only, the transcript
+// is a stable request prefix per session, so provider prompt caching makes
+// repeat passes (especially chained passes on the same message, which share
+// the prefix) mostly cache hits; only the first pass in a session pays the
+// context cost once.
 func Transcript(msgs []db.Message, seq uint64) string {
-	lines := make([]string, 0, MaxContextMessages)
+	lines := make([]string, 0, 16)
 	for _, m := range msgs {
 		if m.Seq >= seq {
 			break
@@ -133,24 +129,12 @@ func Transcript(msgs []db.Message, seq uint64) string {
 		if content == "" {
 			continue
 		}
-		lines = append(lines, m.Role+": "+truncateRunes(content, MaxContextRunes))
-	}
-	if len(lines) > MaxContextMessages {
-		lines = lines[len(lines)-MaxContextMessages:]
+		lines = append(lines, m.Role+": "+content)
 	}
 	if len(lines) == 0 {
 		return ""
 	}
 	return strings.Join(lines, "\n")
-}
-
-// truncateRunes caps s at max runes, appending a marker when it cut anything.
-func truncateRunes(s string, max int) string {
-	r := []rune(s)
-	if len(r) <= max {
-		return s
-	}
-	return string(r[:max]) + " …[truncated]"
 }
 
 // Rewrite runs one plain-language pass over text and returns the rewrite. The
@@ -161,7 +145,7 @@ func truncateRunes(s string, max int) string {
 // (see Transcript), which grounds the rewrite in what was asked; it rides in
 // the system prompt so it is part of the cached request prefix. It makes a
 // single streaming LLM request with no tools: the pass is a pure function of
-// the text (plus bounded context), so it can run in the background, in
+// the text (plus context), so it can run in the background, in
 // parallel with other turns, and be re-run safely.
 func Rewrite(ctx context.Context, client *llm.Client, context, text string) (string, error) {
 	if strings.TrimSpace(text) == "" {

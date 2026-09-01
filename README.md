@@ -182,14 +182,15 @@ request, so it never blocks the turn or the next message. Clicking **+** on
 any variant tab chains another pass from the latest version, so you can keep
 humanizing more and more if you want.
 
-Each pass is grounded in the conversation: the request carries a compact
-transcript of the messages leading up to the reply (user + assistant prose
-only — tool traffic, reasoning, and system notices are excluded, and the
-transcript is bounded to the last few messages). Because history is
-append-only, that transcript is a stable request prefix per session, so
-provider prompt caching makes repeat passes — especially chained passes on the
-same message — mostly cache hits; only the first pass in a session pays the
-context cost once.
+Each pass is grounded in the conversation: the request carries the full
+prose transcript of the messages leading up to the reply — every user message
+and assistant reply with content, unbounded, so nothing conversationally
+relevant is ever dropped (tool traffic, reasoning, and system notices are
+excluded, so the request is never dominated by large tool outputs). Because
+history is append-only, that transcript is a stable request prefix per
+session, so provider prompt caching makes repeat passes — especially chained
+passes on the same message — mostly cache hits; only the first pass in a
+session pays the context cost once.
 
 The rewrite is derived data, not conversation: variants are never part of
 history, never resubmitted to the model, and never cost a turn. They are
@@ -204,9 +205,8 @@ The prompt is hard-coded in `internal/humanize` (distilled from the
 plain-language skill — no web fetches, no commentary, markdown preserved,
 facts and code untouched) and stamped on every pass as `prompt_version`, so
 old tabs still explain themselves when you tweak the prompt. The auto-trigger
-thresholds (`MinWords`, `MinSentences`, code-block detection), the context
-bounds (`MaxContextMessages`, `MaxContextRunes`), and the prompt live there
-too. The backend surface is
+thresholds (`MinWords`, `MinSentences`, code-block detection) and the prompt
+live there too. The backend surface is
 `POST /api/sessions/{id}/messages/{seq}/humanize`.
 
 ### Quiet REPL logs
