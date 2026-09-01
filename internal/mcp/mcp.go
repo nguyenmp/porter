@@ -380,6 +380,15 @@ func (s *Server) fetch(ctx context.Context, client *http.Client) {
 }
 
 func (s *Server) handshake(ctx context.Context, client *http.Client) error {
+	// A fresh initialize starts a new streamable-HTTP session: clear any
+	// cached session id and negotiated protocol first, so the handshake goes
+	// out as a clean session start (a stale Mcp-Session-Id header could make
+	// the server reject it outright). handshake is also the recovery path
+	// when a session lapses, so this keeps re-initializes honest.
+	s.mu.Lock()
+	s.sessionID = ""
+	s.protocol = ""
+	s.mu.Unlock()
 	result, header, err := s.call(ctx, client, 1, "initialize", map[string]any{
 		"protocolVersion": ProtocolVersion,
 		"capabilities":    map[string]any{"tools": map[string]any{}},

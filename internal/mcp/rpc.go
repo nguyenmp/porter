@@ -80,11 +80,41 @@ func (s *Server) applyAuth(req *http.Request) {
 	}
 }
 
+// callError distinguishes transport-level failures (an HTTP status) from
+// JSON-RPC errors (an error code), so call can apply recovery — a rejected
+// token or an expired session — before reporting the failure.
+type callError struct {
+	httpStatus int    // HTTP status for non-2xx responses; 0 for JSON-RPC errors
+	rpcCode    int    // JSON-RPC error code; 0 for HTTP-level failures
+	message    string // full error text
+}
+
+func (e *callError) Error() string { return e.message }
+
+// sessionNotFound reports whether the failure is a streamable-HTTP "session
+// not found" rejection: the server could not match the Mcp-Session-Id we sent
+// because the session lapsed server-side.
+func (e *callError) sessionNotFound() bool {
+	return e.rpcCode == -32001 && strings.Contains(strings.ToLower(e.message), "session")
+}
+
 // call sends one id-bearing JSON-RPC request and returns the response's
 // result plus the response headers (a server may return the session id in an
 // Mcp-Session-Id header on initialize). The request runs under ctx, so
 // cancelling ctx (a user clicking Cancel) aborts the HTTP call. An HTTP
 // error, a JSON-RPC error, or a timeout are returned as errors.
+//
+// Two failures are recovered once before being reported:
+//
+//   - HTTP 401 on an OAuth server: the stored token was rejected (revoked or
+//     wrong scope), so it is force-refreshed and the request retried.
+//   - JSON-RPC -32001 "Session not found": the streamable-HTTP session the
+//     server assigned on initialize lapsed server-side (server-defined, and
+//     sometimes minutes), so the initialize handshake re-runs to mint a fresh
+//     session and the request is retried.
+//
+// initialize itself is exempt from both recoveries: it is the recovery, and
+// must not recurse.
 func (s *Server) call(ctx context.Context, client *http.Client, id any, method string, params any) (json.RawMessage, http.Header, error) {
 	timeout := s.Timeout
 	if timeout <= 0 {
@@ -98,60 +128,89 @@ func (s *Server) call(ctx context.Context, client *http.Client, id any, method s
 	if err := s.ensureToken(ctx, client); err != nil {
 		return nil, nil, err
 	}
-	req, err := s.newRequest(ctx, id, method, params)
-	if err != nil {
-		return nil, nil, err
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, nil, fmt.Errorf("%s: %w", method, err)
-	}
-	if resp.StatusCode == http.StatusUnauthorized && s.Auth.Type == "oauth" {
-		// The stored token was rejected (revoked or wrong scope): force a
-		// refresh and retry once before reporting the failure.
-		_ = resp.Body.Close()
-		if err := s.forceRefresh(ctx, client); err != nil {
-			return nil, nil, fmt.Errorf("%s: %w", method, err)
-		}
-		req, err = s.newRequest(ctx, id, method, params)
+
+	// send performs one round trip and parses the JSON-RPC response, so the
+	// recovery paths below can re-run the request after refreshing a token or
+	// re-initializing a session.
+	send := func() (json.RawMessage, http.Header, *callError) {
+		req, err := s.newRequest(ctx, id, method, params)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, &callError{message: fmt.Sprintf("%s: %v", method, err)}
 		}
-		resp, err = client.Do(req)
+		resp, err := client.Do(req)
 		if err != nil {
-			return nil, nil, fmt.Errorf("%s: %w", method, err)
+			return nil, nil, &callError{message: fmt.Sprintf("%s: %v", method, err)}
 		}
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
-		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
-		return nil, nil, fmt.Errorf("%s: unexpected status %s: %s", method, resp.Status, strings.TrimSpace(string(msg)))
-	}
-	data, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, nil, fmt.Errorf("read %s response: %w", method, err)
-	}
-	var rpc rpcResponse
-	if ct := resp.Header.Get("Content-Type"); strings.Contains(ct, "text/event-stream") {
-		// Streamable HTTP servers may respond to a request with an SSE stream
-		// instead of a plain JSON body; the JSON-RPC response rides in the
-		// first event's data field.
-		ev, err := parseSSEEvent(data)
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
+			msg, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+			cerr := &callError{
+				httpStatus: resp.StatusCode,
+				message:    fmt.Sprintf("%s: unexpected status %s: %s", method, resp.Status, strings.TrimSpace(string(msg))),
+			}
+			// Some servers report JSON-RPC errors with a non-2xx status (e.g.
+			// Retool answers a stale session with 404 + -32001 "Session not
+			// found"): parse the body so recovery can recognize them.
+			var rpc rpcResponse
+			if err := json.Unmarshal(msg, &rpc); err == nil && rpc.Error != nil {
+				cerr.rpcCode = rpc.Error.Code
+				cerr.message = fmt.Sprintf("%s: %v", method, rpc.Error)
+			}
+			return nil, nil, cerr
+		}
+		data, err := io.ReadAll(resp.Body)
 		if err != nil {
-			return nil, nil, fmt.Errorf("parse %s SSE response: %w", method, err)
+			return nil, nil, &callError{message: fmt.Sprintf("read %s response: %v", method, err)}
 		}
-		if err := json.Unmarshal(ev, &rpc); err != nil {
-			return nil, nil, fmt.Errorf("decode %s SSE response: %w", method, err)
+		var rpc rpcResponse
+		if ct := resp.Header.Get("Content-Type"); strings.Contains(ct, "text/event-stream") {
+			// Streamable HTTP servers may respond to a request with an SSE
+			// stream instead of a plain JSON body; the JSON-RPC response rides
+			// in the first event's data field.
+			ev, err := parseSSEEvent(data)
+			if err != nil {
+				return nil, nil, &callError{message: fmt.Sprintf("parse %s SSE response: %v", method, err)}
+			}
+			if err := json.Unmarshal(ev, &rpc); err != nil {
+				return nil, nil, &callError{message: fmt.Sprintf("decode %s SSE response: %v", method, err)}
+			}
+		} else {
+			if err := json.Unmarshal(data, &rpc); err != nil {
+				return nil, nil, &callError{message: fmt.Sprintf("decode %s response: %v", method, err)}
+			}
 		}
-	} else {
-		if err := json.Unmarshal(data, &rpc); err != nil {
-			return nil, nil, fmt.Errorf("decode %s response: %w", method, err)
+		if rpc.Error != nil {
+			return nil, nil, &callError{
+				rpcCode: rpc.Error.Code,
+				message: fmt.Sprintf("%s: %v", method, rpc.Error),
+			}
+		}
+		return rpc.Result, resp.Header, nil
+	}
+
+	result, header, cerr := send()
+	if cerr != nil && method != "initialize" {
+		switch {
+		case cerr.httpStatus == http.StatusUnauthorized && s.Auth.Type == "oauth":
+			// The stored token was rejected (revoked or wrong scope): force a
+			// refresh and retry once before reporting the failure.
+			if err := s.forceRefresh(ctx, client); err != nil {
+				return nil, nil, fmt.Errorf("%s: %w", method, err)
+			}
+			result, header, cerr = send()
+		case cerr.sessionNotFound():
+			// The streamable-HTTP session lapsed server-side: re-run the
+			// initialize handshake to mint a fresh session and retry once.
+			if err := s.handshake(ctx, client); err != nil {
+				return nil, nil, fmt.Errorf("%s: session not found, re-initialize failed: %w", method, err)
+			}
+			result, header, cerr = send()
 		}
 	}
-	if rpc.Error != nil {
-		return nil, nil, fmt.Errorf("%s: %w", method, rpc.Error)
+	if cerr != nil {
+		return nil, nil, cerr
 	}
-	return rpc.Result, resp.Header, nil
+	return result, header, nil
 }
 
 // notify sends a JSON-RPC notification (no id). The response is drained and

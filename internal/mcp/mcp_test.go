@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -22,17 +23,35 @@ import (
 type mockMCP struct {
 	mu sync.Mutex
 
-	tools    []map[string]any
-	token    string // require this bearer token ("" = no auth check)
-	session  string // session id returned on initialize
-	checkSID bool   // require Mcp-Session-Id on non-initialize requests
-	sses     bool   // respond as text/event-stream instead of application/json
-	initErr  *rpcError
-	failList bool
-	cursor   bool // paginate tools/list into two pages
-	callErr  bool // tools/call returns isError
+	tools      []map[string]any
+	token      string // require this bearer token ("" = no auth check)
+	session    string // session id returned on initialize
+	checkSID   bool   // require Mcp-Session-Id on non-initialize requests
+	sses       bool   // respond as text/event-stream instead of application/json
+	initErr    *rpcError
+	failList   bool
+	cursor     bool      // paginate tools/list into two pages
+	callErr    bool      // tools/call returns isError
+	callRPCErr *rpcError // tools/call returns this JSON-RPC error instead of a result
+	// Session-expiry simulation: after expireAfter id-bearing non-initialize
+	// requests the server rejects with -32001 "Session not found" until the
+	// next initialize mints a new session generation.
+	expireAfter int
+	reqs        int // id-bearing non-initialize requests in the current session
+	sessGen     int // session generation, 1-based; "sess-<n>" when expireAfter > 0
+	inits       int // initialize requests seen
 
 	calls []mockCall
+}
+
+// sessionID returns the session id the server currently accepts.
+func (m *mockMCP) sessionID() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.expireAfter > 0 {
+		return fmt.Sprintf("sess-%d", m.sessGen)
+	}
+	return m.session
 }
 
 type mockCall struct {
@@ -55,7 +74,18 @@ func (m *mockMCP) handler() http.Handler {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		if req.Method != "initialize" && m.checkSID && r.Header.Get("Mcp-Session-Id") != m.session {
+		if req.Method != "initialize" && req.ID != nil && m.expireAfter > 0 {
+			m.mu.Lock()
+			m.reqs++
+			expired := m.reqs > m.expireAfter
+			m.mu.Unlock()
+			if expired {
+				w.WriteHeader(http.StatusNotFound)
+				m.respond(w, &rpcError{Code: -32001, Message: "Session not found"}, req.ID)
+				return
+			}
+		}
+		if req.Method != "initialize" && m.checkSID && r.Header.Get("Mcp-Session-Id") != m.sessionID() {
 			http.Error(w, "missing session id", http.StatusBadRequest)
 			return
 		}
@@ -65,9 +95,16 @@ func (m *mockMCP) handler() http.Handler {
 				m.respond(w, m.initErr, req.ID)
 				return
 			}
+			m.mu.Lock()
+			m.inits++
+			if m.expireAfter > 0 {
+				m.sessGen++
+				m.reqs = 0
+			}
+			m.mu.Unlock()
 			m.respond(w, map[string]any{
 				"protocolVersion": "2025-06-18",
-				"sessionId":       m.session,
+				"sessionId":       m.sessionID(),
 				"capabilities":    map[string]any{},
 				"serverInfo":      map[string]any{"name": "mock", "version": "1.0"},
 			}, req.ID)
@@ -98,6 +135,10 @@ func (m *mockMCP) handler() http.Handler {
 			m.mu.Lock()
 			m.calls = append(m.calls, mockCall{tool: p.Name, args: p.Arguments})
 			m.mu.Unlock()
+			if m.callRPCErr != nil {
+				m.respond(w, m.callRPCErr, req.ID)
+				return
+			}
 			resp := map[string]any{
 				"content": []map[string]any{{"type": "text", "text": "result of " + p.Name}},
 				"isError": m.callErr,
@@ -635,5 +676,90 @@ func TestSummary(t *testing.T) {
 	s := sum[0]
 	if s.Name != "echo" || s.Status != "ok" || len(s.Tools) != 1 || s.Tools[0].Name != "echo" {
 		t.Errorf("Summary server = %+v", s)
+	}
+}
+
+// TestSessionExpiryRecovery simulates a server whose streamable-HTTP session
+// lapses server-side (Retool's sessions live minutes): the first call works,
+// the second is rejected with -32001 "Session not found", and porter must
+// transparently re-initialize and retry without the caller noticing.
+func TestSessionExpiryRecovery(t *testing.T) {
+	// The session serves two id-bearing requests (tools/list at load plus one
+	// call), then lapses; each initialize mints the next generation.
+	m := &mockMCP{
+		tools:       []map[string]any{{"name": "ping", "description": "Ping"}},
+		checkSID:    true,
+		expireAfter: 2,
+	}
+	ts := httptest.NewServer(m.handler())
+	defer ts.Close()
+
+	h, err := Load(writeConfig(t, serverEntry("sess", ts.URL, "")), nil)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if status, _ := h.Server("sess").Status(); status != "ok" {
+		t.Fatalf("status = %q, want ok", status)
+	}
+
+	call := func() string {
+		t.Helper()
+		out, err := h.Run(context.Background(), CallTool, []byte(`{"server_name":"sess","tool_name":"ping"}`))
+		if err != nil {
+			t.Fatalf("CallMCP: %v", err)
+		}
+		data, _ := io.ReadAll(out)
+		_ = out.Close()
+		return string(data)
+	}
+
+	// First call rides the original session (sess-1).
+	if got := call(); got != "result of ping" {
+		t.Errorf("first call = %q, want result of ping", got)
+	}
+	// Second call hits the lapsed session and must recover transparently.
+	if got := call(); got != "result of ping" {
+		t.Errorf("call after expiry = %q, want result of ping", got)
+	}
+	// Recovery re-initialized to a new session generation.
+	if m.sessionID() != "sess-2" {
+		t.Errorf("session after recovery = %q, want sess-2", m.sessionID())
+	}
+	if m.inits != 2 {
+		t.Errorf("initialize count = %d, want 2 (load + recovery)", m.inits)
+	}
+	if len(m.calls) != 2 {
+		t.Errorf("tools/call count = %d, want 2", len(m.calls))
+	}
+}
+
+// TestNoSessionRecoveryForOtherErrors proves recovery only fires for -32001
+// "Session not found": an unrelated JSON-RPC error on a call is reported as-is
+// without re-initializing.
+func TestNoSessionRecoveryForOtherErrors(t *testing.T) {
+	m := &mockMCP{
+		tools:      []map[string]any{{"name": "ping", "description": "Ping"}},
+		session:    "sess-x",
+		checkSID:   true,
+		callRPCErr: &rpcError{Code: -32000, Message: "boom"},
+	}
+	ts := httptest.NewServer(m.handler())
+	defer ts.Close()
+
+	h, err := Load(writeConfig(t, serverEntry("sess", ts.URL, "")), nil)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	out, err := h.Run(context.Background(), CallTool, []byte(`{"server_name":"sess","tool_name":"ping"}`))
+	if err != nil {
+		t.Fatalf("CallMCP: %v", err)
+	}
+	data, _ := io.ReadAll(out)
+	_ = out.Close()
+	if !strings.Contains(string(data), "MCP error -32000: boom") {
+		t.Errorf("result = %q, want MCP error -32000: boom", data)
+	}
+	if m.inits != 1 {
+		t.Errorf("initialize count = %d, want 1 (no recovery for unrelated errors)", m.inits)
 	}
 }
