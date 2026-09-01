@@ -155,3 +155,66 @@ func TestDiscoverListsCWD(t *testing.T) {
 		t.Errorf("files = %v, want README.md and sub/", ctx.Files)
 	}
 }
+
+func TestFindCLIsFromManifest(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, ".porter")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := `{"clis":{"gt":"Graphite stack management (submit, split, restack, up/down)","slack":"Slack CLI","gws":"Google Workspace CLI"}}`
+	if err := os.WriteFile(filepath.Join(dir, "clis.json"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	clis := FindCLIs()
+	if len(clis) != 3 {
+		t.Fatalf("FindCLIs = %d entries, want 3", len(clis))
+	}
+	// Sorted by name.
+	if clis[0].Name != "gt" || clis[1].Name != "gws" || clis[2].Name != "slack" {
+		t.Errorf("FindCLIs order = %+v, want gt, gws, slack", clis)
+	}
+	desc := ""
+	for _, c := range clis {
+		if c.Name == "gt" {
+			desc = c.Description
+		}
+	}
+	if !strings.Contains(desc, "Graphite") {
+		t.Errorf("gt description = %q", desc)
+	}
+}
+
+func TestFindCLIsMissingOrBroken(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	// No manifest: no CLIs, no error.
+	if got := FindCLIs(); len(got) != 0 {
+		t.Errorf("FindCLIs with no manifest = %+v, want none", got)
+	}
+	// Malformed manifest: ignored, not fatal.
+	dir := filepath.Join(home, ".porter")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "clis.json"), []byte(`{nope`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := FindCLIs(); len(got) != 0 {
+		t.Errorf("FindCLIs with broken manifest = %+v, want none", got)
+	}
+}
+
+func TestSystemMessageIncludesCLIs(t *testing.T) {
+	msg := SystemMessage(api.ExecContext{
+		System: "darwin/arm64",
+		CWD:    "/home/me",
+		CLIs: []api.CLI{
+			{Name: "gt", Description: "Graphite stack management"},
+		},
+	})
+	if !strings.Contains(msg, "Available CLI tools") || !strings.Contains(msg, "gt: Graphite stack management") {
+		t.Errorf("system message missing CLI section:\n%s", msg)
+	}
+}

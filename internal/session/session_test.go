@@ -16,6 +16,7 @@ import (
 	"porter/internal/config"
 	"porter/internal/db"
 	"porter/internal/llm"
+	"porter/internal/mcp"
 	"porter/internal/tools"
 )
 
@@ -1295,5 +1296,58 @@ func TestProviderNoticeDeferredToTurnBoundary(t *testing.T) {
 	}
 	if toolIdx == -1 || noticeIdx < toolIdx {
 		t.Errorf("disconnect notice (idx %d) not after tool result (idx %d); history = %+v", noticeIdx, toolIdx, msgs)
+	}
+}
+
+// TestProviderExposesRemoteMCPServers proves the session's provider wraps the
+// active remote client's reported MCP servers into the Composite, so FindMCP
+// lists them (hosted on the client) and CallMCP for one routes down the exec
+// channel. It is the integration seam between the exec context and the MCP
+// surface.
+func TestProviderExposesRemoteMCPServers(t *testing.T) {
+	s := newTestSession(t, "session_1")
+	remote := []api.MCPServer{{
+		Name: "retool", Description: "Retool", Host: "laptop",
+		Tools: []api.MCPTool{{Name: "whoami", Description: "Who am I"}},
+	}}
+	ch := make(chan api.ExecRequest, 4)
+	s.SetExecContext(api.ExecContext{ID: "laptop", System: "darwin/arm64", CWD: "/home/me", MCPServers: remote})
+	id := s.RegisterExec(ch, "laptop", "laptop", "remote")
+	defer s.UnregisterExec(id)
+
+	p := s.provider()
+	// The active client is remote, so its MCP servers are exposed through the
+	// Composite even though the session has no server-side hub.
+	comp, ok := p.(*mcp.Composite)
+	if !ok {
+		t.Fatalf("provider = %T, want *mcp.Composite", p)
+	}
+	if len(comp.Remote) != 1 || comp.Remote[0].Name != "retool" || comp.Remote[0].Host != "laptop" {
+		t.Fatalf("Composite.Remote = %+v", comp.Remote)
+	}
+
+	// Defs include the MCP tools (shell + FindMCP + CallMCP).
+	names := map[string]bool{}
+	for _, d := range p.Defs() {
+		names[d.Function.Name] = true
+	}
+	for _, want := range []string{"shell", mcp.FindTool, mcp.CallTool} {
+		if !names[want] {
+			t.Errorf("Defs missing %q: %v", want, names)
+		}
+	}
+
+	// CallMCP for the remote server routes down the exec channel: a request
+	// lands on the client's channel with the CallMCP name.
+	go func() {
+		p.Run(context.Background(), mcp.CallTool, []byte(`{"server_name":"retool","tool_name":"whoami"}`))
+	}()
+	select {
+	case req := <-ch:
+		if req.Name != mcp.CallTool {
+			t.Errorf("exec request name = %q, want CallMCP", req.Name)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no exec request routed to the client")
 	}
 }

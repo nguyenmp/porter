@@ -405,16 +405,27 @@ func (s *Session) SetProvider(js tools.Provider) {
 
 // provider returns the current execution provider — routing to the active
 // remote client when one is selected, else the local provider — wrapped in a
-// composite that also exposes the MCP hub tools when a hub is configured (hub
-// calls are served on the server and never cross the exec channel).
+// composite that also exposes the MCP surface when any server is available:
+// the server's own configured hub (served here, never crossing the exec
+// channel) plus the MCP servers the active provider hosts (reported in its
+// context; served on the provider's machine). When the active provider is
+// local, only the server hub's servers are exposed.
 func (s *Session) provider() tools.Provider {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	js := s.activeProviderLocked()
-	if s.hub == nil {
+	hub := s.hub
+	var remote []api.MCPServer
+	if c, ok := s.execClients[s.activeExec]; ok && c.connected && c.kind != "local" && c.ctx != nil {
+		remote = c.ctx.MCPServers
+	}
+	if hub == nil && len(remote) == 0 {
 		return js
 	}
-	return &mcp.Composite{Exec: js, Hub: s.hub}
+	if hub == nil {
+		hub = mcp.New(nil)
+	}
+	return &mcp.Composite{Exec: js, Hub: hub, Remote: remote}
 }
 
 // activeProviderLocked returns the provider for the session's active

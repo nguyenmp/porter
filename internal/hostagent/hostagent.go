@@ -14,6 +14,8 @@ import (
 	"io"
 	"log"
 	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -21,6 +23,7 @@ import (
 	"porter/internal/client"
 	"porter/internal/config"
 	"porter/internal/exec"
+	"porter/internal/mcp"
 	"porter/internal/tools"
 )
 
@@ -66,10 +69,29 @@ func Run(ctx context.Context, cfg config.ClientConfig) error {
 	env.Name = hostID
 	env.Repos = discoverRepos("")
 
-	log.Printf("execution host %s: %s @ %s (%d skills, sandboxes in %s, %d repos)",
-		hostID, env.System, env.CWD, len(env.Skills), root, len(env.Repos))
+	// Load the host's own MCP servers — e.g. a laptop-only server behind a
+	// corporate VPN — from ~/.porter/porter.mcp.json. The host serves these
+	// servers' tool calls itself (CallMCP routed down this connection); the
+	// porter server lists them via the host's reported environment. A
+	// malformed config is logged and skipped: MCP is optional, and a broken
+	// config must not take down the execution host.
+	hub := mcp.New(nil)
+	if home, err := os.UserHomeDir(); err == nil {
+		hub, err = mcp.Load(filepath.Join(home, ".porter", "porter.mcp.json"), nil)
+		if err != nil {
+			log.Printf("execution host: mcp config: %v (continuing without host MCP servers)", err)
+			hub = mcp.New(nil)
+		}
+	}
+	if n := len(hub.Names()); n > 0 {
+		log.Printf("execution host: serving %d MCP server(s): %s", n, strings.Join(hub.Names(), ", "))
+	}
 
-	prov := &provisioner{c: c, hostID: hostID, cwd: cwd, worktrees: root, serves: map[string]*serveState{}}
+	env.MCPServers = hubSummary(hub, hostID)
+	log.Printf("execution host %s: %s @ %s (%d skills, sandboxes in %s, %d repos, %d mcp servers)",
+		hostID, env.System, env.CWD, len(env.Skills), root, len(env.Repos), len(env.MCPServers))
+
+	prov := &provisioner{c: c, hostID: hostID, cwd: cwd, worktrees: root, serves: map[string]*serveState{}, mcp: hub}
 	for {
 		if ctx.Err() != nil {
 			return nil
@@ -106,6 +128,7 @@ type provisioner struct {
 	worktrees string // root directory for worktree sandboxes
 	mu        sync.Mutex
 	serves    map[string]*serveState
+	mcp       *mcp.Hub // the host's own MCP servers, served on this machine
 }
 
 // serveState is one live worktree sandbox: the context that bounds its serve
@@ -172,6 +195,7 @@ func (p *provisioner) provision(req api.HostRequest) error {
 	}
 	env.ID = req.ProviderID
 	env.Name = p.hostID
+	env.MCPServers = hubSummary(p.mcp, p.hostID)
 
 	// Register the sandbox's environment with the session, then open the
 	// session's exec connection in a goroutine: registering makes the provider
@@ -221,6 +245,13 @@ func (p *provisioner) release(req api.HostRequest) {
 func (p *provisioner) serve(ctx context.Context, sessionID, providerID string, disp *tools.Dispatcher, dir string) {
 	for {
 		_ = p.c.ServeExec(ctx, sessionID, func(ctx context.Context, name string, args []byte) (io.ReadCloser, error) {
+			// MCP servers hosted on this machine (e.g. behind a VPN) are
+			// served here: the porter server routes CallMCP for a host-owned
+			// server down this exec channel, and the local hub runs the call
+			// against the server. Everything else goes to the dispatcher.
+			if name == mcp.CallTool {
+				return p.mcp.Run(ctx, mcp.CallTool, args)
+			}
 			return disp.RunDir(ctx, name, args, dir)
 		}, client.ExecConn{ID: providerID, Name: p.hostID, Kind: "host"})
 		if ctx.Err() != nil {
@@ -228,4 +259,14 @@ func (p *provisioner) serve(ctx context.Context, sessionID, providerID string, d
 		}
 		time.Sleep(time.Second)
 	}
+}
+
+// hubSummary renders a hub's servers as reported metadata, tagged with the
+// host id so the server-side hub can show where each server lives.
+func hubSummary(h *mcp.Hub, hostID string) []api.MCPServer {
+	out := h.Summary()
+	for i := range out {
+		out[i].Host = hostID
+	}
+	return out
 }

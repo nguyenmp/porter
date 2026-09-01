@@ -47,6 +47,12 @@ A tree of turns. Each turn has a single parent and can fork into many children.
   deduplicated by name (repo wins). They are exposed to the model as a single
   **load_skill** tool whose description lists every skill; calling it returns
   the full SKILL.md body.
+- CLI tools the provider declares available ride along the environment: a
+  curated manifest at `~/.porter/clis.json` (`{"clis": {"gt": "Graphite stack
+  management (submit, split, restack, up/down)"}}`) lists what the model can
+  run via the **shell** tool. If it's in the manifest it's assumed to exist;
+  a missing binary surfaces as a normal "command not found". CLIs are a
+  discoverability hint, not tools of their own.
 - Provider status is real-time: an `exec_status` bus envelope and
   `GET /api/sessions/{id}/exec/status` show the active provider, where it runs,
   and every provider that could run this session's tools.
@@ -80,12 +86,32 @@ are configured:
 - **CallMCP** — calls one tool on one server and returns the text result. It
   supports cancellation like any other tool (aborting the HTTP request).
 
-MCP calls run on the server, where the credentials live, and never cross the
-exec channel to a connected execution client. Only tools are used; resources
-and prompts are ignored. Connections are stateless (no persistent stream), so
+MCP calls run where the credentials live. Server-configured servers are
+served by the server process and never cross the exec channel, so server-side
+credentials stay server-side. An execution host (e.g. the laptop) can also
+host MCP servers — typically ones only reachable from that machine, like a
+corporate-VPN-only gateway — by configuring `~/.porter/porter.mcp.json` on
+the host. The host reports its servers with its environment; the server lists
+them in FindMCP (`hosted on <host>`) and routes a CallMCP for one down the
+host's exec channel, where the host's own local hub executes it — so those
+credentials never leave the host. A host-owned server is available while that
+host is the session's active provider, matching how `shell` behaves on it.
+
+Auth is either a static bearer token (`"auth": {"type": "bearer", "token":
+"..."}`) or OAuth 2.0 (`"auth": {"type": "oauth"}`) for servers that only
+accept OAuth (e.g. Retool's MCP). `scope` is optional — omit it to use the
+server's default scopes, or set it (e.g. `"scope": "mcp:read"`) to request
+least privilege. OAuth uses dynamic client registration and the
+authorization-code flow with PKCE over an ephemeral loopback redirect: run
+`porter mcp login <server-name>` on the machine that can reach the server —
+it opens a browser, and stores tokens in `~/.porter/mcp/tokens.json` (0600).
+The host daemon never opens a browser; it reads and refreshes stored tokens,
+and `porter mcp logout <server-name>` revokes them. Only tools are used;
+resources and prompts are ignored.
+Connections are stateless (no persistent stream), so
 `notifications/list_changed` and `ping` are never received; the only
-per-server state kept is the streamable-HTTP session id. OAuth and the legacy
-SSE transport are future work.
+per-server state kept is the streamable-HTTP session id. The legacy SSE
+transport is future work.
 
 ### Cost & metrics
 

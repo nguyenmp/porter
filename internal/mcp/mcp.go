@@ -4,10 +4,14 @@
 // (call one tool) — so any number of MCP servers adds a constant two tools to
 // the model's context instead of one per server.
 //
-// The hub runs on the server, where the MCP credentials live: the model talks
-// to third parties only through the tools the hub provides, and hub calls are
-// routed server-side so credentials never cross the exec channel to a
-// connected execution client.
+// The hub runs wherever its servers' credentials live: server-configured
+// servers are served by the server process (hub calls never cross the exec
+// channel, so server-side credentials stay server-side), and a connected
+// execution host's servers (e.g. a laptop-only server behind a corporate VPN)
+// are listed through FindMCP and executed on the host itself — CallMCP for a
+// host-owned server is routed down the exec channel and run by the host's own
+// local hub, so those credentials never leave the host. Each side's
+// credentials stay on the side that owns them.
 //
 // Only tools are used; resources and prompts are ignored. Connections are
 // stateless — one POST per JSON-RPC request, no persistent stream is held —
@@ -28,6 +32,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"porter/internal/api"
 )
 
 // ProtocolVersion is the MCP protocol version porter proposes on initialize.
@@ -48,11 +54,15 @@ type Tool struct {
 	InputSchema map[string]any
 }
 
-// Auth carries the credentials porter sends to a server. Only bearer tokens
-// are supported today; OAuth is a later TODO.
+// Auth carries the credentials porter sends to a server. Type "bearer" sends
+// a static token; type "oauth" uses the OAuth 2.0 authorization-code flow
+// (see oauth.go): tokens live in the user's ~/.porter/mcp/tokens.json, are
+// refreshed automatically, and never appear in the config file. Scope is the
+// OAuth scope to request ("" = the server's defaults).
 type Auth struct {
 	Type  string
 	Token string
+	Scope string
 }
 
 // Server is one configured MCP server: its static config plus the runtime
@@ -66,6 +76,9 @@ type Server struct {
 	URL         string
 	Auth        Auth
 	Timeout     time.Duration
+	// tokens is the shared OAuth token store for OAuth-authed servers; nil
+	// for bearer servers (or when no store is available). Set by the Hub.
+	tokens *TokenStore
 
 	status    string // "ok", "error", or "pending"
 	err       string
@@ -118,6 +131,7 @@ type serverConfig struct {
 type authConfig struct {
 	Type  string `json:"type"`
 	Token string `json:"token"`
+	Scope string `json:"scope,omitempty"`
 }
 
 // Hub is the in-memory registry of MCP servers and their tools. It is loaded
@@ -131,6 +145,13 @@ type Hub struct {
 	servers map[string]*Server
 	order   []string // server names in config order
 	client  *http.Client
+	// tokens is the shared OAuth token store, opened at Load (nil for a Hub
+	// built with New). OAuth-authed servers read and refresh their tokens
+	// through it.
+	tokens *TokenStore
+	// refreshing serializes refreshErrored's lazy re-fetch so concurrent
+	// FindMCP/CallMCP calls never run two refreshes at once.
+	refreshing bool
 }
 
 // New returns an empty Hub using client (defaulting to http.DefaultClient).
@@ -173,6 +194,15 @@ func Load(path string, client *http.Client) (*Hub, error) {
 		}
 		h.add(s)
 	}
+	// OAuth-authed servers share one token store in the user's home. A
+	// missing file is an empty store; a malformed one is logged and skipped
+	// (bearer servers keep working, and the store is only read, never
+	// created, on load).
+	if t, err := OpenTokenStore(); err != nil {
+		log.Printf("mcp: token store: %v (OAuth servers will be unavailable)", err)
+	} else {
+		h.setTokens(t)
+	}
 	h.Refresh(context.Background())
 	return h, nil
 }
@@ -189,9 +219,9 @@ func parseServer(sc serverConfig) (*Server, error) {
 		return nil, fmt.Errorf("MCP config server %q: url must be http(s): %q", sc.Name, sc.URL)
 	}
 	switch sc.Auth.Type {
-	case "", "bearer":
+	case "", "bearer", "oauth":
 	default:
-		return nil, fmt.Errorf("MCP config server %q: unsupported auth type %q (only \"bearer\" is supported)", sc.Name, sc.Auth.Type)
+		return nil, fmt.Errorf("MCP config server %q: unsupported auth type %q (supported: \"bearer\", \"oauth\")", sc.Name, sc.Auth.Type)
 	}
 	timeout := DefaultTimeout
 	if sc.TimeoutSeconds > 0 {
@@ -201,7 +231,7 @@ func parseServer(sc serverConfig) (*Server, error) {
 		Name:        sc.Name,
 		Description: sc.Description,
 		URL:         sc.URL,
-		Auth:        Auth{Type: sc.Auth.Type, Token: sc.Auth.Token},
+		Auth:        Auth{Type: sc.Auth.Type, Token: sc.Auth.Token, Scope: sc.Auth.Scope},
 		Timeout:     timeout,
 		status:      "pending",
 	}, nil
@@ -213,6 +243,37 @@ func (h *Hub) add(s *Server) {
 	defer h.mu.Unlock()
 	h.servers[s.Name] = s
 	h.order = append(h.order, s.Name)
+}
+
+// setTokens attaches the shared OAuth token store to the hub and every
+// registered server.
+func (h *Hub) setTokens(t *TokenStore) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.tokens = t
+	for _, s := range h.servers {
+		s.tokens = t
+	}
+}
+
+// Summary returns every server's metadata (name, description, load status,
+// tools) in config order, for inclusion in an execution context so the
+// server-side hub can expose host-provided MCP servers through FindMCP and
+// route CallMCP down the host's exec channel.
+func (h *Hub) Summary() []api.MCPServer {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	out := make([]api.MCPServer, 0, len(h.order))
+	for _, name := range h.order {
+		s := h.servers[name]
+		status, errMsg := s.Status()
+		ms := api.MCPServer{Name: s.Name, Description: s.Description, Status: status, Error: errMsg}
+		for _, t := range s.Tools() {
+			ms.Tools = append(ms.Tools, api.MCPTool{Name: t.Name, Description: t.Description, InputSchema: t.InputSchema})
+		}
+		out = append(out, ms)
+	}
+	return out
 }
 
 // Refresh re-fetches every server's tools. Servers are fetched concurrently
@@ -245,6 +306,44 @@ func (h *Hub) Refresh(ctx context.Context) {
 	if n := len(servers); n > 0 {
 		log.Printf("mcp: loaded %d server(s)", n)
 	}
+}
+
+// refreshErrored re-fetches tools for servers whose last attempt failed (e.g.
+// an OAuth server not yet logged in when the hub loaded). It is called lazily
+// from FindMCP and CallMCP so a `porter mcp login` after startup takes effect
+// without a restart. At most one refresh runs at a time; a refresh already in
+// progress makes callers no-ops.
+func (h *Hub) refreshErrored(ctx context.Context) {
+	h.mu.Lock()
+	if h.refreshing {
+		h.mu.Unlock()
+		return
+	}
+	h.refreshing = true
+	h.mu.Unlock()
+	defer func() {
+		h.mu.Lock()
+		h.refreshing = false
+		h.mu.Unlock()
+	}()
+
+	h.mu.RLock()
+	stale := make([]*Server, 0, len(h.order))
+	for _, name := range h.order {
+		if status, _ := h.servers[name].Status(); status == "error" {
+			stale = append(stale, h.servers[name])
+		}
+	}
+	h.mu.RUnlock()
+	var wg sync.WaitGroup
+	for _, s := range stale {
+		wg.Add(1)
+		go func(s *Server) {
+			defer wg.Done()
+			s.fetch(ctx, h.client)
+		}(s)
+	}
+	wg.Wait()
 }
 
 // Server returns the server with the given name, or nil.

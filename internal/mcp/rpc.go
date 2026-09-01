@@ -64,10 +64,19 @@ func (s *Server) newRequest(ctx context.Context, id any, method string, params a
 	return req, nil
 }
 
-// applyAuth sets the Authorization header for a bearer-token server.
+// applyAuth sets the Authorization header. Bearer servers use the static
+// token from config; OAuth servers use the stored access token (callers must
+// ensureToken first so it is fresh).
 func (s *Server) applyAuth(req *http.Request) {
-	if s.Auth.Type == "bearer" && s.Auth.Token != "" {
-		req.Header.Set("Authorization", "Bearer "+s.Auth.Token)
+	switch s.Auth.Type {
+	case "bearer":
+		if s.Auth.Token != "" {
+			req.Header.Set("Authorization", "Bearer "+s.Auth.Token)
+		}
+	case "oauth":
+		if e := s.tokenEntry(); e != nil && e.AccessToken != "" {
+			req.Header.Set("Authorization", "Bearer "+e.AccessToken)
+		}
 	}
 }
 
@@ -84,6 +93,11 @@ func (s *Server) call(ctx context.Context, client *http.Client, id any, method s
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
+	// OAuth servers: make sure the stored token is fresh (refreshing when
+	// expired) before the request is built.
+	if err := s.ensureToken(ctx, client); err != nil {
+		return nil, nil, err
+	}
 	req, err := s.newRequest(ctx, id, method, params)
 	if err != nil {
 		return nil, nil, err
@@ -91,6 +105,22 @@ func (s *Server) call(ctx context.Context, client *http.Client, id any, method s
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, nil, fmt.Errorf("%s: %w", method, err)
+	}
+	if resp.StatusCode == http.StatusUnauthorized && s.Auth.Type == "oauth" {
+		// The stored token was rejected (revoked or wrong scope): force a
+		// refresh and retry once before reporting the failure.
+		_ = resp.Body.Close()
+		if err := s.forceRefresh(ctx, client); err != nil {
+			return nil, nil, fmt.Errorf("%s: %w", method, err)
+		}
+		req, err = s.newRequest(ctx, id, method, params)
+		if err != nil {
+			return nil, nil, err
+		}
+		resp, err = client.Do(req)
+		if err != nil {
+			return nil, nil, fmt.Errorf("%s: %w", method, err)
+		}
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {

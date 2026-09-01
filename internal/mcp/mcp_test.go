@@ -12,6 +12,7 @@ import (
 	"sync"
 	"testing"
 
+	"porter/internal/api"
 	"porter/internal/llm"
 	"porter/internal/tools"
 )
@@ -173,7 +174,7 @@ func TestLoadMalformedAndInvalid(t *testing.T) {
 		{"no name", `{"servers":[{"url":"https://x"}]}`},
 		{"no url", `{"servers":[{"name":"x"}]}`},
 		{"bad url", `{"servers":[{"name":"x","url":"ftp://x"}]}`},
-		{"bad auth", `{"servers":[{"name":"x","url":"https://x","auth":{"type":"oauth"}}]}`},
+		{"bad auth", `{"servers":[{"name":"x","url":"https://x","auth":{"type":"apikey"}}]}`},
 		{"duplicate", `{"servers":[{"name":"x","url":"https://a"},{"name":"x","url":"https://b"}]}`},
 	}
 	for _, tc := range bad {
@@ -221,7 +222,7 @@ func TestFetchAndCall(t *testing.T) {
 	}
 
 	// FindMCP: snippet mode with a query.
-	out, err := h.Run(context.Background(), findTool, []byte(`{"server_name":"web","query":"search"}`))
+	out, err := h.Run(context.Background(), FindTool, []byte(`{"server_name":"web","query":"search"}`))
 	if err != nil {
 		t.Fatalf("FindMCP: %v", err)
 	}
@@ -235,7 +236,7 @@ func TestFetchAndCall(t *testing.T) {
 	}
 
 	// FindMCP: full mode includes the input schema.
-	out, err = h.Run(context.Background(), findTool, []byte(`{"server_name":"web","full":true}`))
+	out, err = h.Run(context.Background(), FindTool, []byte(`{"server_name":"web","full":true}`))
 	if err != nil {
 		t.Fatalf("FindMCP full: %v", err)
 	}
@@ -247,7 +248,7 @@ func TestFetchAndCall(t *testing.T) {
 
 	// The FindMCP tool definition's description lists the server.
 	defs := h.Defs()
-	if len(defs) != 2 || defs[0].Function.Name != findTool || defs[1].Function.Name != callTool {
+	if len(defs) != 2 || defs[0].Function.Name != FindTool || defs[1].Function.Name != CallTool {
 		t.Fatalf("Defs = %+v", defs)
 	}
 	if !strings.Contains(defs[0].Function.Description, "web (2 tools)") {
@@ -255,7 +256,7 @@ func TestFetchAndCall(t *testing.T) {
 	}
 
 	// CallMCP: args forwarded, text result returned.
-	out, err = h.Run(context.Background(), callTool, []byte(`{"server_name":"web","tool_name":"search","args":{"q":"hello"}}`))
+	out, err = h.Run(context.Background(), CallTool, []byte(`{"server_name":"web","tool_name":"search","args":{"q":"hello"}}`))
 	if err != nil {
 		t.Fatalf("CallMCP: %v", err)
 	}
@@ -269,7 +270,7 @@ func TestFetchAndCall(t *testing.T) {
 	}
 
 	// CallMCP: args passed as a JSON string are unwrapped.
-	_, _ = h.Run(context.Background(), callTool, []byte(`{"server_name":"web","tool_name":"search","args":"{\"q\":\"str\"}"}`))
+	_, _ = h.Run(context.Background(), CallTool, []byte(`{"server_name":"web","tool_name":"search","args":"{\"q\":\"str\"}"}`))
 	if len(m.calls) != 2 || m.calls[1].args["q"] != "str" {
 		t.Errorf("string args not unwrapped: %+v", m.calls)
 	}
@@ -291,7 +292,7 @@ func TestSSEResponses(t *testing.T) {
 	if status, _ := h.Server("sse").Status(); status != "ok" {
 		t.Fatalf("status = %q, want ok", status)
 	}
-	out, err := h.Run(context.Background(), callTool, []byte(`{"server_name":"sse","tool_name":"ping"}`))
+	out, err := h.Run(context.Background(), CallTool, []byte(`{"server_name":"sse","tool_name":"ping"}`))
 	if err != nil {
 		t.Fatalf("CallMCP over SSE: %v", err)
 	}
@@ -332,7 +333,7 @@ func TestServerError(t *testing.T) {
 	if status, msg := s.Status(); status != "error" || !strings.Contains(msg, "refused") {
 		t.Errorf("status = %q, %q; want error with 'refused'", status, msg)
 	}
-	out, err := h.Run(context.Background(), findTool, []byte(`{"server_name":"down"}`))
+	out, err := h.Run(context.Background(), FindTool, []byte(`{"server_name":"down"}`))
 	if err != nil {
 		t.Fatalf("FindMCP: %v", err)
 	}
@@ -356,7 +357,7 @@ func TestCallIsError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	out, err := h.Run(context.Background(), callTool, []byte(`{"server_name":"err","tool_name":"fail"}`))
+	out, err := h.Run(context.Background(), CallTool, []byte(`{"server_name":"err","tool_name":"fail"}`))
 	if err != nil {
 		t.Fatalf("CallMCP: %v", err)
 	}
@@ -378,7 +379,7 @@ func TestCallCancellation(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // cancelled before the call, like a user clicking Cancel
-	out, err := h.Run(ctx, callTool, []byte(`{"server_name":"slow","tool_name":"slow"}`))
+	out, err := h.Run(ctx, CallTool, []byte(`{"server_name":"slow","tool_name":"slow"}`))
 	if err != nil {
 		t.Fatalf("CallMCP: %v", err)
 	}
@@ -401,7 +402,7 @@ func TestCallErrors(t *testing.T) {
 		{"bad args", `{"server_name":"x","tool_name":"y","args":"not json"}`},
 	}
 	for _, tc := range cases {
-		if _, err := h.Run(context.Background(), callTool, []byte(tc.args)); err == nil {
+		if _, err := h.Run(context.Background(), CallTool, []byte(tc.args)); err == nil {
 			t.Errorf("%s: want error", tc.name)
 		}
 	}
@@ -440,14 +441,14 @@ func TestCompositeRouting(t *testing.T) {
 	for _, d := range c.Defs() {
 		names[d.Function.Name] = true
 	}
-	for _, want := range []string{"shell", findTool, callTool} {
+	for _, want := range []string{"shell", FindTool, CallTool} {
 		if !names[want] {
 			t.Errorf("Defs missing %q: %v", want, names)
 		}
 	}
 
 	// FindMCP routes to the hub, not the dispatcher.
-	out, err := c.Run(context.Background(), findTool, []byte(`{"server_name":"echo"}`))
+	out, err := c.Run(context.Background(), FindTool, []byte(`{"server_name":"echo"}`))
 	if err != nil {
 		t.Fatalf("composite FindMCP: %v", err)
 	}
@@ -478,7 +479,7 @@ func TestCompositeRouting(t *testing.T) {
 	if len(empty.Defs()) != 1 || empty.Defs()[0].Function.Name != "shell" {
 		t.Errorf("empty hub Defs = %+v", empty.Defs())
 	}
-	if _, err := empty.Run(context.Background(), findTool, nil); err == nil {
+	if _, err := empty.Run(context.Background(), FindTool, nil); err == nil {
 		t.Error("empty hub FindMCP: want error")
 	}
 	if _, err := empty.Run(context.Background(), "shell", []byte(`{"command":"echo hi"}`)); err != nil {
@@ -491,3 +492,148 @@ func TestCompositeRouting(t *testing.T) {
 var _ tools.Provider = (*Composite)(nil)
 
 var _ = llm.Tool{}
+
+func fileStat(path string) (fi os.FileInfo, err error) { return os.Stat(path) }
+
+// recordingProvider is a tools.Provider that records every tool name it runs
+// and serves CallMCP with a fixed result, delegating everything else to a
+// plain Dispatcher.
+type recordingProvider struct {
+	tools.Dispatcher
+	mu    sync.Mutex
+	calls []string
+}
+
+func (r *recordingProvider) Run(ctx context.Context, name string, args []byte) (io.ReadCloser, error) {
+	r.mu.Lock()
+	r.calls = append(r.calls, name)
+	r.mu.Unlock()
+	if name == CallTool {
+		return newResultStream("remote-result"), nil
+	}
+	return r.Dispatcher.Run(ctx, name, args)
+}
+
+func (r *recordingProvider) callsOf() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.calls...)
+}
+
+// TestCompositeRemoteRouting covers a Composite whose provider hosts MCP
+// servers (e.g. a laptop behind a VPN): FindMCP lists them with their host,
+// CallMCP routes down the exec channel (never the server hub), and other
+// tools still work. It also exercises the nil-hub path, where remote servers
+// alone expose the MCP tools.
+func TestCompositeRemoteRouting(t *testing.T) {
+	remote := []api.MCPServer{{
+		Name:        "retool",
+		Description: "Retool MCP",
+		Host:        "macbook",
+		Tools:       []api.MCPTool{{Name: "whoami", Description: "Who am I"}},
+	}}
+	rec := &recordingProvider{}
+	c := &Composite{Exec: rec, Remote: remote} // Hub nil
+
+	// Remote servers alone expose the MCP tools.
+	names := map[string]bool{}
+	for _, d := range c.Defs() {
+		names[d.Function.Name] = true
+	}
+	for _, want := range []string{"shell", FindTool, CallTool} {
+		if !names[want] {
+			t.Errorf("Defs missing %q: %v", want, names)
+		}
+	}
+
+	// FindMCP lists the remote server with its host tag.
+	out, err := c.Run(context.Background(), FindTool, []byte(`{"server_name":"retool"}`))
+	if err != nil {
+		t.Fatalf("FindMCP: %v", err)
+	}
+	data, _ := io.ReadAll(out)
+	_ = out.Close()
+	if !strings.Contains(string(data), "server retool (1 tools)") ||
+		!strings.Contains(string(data), "(hosted on macbook)") {
+		t.Errorf("FindMCP remote output = %q", data)
+	}
+
+	// CallMCP for the remote server routes down the exec channel.
+	out, err = c.Run(context.Background(), CallTool, []byte(`{"server_name":"retool","tool_name":"whoami"}`))
+	if err != nil {
+		t.Fatalf("CallMCP remote: %v", err)
+	}
+	data, _ = io.ReadAll(out)
+	_ = out.Close()
+	if !strings.Contains(string(data), "remote-result") {
+		t.Errorf("CallMCP remote result = %q", data)
+	}
+	if calls := rec.callsOf(); len(calls) != 1 || calls[0] != CallTool {
+		t.Errorf("exec provider calls = %v, want [CallMCP]", calls)
+	}
+
+	// shell still routes to the dispatcher (not the MCP path).
+	out, err = c.Run(context.Background(), "shell", []byte(`{"command":"echo hi"}`))
+	if err != nil {
+		t.Fatalf("shell: %v", err)
+	}
+	data, _ = io.ReadAll(out)
+	_ = out.Close()
+	if !strings.Contains(string(data), "hi") {
+		t.Errorf("shell result = %q", data)
+	}
+
+	// Unknown remote server is an error, not a silent local miss.
+	if _, err := c.Run(context.Background(), CallTool, []byte(`{"server_name":"nope","tool_name":"x"}`)); err == nil {
+		t.Error("CallMCP unknown remote: want error")
+	}
+}
+
+// TestCompositeRoutesHubServerLocally proves a server owned by the hub is
+// served on the server even when the provider also hosts servers: CallMCP for
+// it must not cross the exec channel.
+func TestCompositeRoutesHubServerLocally(t *testing.T) {
+	m := &mockMCP{tools: []map[string]any{{"name": "echo", "description": "Echo"}}}
+	ts := httptest.NewServer(m.handler())
+	defer ts.Close()
+	h, err := Load(writeConfig(t, serverEntry("echo", ts.URL, "")), nil)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	remote := []api.MCPServer{{Name: "retool", Description: "Retool", Host: "macbook"}}
+	rec := &recordingProvider{}
+	c := &Composite{Exec: rec, Hub: h, Remote: remote}
+
+	out, err := c.Run(context.Background(), CallTool, []byte(`{"server_name":"echo","tool_name":"echo"}`))
+	if err != nil {
+		t.Fatalf("CallMCP hub server: %v", err)
+	}
+	data, _ := io.ReadAll(out)
+	_ = out.Close()
+	if !strings.Contains(string(data), "echo") {
+		t.Errorf("hub server result = %q", data)
+	}
+	if calls := rec.callsOf(); len(calls) != 0 {
+		t.Errorf("hub-owned CallMCP crossed the exec channel: %v", calls)
+	}
+}
+
+// TestSummary renders a hub's servers as reported metadata (used by the host
+// to post its MCP servers with the environment).
+func TestSummary(t *testing.T) {
+	m := &mockMCP{tools: []map[string]any{{"name": "echo", "description": "Echo"}}}
+	ts := httptest.NewServer(m.handler())
+	defer ts.Close()
+	h, err := Load(writeConfig(t, serverEntry("echo", ts.URL, "")), nil)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	sum := h.Summary()
+	if len(sum) != 1 {
+		t.Fatalf("Summary = %d servers, want 1", len(sum))
+	}
+	s := sum[0]
+	if s.Name != "echo" || s.Status != "ok" || len(s.Tools) != 1 || s.Tools[0].Name != "echo" {
+		t.Errorf("Summary server = %+v", s)
+	}
+}

@@ -352,9 +352,45 @@ type Skill struct {
 	Path        string `json:"path"`
 }
 
+// CLI is one command-line tool a provider declares available in its
+// environment, loaded from the provider's ~/.porter/clis.json manifest. Name
+// is the binary the model should invoke via the shell tool; Description is a
+// one-line hint ("Graphite stack management (submit, split, restack, up/down)").
+// CLIs are shown in the model's environment message as shell-usable tools;
+// they are not tools in their own right.
+type CLI struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+}
+
+// MCPTool is one tool an MCPServer exposes, as discovered at connect time.
+type MCPTool struct {
+	Name        string         `json:"name"`
+	Description string         `json:"description"`
+	InputSchema map[string]any `json:"inputSchema,omitempty"`
+}
+
+// MCPServer is the metadata a provider reports for an MCP server it hosts —
+// e.g. a laptop-only server reachable only from the provider's machine (a
+// corporate VPN). The server-side hub uses it to list the server in FindMCP
+// and to route CallMCP down the provider's exec channel, so the server's
+// credentials never leave the provider. Tools are the server's tool list as
+// discovered when the provider connected.
+type MCPServer struct {
+	Name        string    `json:"name"`
+	Description string    `json:"description"`
+	// Host is the execution host that serves this server (the provider's id),
+	// shown in FindMCP so the model knows where the call will run.
+	Host   string `json:"host,omitempty"`
+	Status string `json:"status,omitempty"` // "ok" | "error" | "pending"
+	Error  string `json:"error,omitempty"`
+	Tools  []MCPTool `json:"tools,omitempty"`
+}
+
 // ExecContext is the environment an execution provider reports when it
-// connects: what system it runs on, the working directory, files there, and
-// the skills it can load. The server injects it into the model's context and
+// connects: what system it runs on, the working directory, files there, the
+// skills it can load, the CLI tools it declares available, and the MCP
+// servers it hosts. The server injects it into the model's context and
 // exposes a load_skill tool backed by the reported skills, so the model knows
 // where commands will run and what skills exist without guessing. ID/Name
 // identify the reporting client so the server can attach the context to the
@@ -373,6 +409,15 @@ type ExecContext struct {
 	Repos  []string `json:"repos,omitempty"`
 	Files  []string `json:"files"`
 	Skills []Skill  `json:"skills"`
+	// CLIs lists the command-line tools the provider declares available (from
+	// ~/.porter/clis.json), rendered in the model's environment message as
+	// tools to run via shell. Not part of the load_skill surface.
+	CLIs []CLI `json:"clis,omitempty"`
+	// MCPServers lists the MCP servers this provider hosts (executed on the
+	// provider's machine), so the server-side hub can expose them through
+	// FindMCP and route CallMCP down this provider's exec channel. Empty when
+	// the provider hosts none.
+	MCPServers []MCPServer `json:"mcp_servers,omitempty"`
 }
 
 // ExecClient describes one execution provider a session can run tools with:

@@ -7,6 +7,7 @@
 package exec
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -85,6 +86,7 @@ func Discover(cwd string) (api.ExecContext, error) {
 		CWD:    cwd,
 		Files:  files,
 		Skills: FindSkills(cwd),
+		CLIs:   FindCLIs(),
 	}, nil
 }
 
@@ -109,6 +111,12 @@ func SystemMessage(c api.ExecContext) string {
 		b.WriteString("\nAvailable skills (load one with the load_skill tool when relevant):\n")
 		for _, s := range c.Skills {
 			fmt.Fprintf(&b, "- %s: %s\n", s.Name, s.Description)
+		}
+	}
+	if len(c.CLIs) > 0 {
+		b.WriteString("\nAvailable CLI tools (run via the shell tool; `<cli> --help` for usage):\n")
+		for _, cli := range c.CLIs {
+			fmt.Fprintf(&b, "- %s: %s\n", cli.Name, cli.Description)
 		}
 	}
 	return strings.TrimSpace(b.String())
@@ -290,3 +298,44 @@ func containsPath(paths []string, abs string) bool {
 // directory (or hook into those tools) so skills appear as we navigate. Today
 // the discovery happens once per provider connect, so the list can go stale if
 // skills are edited or added after connecting — which is fine for now.
+
+
+// clisFile is the on-disk shape of ~/.porter/clis.json: a curated manifest of
+// CLI tools the provider declares available ("if it's defined it exists"),
+// name to one-line description.
+type clisFile struct {
+	CLIs map[string]string `json:"clis"`
+}
+
+// FindCLIs loads the provider's declared CLI tools from ~/.porter/clis.json.
+// A missing or malformed file yields no CLIs: the manifest is an optional
+// curated hint, and a broken one should not fail environment discovery.
+func FindCLIs() []api.CLI {
+	path, err := clisPath()
+	if err != nil {
+		return nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var cfg clisFile
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return nil
+	}
+	out := make([]api.CLI, 0, len(cfg.CLIs))
+	for name, desc := range cfg.CLIs {
+		out = append(out, api.CLI{Name: name, Description: desc})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
+
+// clisPath returns the provider's CLI manifest path, ~/.porter/clis.json.
+func clisPath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".porter", "clis.json"), nil
+}

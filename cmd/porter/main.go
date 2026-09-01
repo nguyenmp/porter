@@ -52,6 +52,13 @@ func runCLI(args []string, stdout io.Writer, stdin io.Reader) error {
 		return server.Serve(cfg)
 	}
 
+	// `porter mcp` manages OAuth login for MCP servers: login runs the
+	// interactive authorization-code flow (for servers that only accept OAuth,
+	// e.g. behind a VPN), logout revokes and clears the stored token.
+	if len(args) > 0 && args[0] == "mcp" {
+		return runMCP(args[1:], stdout)
+	}
+
 	// `porter host` runs the persistent execution host agent: a long-running
 	// process on a machine (e.g. the laptop) that connects to the server once
 	// and provisions execution contexts for new sessions on demand. The web
