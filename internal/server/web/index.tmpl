@@ -694,6 +694,7 @@
   // Reasoning is the model's chain-of-thought: same renderer, but breaks:true
   // preserves its newlines (the server ships reasoning as raw text and the
   // client renders it, so there's no goldmark counterpart to match).
+  const mdReasoning = window.markdownit({ html: false, linkify: true, breaks: true }).use(window.markdownitTaskLists);
   // Single 100ms timer driving all running tool blocks; cleared when idle.
   let toolTimer = null;
   // Committed messages are replayed by the server whenever the SSE stream
