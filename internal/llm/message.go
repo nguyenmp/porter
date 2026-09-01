@@ -42,7 +42,7 @@ type ChatMessage struct {
 	// DB persists it explicitly and the UI reads it from the committed message
 	// or the bus envelope.
 	ToolOutput *ToolOutputMeta `json:"-"`
-	Cancelled bool `json:"cancelled,omitempty"`
+	Cancelled  bool            `json:"cancelled,omitempty"`
 }
 
 // ToolCall is a request the assistant made to run a named tool. Arguments is
