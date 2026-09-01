@@ -1579,6 +1579,13 @@
       initReasoning(r, m.reasoning);
       div.before(r);
     }
+    // Always show the variant tab bar on a committed reply with content, so
+    // even a short reply can be humanized manually when the auto-pass
+    // heuristic doesn't fire. It starts as Original + "+" and gains
+    // "Humanized N" tabs as passes complete (auto for long replies, manual
+    // via the "+" button). Idempotent: a message that already has a bar
+    // (replay, or variant envelopes that beat the commit) is left as-is.
+    if (seq && m.content) ensureVariantBar(seq);
     if (m.tool_calls) {
       div.insertAdjacentHTML('beforeend', renderToolCalls(m.tool_calls));
     }

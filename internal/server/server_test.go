@@ -3705,3 +3705,50 @@ func TestViewRendersHumanizeTabs(t *testing.T) {
 		t.Errorf("view shows a pending pass; the pass already completed")
 	}
 }
+
+// TestViewAlwaysShowsTabBar verifies every content-bearing assistant reply
+// renders the variant tab bar — even a short reply that never triggers the
+// auto pass — so the "+" button is always available to humanize manually.
+func TestViewAlwaysShowsTabBar(t *testing.T) {
+	srv := newTestServer(t, plainLLM()) // short "hi" reply: no auto pass
+	c := client.New(srv.URL)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	info, err := c.Create(ctx)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := c.Append(ctx, info.ID, "hello"); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	// Wait for the turn (the short reply commits no variant envelopes).
+	err = c.Subscribe(ctx, info.ID, info.Seq, func(api.Envelope) {},
+		func(env api.Envelope) bool { return env.Kind == api.KindTurnDone })
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+
+	resp, err := http.Get(srv.URL + "/api/sessions/" + info.ID + "/view")
+	if err != nil {
+		t.Fatalf("GET view: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	s := string(body)
+
+	for _, want := range []string{
+		`class="variant-tabs"`,
+		`class="variant-tab variant-active" data-variant="-1">Original`,
+		`class="variant-add"`,
+		`data-msg-seq="`,
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("view missing %q", want)
+		}
+	}
+	// A short reply must NOT have any humanized tab (no auto pass fired).
+	if strings.Contains(s, "Humanized") {
+		t.Errorf("view shows a humanized tab for a short reply that never qualified: %s", s)
+	}
+}

@@ -847,6 +847,20 @@ func (s *Session) commitEnv(env api.Envelope) (uint64, error) {
 	return next, nil
 }
 
+// humanizeContext returns a compact transcript of the conversation leading up
+// to the message at msgSeq, so a humanize pass is grounded in what was asked
+// without re-sending raw history (tool traffic, reasoning, and system notices
+// are excluded; see humanize.Transcript). A read failure is best-effort: the
+// pass runs without context rather than failing.
+func (s *Session) humanizeContext(msgSeq uint64) string {
+	ps, err := s.persist.LoadSession(s.dbID)
+	if err != nil {
+		log.Printf("humanize session %s: load context: %v", s.id, err)
+		return ""
+	}
+	return humanize.Transcript(ps.Messages, msgSeq)
+}
+
 // startHumanize launches a background plain-language pass over content,
 // attaching it to the committed assistant message at msgSeq. source is the
 // variant index the pass chains from (-1 = the original message). The pass
@@ -919,7 +933,10 @@ func (s *Session) seedVariantIdx(msgSeq uint64) int {
 func (s *Session) runHumanize(msgSeq uint64, idx, source int, content string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	out, err := humanize.Rewrite(ctx, s.client, content)
+	// Ground the rewrite in what was asked: a compact transcript of the
+	// conversation up to (not including) the message being humanized. The
+	// pass runs off the turn queue, so it reads the persisted history itself.
+	out, err := humanize.Rewrite(ctx, s.client, s.humanizeContext(msgSeq), content)
 	if err != nil {
 		log.Printf("humanize session %s message %d: %v", s.id, msgSeq, err)
 		s.commitVariant(api.Envelope{

@@ -1,10 +1,12 @@
 // Package humanize rewrites assistant replies in plain language, in the
-// background, so long assistant text blocks get a "Humanized" variant tab in
-// the web UI without interrupting the turn. The pass is deliberately
-// self-contained: one LLM request carrying just the text (no session context,
-// no tools, no history), driven by a hard-coded prompt distilled from the
-// plain-language skill — a silent background step must be fast, deterministic,
-// and cheap, not a skill-loading multi-fetch ritual.
+// background, so assistant text blocks get a "Humanized" variant tab in the
+// web UI without interrupting the turn. The pass is deliberately light: one
+// LLM request carrying the text plus a compact transcript of the conversation
+// leading up to it (grounding for the rewrite, bounded and prefix-stable so
+// provider prompt caching makes repeat passes cheap), driven by a hard-coded
+// prompt distilled from the plain-language skill — a silent background step
+// must be fast, deterministic, and cheap, not a skill-loading multi-fetch
+// ritual.
 package humanize
 
 import (
@@ -13,6 +15,7 @@ import (
 	"strings"
 
 	"porter/internal/codec"
+	"porter/internal/db"
 	"porter/internal/llm"
 )
 
@@ -23,10 +26,20 @@ const PromptVersion = "plain-language-v1"
 
 // Auto-pass thresholds: an assistant reply qualifies when it has at least
 // MinWords words AND at least MinSentences sentences, and is not dominated by
-// code blocks. Short replies and code dumps are not worth a rewrite.
+// code blocks. Short replies and code dumps are not worth an automatic
+// rewrite (they can still be humanized manually from the web UI's tab bar).
 const (
 	MinWords     = 60
 	MinSentences = 4
+	// MaxContextMessages bounds how many prior conversation messages the
+	// rewrite's transcript includes, and MaxContextRunes caps each message's
+	// contribution, so the context prefix stays cheap. Because the transcript
+	// is built from committed history — append-only — it is a stable prefix
+	// per session, so provider prompt caching makes repeat passes (especially
+	// chained passes on the same message, which share the prefix) mostly cache
+	// hits; only the first pass in a session pays the context cost once.
+	MaxContextMessages = 12
+	MaxContextRunes    = 2000
 )
 
 // systemPrompt is the hard-coded plain-language instruction. It distills the
@@ -100,18 +113,66 @@ func codeLines(text string) int {
 	return n
 }
 
-// Rewrite runs one plain-language pass over text and returns the rewrite. It
-// makes a single streaming LLM request with no tools and no conversation
-// context: the pass is a pure function of the text, so it can run in the
-// background, in parallel with other turns, and be re-run safely. The response
-// is decoded with the same codec the agent loop uses, so providers that omit a
-// [DONE] marker still finalize cleanly.
-func Rewrite(ctx context.Context, client *llm.Client, text string) (string, error) {
+// Transcript renders a compact, human-readable transcript of the conversation
+// leading up to the message at seq — the grounding context for a rewrite.
+// Only user messages and assistant replies with content are included: system
+// notices, tool calls, tool results, and reasoning are excluded (they are
+// noise for humanizing, and omitting them keeps the request small). Only the
+// most recent MaxContextMessages are kept, each capped at MaxContextRunes, so
+// the prefix is bounded no matter how long the session is.
+func Transcript(msgs []db.Message, seq uint64) string {
+	lines := make([]string, 0, MaxContextMessages)
+	for _, m := range msgs {
+		if m.Seq >= seq {
+			break
+		}
+		if m.Role != "user" && m.Role != "assistant" {
+			continue
+		}
+		content := strings.TrimSpace(m.Content)
+		if content == "" {
+			continue
+		}
+		lines = append(lines, m.Role+": "+truncateRunes(content, MaxContextRunes))
+	}
+	if len(lines) > MaxContextMessages {
+		lines = lines[len(lines)-MaxContextMessages:]
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	return strings.Join(lines, "\n")
+}
+
+// truncateRunes caps s at max runes, appending a marker when it cut anything.
+func truncateRunes(s string, max int) string {
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	return string(r[:max]) + " …[truncated]"
+}
+
+// Rewrite runs one plain-language pass over text and returns the rewrite. The
+// response is decoded with the same codec the agent loop uses, so providers
+// that omit a [DONE] marker still finalize cleanly.
+//
+// context is an optional transcript of the conversation the text belongs to
+// (see Transcript), which grounds the rewrite in what was asked; it rides in
+// the system prompt so it is part of the cached request prefix. It makes a
+// single streaming LLM request with no tools: the pass is a pure function of
+// the text (plus bounded context), so it can run in the background, in
+// parallel with other turns, and be re-run safely.
+func Rewrite(ctx context.Context, client *llm.Client, context, text string) (string, error) {
 	if strings.TrimSpace(text) == "" {
 		return "", fmt.Errorf("humanize: empty text")
 	}
+	prompt := systemPrompt
+	if context != "" {
+		prompt += "\n\nConversation context (for grounding only — do not repeat it, and rewrite only the text that follows):\n" + context
+	}
 	rc, err := client.Stream(ctx, []llm.ChatMessage{
-		llm.SystemMessage(systemPrompt),
+		llm.SystemMessage(prompt),
 		llm.UserMessage(text),
 	}, nil)
 	if err != nil {

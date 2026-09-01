@@ -12,14 +12,16 @@
 			{{end}}
 			<div class="msg msg-assistant"{{if .Seq}} data-msg-seq="{{.Seq}}"{{end}}>
 				<span class="msg-role">assistant</span>
-				{{/* Humanize variant tabs: completed plain-language passes on
-				     this reply, rendered server-side so a reload shows the same
-				     tabs the live stream produced. The Original pane holds the
-				     message content; each Humanized N pane holds one pass.
-				     Tab switching and the "+" button are handled by the live
-				     client (delegated click handlers in index.tmpl). */}}
-				{{$variants := index $.Variants .Seq}}
-				{{if $variants}}
+				{{/* Humanize variant tabs: every reply with content shows the tab
+				     bar (Original + "+"), so even a short reply can be humanized
+				     manually when the auto-pass heuristic doesn't fire. Completed
+				     plain-language passes render server-side so a reload shows the
+				     same tabs the live stream produced; the Original pane holds
+				     the message content, each Humanized N pane one pass. Tab
+				     switching and the "+" button are handled by the live client
+				     (delegated click handlers in index.tmpl). */}}
+				{{if $m.Content}}
+					{{$variants := index $.Variants .Seq}}
 					<div class="variant-tabs" data-msg-seq="{{.Seq}}">
 						<button type="button" class="variant-tab variant-active" data-variant="-1">Original</button>
 						{{range $variants}}
@@ -27,14 +29,12 @@
 						{{end}}
 						<button type="button" class="variant-add" title="Humanize again (chained from the latest version)">+</button>
 						<div class="variant-panes">
-							<div class="variant-pane variant-active" data-variant="-1"><div class="msg-content">{{if $m.Content}}{{renderMarkdown $m.Content}}{{end}}</div></div>
+							<div class="variant-pane variant-active" data-variant="-1"><div class="msg-content">{{renderMarkdown $m.Content}}</div></div>
 							{{range $variants}}
 								<div class="variant-pane" data-variant="{{.Index}}"><div class="msg-content">{{if .Content}}{{renderMarkdown .Content}}{{else}}<em class="variant-error">Humanize pass {{add1 .Index}} failed{{if .Error}}: {{nl2br .Error}}{{end}}</em>{{end}}</div></div>
 							{{end}}
 						</div>
 					</div>
-				{{else if $m.Content}}
-					<div class="msg-content">{{renderMarkdown $m.Content}}</div>
 				{{end}}
 				{{range $m.ToolCalls}}
 					<details class="tool-call">
