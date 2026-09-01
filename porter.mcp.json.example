@@ -10,7 +10,7 @@
     {
       "name": "retool",
       "description": "Retool MCP (OAuth only)",
-      "url": "https://admin.retool.dev/mcp",
+      "url": "https://example.retool.com/mcp",
       "auth": {
         "type": "oauth"
       }
