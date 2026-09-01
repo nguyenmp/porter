@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"porter/internal/api"
 	"porter/internal/client"
@@ -347,5 +348,29 @@ func TestProvisionRollsBackOnFailure(t *testing.T) {
 	sandboxDir := filepath.Join(worktrees, "mac-provider-100")
 	if _, err := os.Stat(sandboxDir); !os.IsNotExist(err) {
 		t.Errorf("container %q left behind after failed provision", sandboxDir)
+	}
+}
+
+// TestSleepGap proves sleepGap turns a wall-vs-monotonic clock gap into the
+// sleep duration: positive when the wall clock outran the monotonic clock
+// (the machine slept), zero when they agree (awake) or the wall clock jumped
+// backwards (an NTP correction).
+func TestSleepGap(t *testing.T) {
+	cases := []struct {
+		name       string
+		wall, mono time.Duration
+		want       time.Duration
+	}{
+		{"awake", 10 * time.Second, 10 * time.Second, 0},
+		{"slept an hour", time.Hour + 10*time.Second, 10 * time.Second, time.Hour},
+		{"short nap", 30 * time.Second, 0, 30 * time.Second},
+		{"wall clock jumped back", -30 * time.Second, 10 * time.Second, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := sleepGap(tc.wall, tc.mono); got != tc.want {
+				t.Fatalf("sleepGap(%v, %v) = %v, want %v", tc.wall, tc.mono, got, tc.want)
+			}
+		})
 	}
 }

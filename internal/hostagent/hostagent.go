@@ -93,6 +93,8 @@ func Run(ctx context.Context, cfg config.ClientConfig) error {
 		hostID, env.System, env.CWD, len(env.Skills), root, len(env.Repos), len(env.MCPServers))
 
 	prov := &provisioner{c: c, hostID: hostID, cwd: cwd, worktrees: root, serves: map[string]*serveState{}, mcp: hub}
+	watcher := &sleepWatcher{}
+	go watchSleep(ctx, watcher)
 	for {
 		if ctx.Err() != nil {
 			return nil
@@ -101,9 +103,19 @@ func Run(ctx context.Context, cfg config.ClientConfig) error {
 		if err := c.PostHostContext(ctx, hostID, env); err != nil && ctx.Err() == nil {
 			log.Printf("execution host: context register failed: %v", err)
 		}
-		if err := c.ServeHost(ctx, hostID, prov.provision, func() {
+		// The exec connection lives until the server drops it, ctx is
+		// cancelled, or the machine wakes from a sleep that killed it (the
+		// watcher cancels connCtx, ServeHost returns, and we re-register). A
+		// fresh context per attempt keeps the watcher's cancel scoped to the
+		// connection it interrupted.
+		connCtx, cancelConn := context.WithCancel(ctx)
+		watcher.set(cancelConn)
+		err := c.ServeHost(connCtx, hostID, prov.provision, func() {
 			log.Printf("execution host %s: connected", hostID)
-		}); err != nil {
+		})
+		cancelConn()
+		watcher.set(nil)
+		if err != nil {
 			if ctx.Err() != nil {
 				return nil
 			}
@@ -113,6 +125,86 @@ func Run(ctx context.Context, cfg config.ClientConfig) error {
 		case <-ctx.Done():
 			return nil
 		case <-time.After(time.Second):
+		}
+	}
+}
+
+// sleepWatcher notices when this process was suspended by system sleep and
+// cancels the in-flight connection to the server, so the reconnect loop
+// re-registers right after wake instead of sitting on a socket that died
+// while the machine slept (Wi-Fi dropped, or the proxy in front of the
+// server reaped the idle connection). On macOS the monotonic clock
+// (mach_absolute_time) freezes during sleep while the wall clock keeps
+// advancing, so the gap between them is exactly how long the machine slept;
+// the first tick after wake sees it and fires. On platforms whose monotonic
+// clock keeps running across sleep (or when the sleep was too short to drop
+// the connection) the watcher is a no-op.
+type sleepWatcher struct {
+	mu     sync.Mutex
+	cancel context.CancelFunc // the current connection cycle's cancel, or nil
+}
+
+// set stores the cancel for the current connection cycle; nil clears it.
+func (w *sleepWatcher) set(cancel context.CancelFunc) {
+	w.mu.Lock()
+	w.cancel = cancel
+	w.mu.Unlock()
+}
+
+// wake cancels the current connection, if any. Cancelling a stale context
+// whose ServeHost already returned is harmless — the loop makes a fresh
+// context per attempt.
+func (w *sleepWatcher) wake(slept time.Duration) {
+	w.mu.Lock()
+	cancel := w.cancel
+	w.cancel = nil
+	w.mu.Unlock()
+	log.Printf("execution host: woke from sleep (%s); reconnecting", slept.Round(time.Second))
+	if cancel != nil {
+		cancel()
+	}
+}
+
+// sleepGap returns how long the process was suspended between two samples:
+// wallElapsed and monoElapsed are elapsed wall-clock and monotonic durations
+// since a common baseline, taken at the same instant. While the system
+// sleeps the wall clock keeps advancing but the monotonic clock freezes, so
+// the gap is the sleep duration; awake (or when the wall clock jumps
+// backwards, e.g. an NTP correction) it clamps to zero.
+func sleepGap(wallElapsed, monoElapsed time.Duration) time.Duration {
+	if d := wallElapsed - monoElapsed; d > 0 {
+		return d
+	}
+	return 0
+}
+
+// watchSleep samples the wall and monotonic clocks until ctx is done and
+// wakes the watcher whenever the machine slept long enough that the
+// connection is likely gone. The threshold is a minute: a shorter nap rarely
+// drops Wi-Fi or trips the proxy's idle-reap (typically ~60s), and firing on
+// those would just churn reconnects. The baseline is re-taken every tick so
+// a long sleep is reported once, not on every tick.
+func watchSleep(ctx context.Context, w *sleepWatcher) {
+	const (
+		tick      = 10 * time.Second
+		threshold = 60 * time.Second
+	)
+	now := time.Now()
+	wall := now.UnixNano() // wall-clock baseline (UnixNano drops the monotonic reading)
+	mono := now            // monotonic baseline (time.Since keeps the monotonic reading)
+	t := time.NewTicker(tick)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			now := time.Now()
+			if slept := sleepGap(time.Duration(now.UnixNano()-wall), now.Sub(mono)); slept > threshold {
+				w.wake(slept)
+			}
+			wall = now.UnixNano()
+			mono = now
 		}
 	}
 }
