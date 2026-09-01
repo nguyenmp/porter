@@ -3548,9 +3548,65 @@ func TestWebRendersExecPicker(t *testing.T) {
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	page := string(body)
-	for _, want := range []string{"Commands run on", "exec-picker-btn", "exec-picker", "exec/status", "exec/select"} {
+	for _, want := range []string{"Commands run on", "exec-picker-btn", "exec-picker", "exec/status", "exec/select",
+		"new-chat-sandbox", "repo-rows", "add-repo-btn", "repo-options"} {
 		if !strings.Contains(page, want) {
 			t.Errorf("index missing %q in the picker; got:\n%s", want, page[:600])
+		}
+	}
+}
+
+func TestReadCreateRequestReposForm(t *testing.T) {
+	// The new-chat form posts repeated repo= fields with branch= fields
+	// aligned by index; readCreateRequest must zip them into RepoRefs and
+	// skip blank rows without shifting the pairing.
+	form := url.Values{}
+	form.Set("host", "macbook")
+	form.Set("cwd", "/tmp")
+	form.Add("repo", "porter")
+	form.Add("repo", "")
+	form.Add("repo", "data-kernel")
+	form.Add("branch", "main")
+	form.Add("branch", "unused")
+	form.Add("branch", "feature")
+
+	r := httptest.NewRequest("POST", "/api/sessions", strings.NewReader(form.Encode()))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	req, err := readCreateRequest(r)
+	if err != nil {
+		t.Fatalf("readCreateRequest: %v", err)
+	}
+	if req.Host != "macbook" || req.CWD != "/tmp" {
+		t.Errorf("host/cwd = %q/%q, want macbook//tmp", req.Host, req.CWD)
+	}
+	want := []api.RepoRef{{Path: "porter", Branch: "main"}, {Path: "data-kernel", Branch: "feature"}}
+	if len(req.Repos) != len(want) {
+		t.Fatalf("Repos = %+v, want %+v", req.Repos, want)
+	}
+	for i, w := range want {
+		if req.Repos[i] != w {
+			t.Errorf("Repos[%d] = %+v, want %+v", i, req.Repos[i], w)
+		}
+	}
+}
+
+func TestReadCreateRequestReposJSON(t *testing.T) {
+	body := `{"host":"macbook","repos":[{"path":"porter","branch":"main"},{"path":"data-kernel"}]}`
+	r := httptest.NewRequest("POST", "/api/sessions", strings.NewReader(body))
+	r.Header.Set("Content-Type", "application/json")
+
+	req, err := readCreateRequest(r)
+	if err != nil {
+		t.Fatalf("readCreateRequest: %v", err)
+	}
+	want := []api.RepoRef{{Path: "porter", Branch: "main"}, {Path: "data-kernel"}}
+	if len(req.Repos) != len(want) {
+		t.Fatalf("Repos = %+v, want %+v", req.Repos, want)
+	}
+	for i, w := range want {
+		if req.Repos[i] != w {
+			t.Errorf("Repos[%d] = %+v, want %+v", i, req.Repos[i], w)
 		}
 	}
 }

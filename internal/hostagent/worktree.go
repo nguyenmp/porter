@@ -9,6 +9,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"porter/internal/api"
 )
 
 // worktreeRoot returns the directory worktree sandboxes live in. It is
@@ -105,24 +107,105 @@ func skipDir(base string) bool {
 	return false
 }
 
-// provisionWorktree creates a git worktree sandbox for one session: a fresh
-// branch (porter/<id>) checked out at base ("" = the repo's HEAD) in
-// <root>/<id>. Returns the worktree path and branch name.
-func provisionWorktree(ctx context.Context, repo, base, root, id string) (string, string, error) {
-	if err := os.MkdirAll(root, 0o755); err != nil {
-		return "", "", fmt.Errorf("create sandbox root: %w", err)
+// worktreeRef records one provisioned worktree sandbox so release and
+// rollback can tear it down: the main repo it came from, the worktree path,
+// and the branch created for it.
+type worktreeRef struct {
+	repo   string
+	path   string
+	branch string
+}
+
+// provisionWorktrees creates one git worktree per requested repo inside the
+// sandbox container dir, following the naming rules that keep a chat's
+// sandboxes legible and conflict-free:
+//
+//   - Branch: the first worktree of a repo keeps porter/<providerID>; a
+//     second worktree of the same repo gets porter/<providerID>-2, and so
+//     on, so comparing two branches of one repo works. Different repos share
+//     the same branch name freely (branches live in each repo's own refs).
+//   - Directory: the repo's basename ("porter", "data-kernel"). When the
+//     same repo is requested more than once, every one of its directories
+//     gets the base branch appended ("porter-main", "porter-feature") so the
+//     two branches are distinguishable at a glance. Name collisions (two
+//     repos with the same basename) get a numeric suffix: "porter", "porter-2".
+//
+// On error it returns the worktrees created so far plus the error — the
+// caller rolls them back; provisionWorktrees never tears down after itself.
+func provisionWorktrees(ctx context.Context, providerID string, repos []api.RepoRef, sandboxDir string) ([]worktreeRef, error) {
+	counts := map[string]int{} // resolved repo path -> how many times requested
+	for _, ref := range repos {
+		counts[resolveRepo(ref.Path)]++
 	}
-	path := filepath.Join(root, id)
-	branch := "porter/" + sanitizeBranchID(id)
+	used := map[string]bool{}       // directory names already taken in this sandbox
+	occurrences := map[string]int{} // resolved repo path -> worktrees so far
+	baseBranch := "porter/" + sanitizeBranchID(providerID)
+	var out []worktreeRef
+	for _, ref := range repos {
+		repo := resolveRepo(ref.Path)
+		occurrences[repo]++
+		branch := baseBranch
+		if occurrences[repo] > 1 {
+			branch = fmt.Sprintf("%s-%d", baseBranch, occurrences[repo])
+		}
+		name := sanitizeDirName(filepath.Base(repo))
+		if counts[repo] > 1 {
+			slug := sanitizeBranchID(branchSlug(ref.Branch))
+			name = uniqueSandboxName(name+"-"+slug, used)
+		} else {
+			name = uniqueSandboxName(name, used)
+		}
+		path, err := provisionWorktree(ctx, repo, ref.Branch, branch, sandboxDir, name)
+		if err != nil {
+			return out, err
+		}
+		out = append(out, worktreeRef{repo: repo, path: path, branch: branch})
+	}
+	return out, nil
+}
+
+// branchSlug returns the base branch used to name a duplicated repo's
+// sandbox directories, defaulting to "head" when no base branch was given.
+func branchSlug(branch string) string {
+	if branch == "" {
+		return "head"
+	}
+	return branch
+}
+
+// uniqueSandboxName returns base if unused, else base-2, base-3, ... marking
+// each name as taken. used must outlive all calls for one sandbox.
+func uniqueSandboxName(base string, used map[string]bool) string {
+	if !used[base] {
+		used[base] = true
+		return base
+	}
+	for n := 2; ; n++ {
+		cand := fmt.Sprintf("%s-%d", base, n)
+		if !used[cand] {
+			used[cand] = true
+			return cand
+		}
+	}
+}
+
+// provisionWorktree creates a git worktree sandbox for one session: branch
+// checked out at base ("" = the repo's HEAD) in <root>/<name>. Returns the
+// worktree path.
+func provisionWorktree(ctx context.Context, repo, base, branch, root, name string) (string, error) {
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		return "", fmt.Errorf("create sandbox root: %w", err)
+	}
+	path := filepath.Join(root, name)
 	args := []string{"-C", repo, "worktree", "add", path, "-b", branch}
 	if base != "" {
 		args = append(args, base)
 	}
 	cmd := exec.CommandContext(ctx, "git", args...)
 	if out, err := cmd.CombinedOutput(); err != nil {
-		return "", "", fmt.Errorf("git worktree add: %v: %s", err, strings.TrimSpace(string(out)))
+		return "", fmt.Errorf("git worktree add: %v: %s", err, strings.TrimSpace(string(out)))
 	}
-	return path, branch, nil
+	return path, nil
 }
 
 // removeWorktree removes a worktree sandbox and deletes its branch. Callers
@@ -145,9 +228,13 @@ func removeWorktree(repo, path, branch string) error {
 // cleanupStaleWorktrees removes worktree sandboxes left behind by a previous
 // host run (the host died without releasing them). Each sandbox is a linked
 // worktree whose .git file records the repo it came from ("gitdir: <repo>/.git/
-// worktrees/<name>"), so cleanup can derive the repo and branch to remove —
-// no sidecar needed. The repos are pruned of stale admin entries afterwards.
-// Best effort: failures are logged, never fatal.
+// worktrees/<name>"), so cleanup can derive the repo to remove — no sidecar
+// needed. Two layouts are handled: a legacy flat sandbox where the entry
+// itself is the worktree, and a multi-repo container whose entry holds one
+// worktree per repo in subdirectories. The branch to delete is read from each
+// worktree's HEAD (the branch the sandbox was created on). The repos are
+// pruned of stale admin entries afterwards. Best effort: failures are logged,
+// never fatal.
 func cleanupStaleWorktrees(root string) {
 	entries, err := os.ReadDir(root)
 	if err != nil {
@@ -158,21 +245,94 @@ func cleanupStaleWorktrees(root string) {
 		if !e.IsDir() {
 			continue
 		}
-		id := e.Name()
-		path := filepath.Join(root, id)
-		repo := repoOfWorktree(path)
-		if repo == "" {
-			continue // not a worktree we created (no gitdir file): leave it
+		path := filepath.Join(root, e.Name())
+		if repo := repoOfWorktree(path); repo != "" {
+			// Legacy flat sandbox: the entry is the worktree itself.
+			if err := removeWorktree(repo, path, worktreeBranch(path)); err != nil {
+				log.Printf("execution host: cleanup stale worktree %s: %v", path, err)
+			}
+			_ = os.RemoveAll(path)
+			prune[repo] = true
+			continue
 		}
-		if err := removeWorktree(repo, path, "porter/"+sanitizeBranchID(id)); err != nil {
-			log.Printf("execution host: cleanup stale worktree %s: %v", path, err)
+		// Multi-repo container: the entry holds one worktree per repo.
+		subs, err := os.ReadDir(path)
+		if err != nil {
+			continue
 		}
-		_ = os.RemoveAll(path)
-		prune[repo] = true
+		removed := false
+		for _, sub := range subs {
+			if !sub.IsDir() {
+				continue
+			}
+			sp := filepath.Join(path, sub.Name())
+			repo := repoOfWorktree(sp)
+			if repo == "" {
+				continue // not a worktree we created: leave it
+			}
+			if err := removeWorktree(repo, sp, worktreeBranch(sp)); err != nil {
+				log.Printf("execution host: cleanup stale worktree %s: %v", sp, err)
+			}
+			prune[repo] = true
+			removed = true
+		}
+		if removed {
+			_ = os.RemoveAll(path)
+		}
 	}
 	for repo := range prune {
-		_ = exec.Command("git", "-C", repo, "worktree", "prune").Run()
+		pruneRepoWorktrees(repo)
 	}
+}
+
+// worktreeBranch returns the branch a linked worktree currently has checked
+// out — the branch the sandbox was created on — used by cleanup to delete it.
+// Empty when it cannot be determined (git error) or the worktree is detached;
+// removeWorktree then skips branch deletion, which only leaks the branch
+// until git gc, never breaks cleanup.
+func worktreeBranch(path string) string {
+	cmd := exec.Command("git", "-C", path, "rev-parse", "--abbrev-ref", "HEAD")
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	branch := strings.TrimSpace(string(out))
+	if branch == "HEAD" {
+		return "" // detached: nothing to delete
+	}
+	return branch
+}
+
+// pruneRepoWorktrees runs git worktree prune on a repo, clearing admin
+// entries for worktrees that were force-removed. Best effort.
+func pruneRepoWorktrees(repo string) {
+	_ = exec.Command("git", "-C", repo, "worktree", "prune").Run()
+}
+
+// sanitizeDirName makes a repo basename safe to use as a sandbox directory
+// name: strips leading dots (a hidden directory is invisible to the file
+// listing and easy to miss), replaces characters git or shells dislike, and
+// caps the length so a pathological basename cannot create a giant path.
+func sanitizeDirName(name string) string {
+	name = strings.TrimSpace(name)
+	name = strings.TrimLeft(name, ".")
+	var b strings.Builder
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '.', r == '_', r == '-':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('-')
+		}
+	}
+	s := strings.TrimRight(b.String(), ".-_")
+	if s == "" {
+		return "repo"
+	}
+	if len(s) > 80 {
+		s = s[:80]
+	}
+	return s
 }
 
 // repoOfWorktree parses a linked worktree's .git file ("gitdir: <path>") and

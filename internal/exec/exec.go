@@ -63,10 +63,57 @@ func ListFiles(cwd string) ([]string, error) {
 	return names, nil
 }
 
+// ListFilesIn returns the sorted names of the entries in cwd plus each extra
+// root, for a sandbox whose working directory contains several repos (one git
+// worktree per repo). Each root's listing is bounded independently by maxFiles
+// — so N repos contribute up to N*maxFiles entries — and entries from an
+// extra root are prefixed with the root's base name ("porter/go.mod") so the
+// model can tell which repo a file belongs to. An unreadable extra root is
+// skipped: the listing is a hint, not a contract. Errors listing cwd itself
+// are fatal, matching ListFiles.
+func ListFilesIn(cwd string, extraRoots []string) ([]string, error) {
+	names, err := ListFiles(cwd)
+	if err != nil {
+		return nil, err
+	}
+	for _, root := range extraRoots {
+		entries, err := os.ReadDir(root)
+		if err != nil {
+			continue
+		}
+		prefix := filepath.Base(root)
+		sub := make([]string, 0, len(entries))
+		for _, e := range entries {
+			name := e.Name()
+			if e.IsDir() {
+				name += "/"
+			}
+			sub = append(sub, prefix+"/"+name)
+		}
+		sort.Strings(sub)
+		if len(sub) > maxFiles {
+			sub = sub[:maxFiles]
+		}
+		names = append(names, sub...)
+	}
+	sort.Strings(names)
+	return names, nil
+}
+
 // Discover returns the environment context of cwd (defaulting to the process
 // working directory): the system, the absolute working directory, the files
 // there, and the skills available both globally and in the repo.
 func Discover(cwd string) (api.ExecContext, error) {
+	return DiscoverRoots(cwd, nil)
+}
+
+// DiscoverRoots is Discover for a sandbox whose working directory contains
+// several repos (multi-repo git worktree sandboxes): cwd is listed like
+// Discover, each extra root (a worktree) is listed too, and skills are
+// discovered across every extra root plus the standard roots, so a repo's
+// skills load wherever it sits in the sandbox. With no extra roots it is
+// exactly Discover.
+func DiscoverRoots(cwd string, extraRoots []string) (api.ExecContext, error) {
 	if cwd == "" {
 		var err error
 		cwd, err = os.Getwd()
@@ -77,15 +124,18 @@ func Discover(cwd string) (api.ExecContext, error) {
 	if abs, err := filepath.Abs(cwd); err == nil {
 		cwd = abs
 	}
-	files, err := ListFiles(cwd)
+	files, err := ListFilesIn(cwd, extraRoots)
 	if err != nil {
 		return api.ExecContext{}, fmt.Errorf("discover cwd files: %w", err)
 	}
+	roots := make([]string, 0, len(extraRoots)+3)
+	roots = append(roots, extraRoots...)
+	roots = append(roots, SkillRoots(cwd)...)
 	return api.ExecContext{
 		System: System(),
 		CWD:    cwd,
 		Files:  files,
-		Skills: FindSkills(cwd),
+		Skills: FindSkillsIn(roots),
 		CLIs:   FindCLIs(),
 	}, nil
 }
@@ -129,9 +179,17 @@ func SystemMessage(c api.ExecContext) string {
 // hidden directory's skills subdir). Results are deduplicated by name,
 // preferring repo skills over global ones.
 func FindSkills(cwd string) []api.Skill {
+	return FindSkillsIn(SkillRoots(cwd))
+}
+
+// FindSkillsIn discovers skills across the given roots, in order, deduplicated
+// by name so an earlier root's copy wins. Multi-repo sandboxes pass every
+// worktree first, so each repo's own skills load and a name clash resolves to
+// the first repo listed.
+func FindSkillsIn(roots []string) []api.Skill {
 	seen := make(map[string]bool)
 	var out []api.Skill
-	for _, root := range skillRoots(cwd) {
+	for _, root := range roots {
 		for _, path := range skillPaths(root) {
 			s, ok := parseSkill(path)
 			if !ok || seen[s.Name] {
@@ -144,10 +202,10 @@ func FindSkills(cwd string) []api.Skill {
 	return out
 }
 
-// skillRoots returns the directories to search for skills, most specific
+// SkillRoots returns the directories to search for skills, most specific
 // first: the repo root (or cwd when not in a git repo), the user home, and
 // cwd itself when it differs from both.
-func skillRoots(cwd string) []string {
+func SkillRoots(cwd string) []string {
 	var roots []string
 	if repo, err := gitRoot(cwd); err == nil && repo != "" {
 		roots = append(roots, repo)
@@ -298,7 +356,6 @@ func containsPath(paths []string, abs string) bool {
 // directory (or hook into those tools) so skills appear as we navigate. Today
 // the discovery happens once per provider connect, so the list can go stale if
 // skills are edited or added after connecting — which is fine for now.
-
 
 // clisFile is the on-disk shape of ~/.porter/clis.json: a curated manifest of
 // CLI tools the provider declares available ("if it's defined it exists"),

@@ -359,9 +359,8 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 	warning := ""
 	if req.Host != "" && req.Host != "local" {
 		if err := s.store.Provision(r.Context(), ses.ID(), req.Host, api.HostRequest{
-			CWD:    req.CWD,
-			Repo:   req.Repo,
-			Branch: req.Branch,
+			CWD:   req.CWD,
+			Repos: req.Repos,
 		}); err != nil {
 			warning = fmt.Sprintf("could not create execution context on %s: %v", req.Host, err)
 		}
@@ -389,8 +388,24 @@ func readCreateRequest(r *http.Request) (api.CreateRequest, error) {
 		}
 		req.Host = r.PostForm.Get("host")
 		req.CWD = r.PostForm.Get("cwd")
-		req.Repo = r.PostForm.Get("repo")
-		req.Branch = r.PostForm.Get("branch")
+		// Repos arrive as repeated repo= fields (one per row in the new-chat
+		// form), each with an optional branch= field aligned by index — the
+		// form posts rows in order, so repo[i] pairs with branch[i]. Rows
+		// with an empty repo are skipped (their branch goes with them), so
+		// blank rows never shift the pairing.
+		repos := r.PostForm["repo"]
+		branches := r.PostForm["branch"]
+		for i, repo := range repos {
+			repo = strings.TrimSpace(repo)
+			if repo == "" {
+				continue
+			}
+			ref := api.RepoRef{Path: repo}
+			if i < len(branches) {
+				ref.Branch = strings.TrimSpace(branches[i])
+			}
+			req.Repos = append(req.Repos, ref)
+		}
 		return req, nil
 	}
 	if r.Body == nil {

@@ -31,6 +31,17 @@
 		   any) provisions this session's context. Populated from GET /api/hosts;
 		   hidden when no hosts are registered. */
 		.new-chat select, .new-chat input { width: 100%; margin-top: 0.35rem; padding: 0.3rem 0.4rem; border: 1px solid #ccc; border-radius: 4px; background: #fff; color: #333; font-size: 0.85em; box-sizing: border-box; }
+		/* Multi-repo sandbox rows under the "Run on" picker: each row is one
+		   repo (with optional base branch) plus a remove button; the "+ Add
+		   repo" button appends another. Rows post as repeated repo=/branch=
+		   fields. */
+		.repo-row { display: flex; gap: 0.3rem; align-items: center; }
+		.repo-row input { margin-top: 0; flex: 1 1 auto; }
+		.repo-row input:first-child { flex: 2 1 auto; }
+		.repo-row button { flex: 0 0 auto; width: auto; padding: 0.3rem 0.5rem; border: 1px solid #ccc; border-radius: 4px; background: #fff; color: #333; cursor: pointer; font-size: 0.85em; }
+		.repo-row button:hover { background: #f0f0f0; }
+		#add-repo-btn { margin-top: 0.35rem; width: 100%; padding: 0.25rem 0.5rem; border: 1px dashed #ccc; border-radius: 4px; background: #fff; color: #666; cursor: pointer; font-size: 0.8em; }
+		#add-repo-btn:hover { background: #f0f0f0; color: #333; }
 		#session-list, #archived-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.25rem; }
 		#session-list a, #archived-list a { display: block; padding: 0.35rem 0.5rem; border-radius: 4px; color: #333; text-decoration: none; font-size: 0.9em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 		#session-list a:hover, #archived-list a:hover { background: #f0f0f0; }

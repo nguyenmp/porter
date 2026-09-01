@@ -135,7 +135,7 @@ func TestReleaseSessionSendsRelease(t *testing.T) {
 		req := <-ch
 		st.ProvisionRegistered("session_1", req.ProviderID)
 	}()
-	if err := st.Provision(context.Background(), "session_1", "mac", api.HostRequest{Repo: "/tmp/repo"}); err != nil {
+	if err := st.Provision(context.Background(), "session_1", "mac", api.HostRequest{Repos: []api.RepoRef{{Path: "/tmp/repo"}}}); err != nil {
 		t.Fatalf("Provision: %v", err)
 	}
 
@@ -186,7 +186,7 @@ func TestReleaseSessionHostGone(t *testing.T) {
 		req := <-ch
 		st.ProvisionRegistered("session_1", req.ProviderID)
 	}()
-	if err := st.Provision(context.Background(), "session_1", "mac", api.HostRequest{Repo: "/tmp/repo"}); err != nil {
+	if err := st.Provision(context.Background(), "session_1", "mac", api.HostRequest{Repos: []api.RepoRef{{Path: "/tmp/repo"}}}); err != nil {
 		t.Fatalf("Provision: %v", err)
 	}
 

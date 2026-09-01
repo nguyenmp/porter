@@ -1,6 +1,7 @@
 package exec
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -216,5 +217,114 @@ func TestSystemMessageIncludesCLIs(t *testing.T) {
 	})
 	if !strings.Contains(msg, "Available CLI tools") || !strings.Contains(msg, "gt: Graphite stack management") {
 		t.Errorf("system message missing CLI section:\n%s", msg)
+	}
+}
+
+func TestDiscoverRootsListsFilesPerRoot(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "top.txt"), []byte("top"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Two extra roots (e.g. worktrees in a multi-repo sandbox), each with its
+	// own files.
+	rootA := filepath.Join(dir, "porter-main")
+	rootB := filepath.Join(dir, "data-kernel")
+	for _, r := range []string{rootA, rootB} {
+		if err := os.MkdirAll(r, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(rootA, "go.mod"), []byte("module x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(rootA, "internal"), []byte("dir"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(rootB, "models"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, err := DiscoverRoots(dir, []string{rootA, rootB})
+	if err != nil {
+		t.Fatalf("DiscoverRoots: %v", err)
+	}
+	// The container's own listing stays bare; each extra root's entries are
+	// prefixed with the root's basename so the model can tell which repo a
+	// file belongs to.
+	want := map[string]bool{
+		"top.txt":              true,
+		"porter-main/":         true,
+		"data-kernel/":         true,
+		"porter-main/go.mod":   true,
+		"porter-main/internal": true,
+		"data-kernel/models/":  true,
+	}
+	for _, f := range ctx.Files {
+		if !want[f] {
+			t.Errorf("unexpected file %q (all: %v)", f, ctx.Files)
+		}
+		delete(want, f)
+	}
+	if len(want) != 0 {
+		t.Errorf("missing files %v (all: %v)", want, ctx.Files)
+	}
+}
+
+func TestListFilesInPerRootBudget(t *testing.T) {
+	dir := t.TempDir()
+	// The container root has more than maxFiles entries of its own.
+	for i := 0; i < maxFiles+5; i++ {
+		if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("f%d.txt", i)), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// An extra root also has more than maxFiles entries.
+	extra := filepath.Join(dir, "repo")
+	if err := os.MkdirAll(extra, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < maxFiles+5; i++ {
+		if err := os.WriteFile(filepath.Join(extra, fmt.Sprintf("g%d.txt", i)), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	names, err := ListFilesIn(dir, []string{extra})
+	if err != nil {
+		t.Fatalf("ListFilesIn: %v", err)
+	}
+	// Each root gets its own maxFiles budget: the container lists maxFiles of
+	// its own entries and the extra root lists maxFiles prefixed entries — not
+	// a shared cap. (maxFiles+maxFiles total.)
+	if len(names) != 2*maxFiles {
+		t.Errorf("ListFilesIn returned %d names, want %d (per-root budget)", len(names), 2*maxFiles)
+	}
+	prefixed := 0
+	for _, n := range names {
+		if strings.HasPrefix(n, "repo/") {
+			prefixed++
+		}
+	}
+	if prefixed != maxFiles {
+		t.Errorf("extra root contributed %d entries, want %d", prefixed, maxFiles)
+	}
+}
+
+func TestFindSkillsInOrdering(t *testing.T) {
+	// Two roots (e.g. two worktrees in one sandbox) both define the same
+	// skill name: the first root wins, mirroring FindSkills' repo-over-global
+	// preference.
+	root1 := t.TempDir()
+	root2 := t.TempDir()
+	writeSkill(t, root1, ".agents", "dup", "# first\n\nfirst version\n")
+	writeSkill(t, root2, ".agents", "dup", "# second\n\nsecond version\n")
+
+	skills := FindSkillsIn([]string{root1, root2})
+	if len(skills) != 1 {
+		t.Fatalf("FindSkillsIn = %d skills, want 1 (deduped)", len(skills))
+	}
+	want := filepath.Join(root1, ".agents", "skills", "dup", "SKILL.md")
+	if skills[0].Path != want {
+		t.Errorf("dup skill path = %q, want first root's %q", skills[0].Path, want)
 	}
 }

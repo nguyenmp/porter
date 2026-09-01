@@ -185,7 +185,7 @@ func (st *Store) Provision(ctx context.Context, sessionID, hostID string, req ap
 	req.Kind = "provision"
 	req.ProviderID = fmt.Sprintf("%s-provider-%d", hostID, st.hostSeq)
 	req.SessionID = sessionID
-	p := &pendingProvision{providerID: req.ProviderID, sessionID: sessionID, hostID: hostID, done: make(chan struct{}), sandbox: req.Repo != ""}
+	p := &pendingProvision{providerID: req.ProviderID, sessionID: sessionID, hostID: hostID, done: make(chan struct{}), sandbox: len(req.Repos) > 0}
 	st.pending[req.ProviderID] = p
 	ch := h.ch
 	st.mu.Unlock()

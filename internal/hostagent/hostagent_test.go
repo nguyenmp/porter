@@ -9,8 +9,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
+	"porter/internal/api"
+	"porter/internal/client"
 	"porter/internal/mcp"
 	"porter/internal/tools"
 )
@@ -159,4 +162,190 @@ func (p *provisioner) serveOne(ctx context.Context, name string, args []byte, di
 func newTestDispatcher(t *testing.T) *tools.Dispatcher {
 	t.Helper()
 	return tools.NewDispatcher()
+}
+
+// TestProvisionCreatesMultiRepoSandbox drives provision() end to end against
+// a fake porter server: two repos become two worktrees in a container whose
+// CWD the session's exec context reports, with skills from both repos, and
+// release tears the whole sandbox down.
+func TestProvisionCreatesMultiRepoSandbox(t *testing.T) {
+	repo1 := initGitRepo(t)
+	repo2 := initGitRepo(t)
+	// A skill in each repo, so the registered context proves multi-repo
+	// skills load (each worktree is a repo root to FindSkillsIn).
+	writeRepoSkill(t, repo1, "repo1-skill")
+	writeRepoSkill(t, repo2, "repo2-skill")
+	worktrees := t.TempDir()
+
+	var mu sync.Mutex
+	var execCtxs []api.ExecContext
+	var providerErrs []string
+	holdExec := make(chan struct{}) // never closed until the test ends
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/sessions/", func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "POST" && strings.HasSuffix(r.URL.Path, "/exec/context"):
+			var ctx api.ExecContext
+			_ = json.NewDecoder(r.Body).Decode(&ctx)
+			mu.Lock()
+			execCtxs = append(execCtxs, ctx)
+			mu.Unlock()
+			w.WriteHeader(http.StatusOK)
+		case r.Method == "GET" && strings.HasSuffix(r.URL.Path, "/exec"):
+			w.Header().Set("Content-Type", "application/x-ndjson")
+			w.WriteHeader(http.StatusOK)
+			w.(http.Flusher).Flush()
+			<-holdExec // hold the provider's exec connection open
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	})
+	mux.HandleFunc("/api/hosts/", func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		providerErrs = append(providerErrs, string(b))
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	})
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+	defer close(holdExec)
+
+	c := client.New(ts.URL)
+	p := &provisioner{
+		c:         c,
+		hostID:    "mac",
+		cwd:       t.TempDir(),
+		worktrees: worktrees,
+		serves:    map[string]*serveState{},
+		mcp:       mcp.New(nil),
+	}
+
+	if err := p.provision(api.HostRequest{
+		Kind:       "provision",
+		ProviderID: "mac-provider-99",
+		SessionID:  "session_1",
+		Repos:      []api.RepoRef{{Path: repo1}, {Path: repo2}},
+	}); err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+
+	// The provider registered with no error and the container as its CWD.
+	mu.Lock()
+	if len(providerErrs) != 0 {
+		t.Errorf("provider errors: %v", providerErrs)
+	}
+	mu.Unlock()
+	if len(execCtxs) != 1 {
+		t.Fatalf("exec contexts registered = %d, want 1", len(execCtxs))
+	}
+	ctx := execCtxs[0]
+	sandboxDir := filepath.Join(worktrees, "mac-provider-99")
+	if ctx.CWD != sandboxDir {
+		t.Errorf("registered CWD = %q, want container %q", ctx.CWD, sandboxDir)
+	}
+	// Both worktrees exist on disk, and files from both are listed prefixed
+	// with the worktree's dir name.
+	for _, repo := range []string{repo1, repo2} {
+		wt := filepath.Join(sandboxDir, filepath.Base(repo))
+		if _, err := os.Stat(filepath.Join(wt, "hello.txt")); err != nil {
+			t.Errorf("worktree %q missing repo files: %v", wt, err)
+		}
+	}
+	names := strings.Join(ctx.Files, " ")
+	for _, repo := range []string{repo1, repo2} {
+		prefix := filepath.Base(repo) + "/hello.txt"
+		if !strings.Contains(names, prefix) {
+			t.Errorf("registered files missing %q (all: %v)", prefix, ctx.Files)
+		}
+	}
+	// Skills from both repos are in the registered context.
+	skillNames := map[string]bool{}
+	for _, s := range ctx.Skills {
+		skillNames[s.Name] = true
+	}
+	if !skillNames["repo1-skill"] || !skillNames["repo2-skill"] {
+		t.Errorf("registered skills = %v, want repo1-skill and repo2-skill", skillNames)
+	}
+
+	// Release tears down every worktree, its branch, and the container.
+	p.release(api.HostRequest{ProviderID: "mac-provider-99"})
+	for _, repo := range []string{repo1, repo2} {
+		wt := filepath.Join(sandboxDir, filepath.Base(repo))
+		if _, err := os.Stat(wt); !os.IsNotExist(err) {
+			t.Errorf("worktree %q still exists after release", wt)
+		}
+	}
+	if _, err := os.Stat(sandboxDir); !os.IsNotExist(err) {
+		t.Errorf("container %q still exists after release", sandboxDir)
+	}
+}
+
+// writeRepoSkill writes a skill into repo/.agents/skills/<name>/SKILL.md and
+// commits it, so worktrees provisioned from the repo carry it (untracked
+// files do not transfer between worktrees).
+func writeRepoSkill(t *testing.T, repo, name string) {
+	t.Helper()
+	dir := filepath.Join(repo, ".agents", "skills", name)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("# "+name+"\n\nDoes the "+name+" thing.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, repo, "add", ".")
+	runGit(t, repo, "commit", "-m", "add "+name+" skill")
+}
+
+// TestProvisionRollsBackOnFailure drives provision() down its error path: the
+// second repo is not a git repo, so the first worktree must be rolled back,
+// the container removed, and the failure reported to the server (the session
+// keeps its local fallback).
+func TestProvisionRollsBackOnFailure(t *testing.T) {
+	repo := initGitRepo(t)
+	worktrees := t.TempDir()
+
+	var mu sync.Mutex
+	var providerErrs []string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/hosts/", func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		providerErrs = append(providerErrs, string(b))
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	})
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	c := client.New(ts.URL)
+	p := &provisioner{
+		c:         c,
+		hostID:    "mac",
+		cwd:       t.TempDir(),
+		worktrees: worktrees,
+		serves:    map[string]*serveState{},
+		mcp:       mcp.New(nil),
+	}
+
+	err := p.provision(api.HostRequest{
+		Kind:       "provision",
+		ProviderID: "mac-provider-100",
+		SessionID:  "session_1",
+		Repos:      []api.RepoRef{{Path: repo}, {Path: t.TempDir()}},
+	})
+	if err != nil {
+		t.Fatalf("provision should report failure, not error: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(providerErrs) != 1 {
+		t.Fatalf("provider errors = %v, want 1 reported failure", providerErrs)
+	}
+	// The partial worktree and the container are gone — no half-open sandbox.
+	sandboxDir := filepath.Join(worktrees, "mac-provider-100")
+	if _, err := os.Stat(sandboxDir); !os.IsNotExist(err) {
+		t.Errorf("container %q left behind after failed provision", sandboxDir)
+	}
 }

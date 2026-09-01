@@ -1,11 +1,12 @@
 // Package hostagent is the persistent execution host: a long-running process
 // on a machine (e.g. a laptop) that connects to a porter server once and
 // provisions execution contexts for any session on demand. Each provisioned
-// context is an isolated environment — a working directory, or a git worktree
-// sandbox on a shared repo — that the host serves as that session's execution
-// provider, so many chats can run on the same machine (and, later, the same
-// repo) without sharing state. It is the roadmap's Execution Host: a host
-// creates an execution environment and returns an Execution Provider.
+// context is an isolated environment — a working directory, or a sandbox
+// container holding one git worktree per requested repo — that the host
+// serves as that session's execution provider, so many chats can run on the
+// same machine and repos without sharing state. It is the roadmap's Execution
+// Host: a host creates an execution environment and returns an Execution
+// Provider.
 package hostagent
 
 import (
@@ -132,23 +133,25 @@ type provisioner struct {
 }
 
 // serveState is one live worktree sandbox: the context that bounds its serve
-// loop (cancelled on release) and the repo/path/branch to tear down.
+// loop (cancelled on release), the container directory the worktrees live in
+// (removed on release), and each worktree's repo/path/branch to tear down.
 type serveState struct {
-	cancel context.CancelFunc
-	repo   string
-	path   string
-	branch string
+	cancel    context.CancelFunc
+	dir       string
+	worktrees []worktreeRef
 }
 
 // provision handles one request from the server. Kind "release" tears down a
 // worktree sandbox the host created earlier. Kind "provision" creates the
 // execution environment a session asked for and starts serving it as that
 // session's execution provider: a working directory (req.CWD or the host
-// default) when no repo is named, or a git worktree sandbox on req.Repo — a
-// fresh branch porter/<providerID> based at req.Branch (or the repo's HEAD)
-// when one is — so many chats can work on the same repo without trampling
-// each other. It returns an error only for internal failures — a bad request
-// is reported to the server (PostHostProviderError) and the host connection
+// default) when no repos are named, or a multi-repo sandbox when they are — a
+// container directory holding one git worktree per repo (each a fresh branch
+// porter/<providerID>, -2, -3... for later worktrees of the same repo, based
+// at the repo's requested branch or HEAD), so many chats can work on the same
+// repos without trampling each other and one chat can work across several at
+// once. It returns an error only for internal failures — a bad request is
+// reported to the server (PostHostProviderError) and the host connection
 // keeps serving.
 func (p *provisioner) provision(req api.HostRequest) error {
 	if req.Kind == "release" {
@@ -166,28 +169,51 @@ func (p *provisioner) provision(req api.HostRequest) error {
 	defer cancel()
 
 	var serveCtx context.Context = context.Background()
-	if req.Repo != "" {
-		// Resolve the repo against the user's home directory (the same root
-		// discoverRepos scans), so a bare name like "porter" means ~/porter
-		// regardless of where the host process runs. The resolved path is also
-		// what release/cleanup tear down, so they agree on the repo.
-		repo := resolveRepo(req.Repo)
-		path, branch, err := provisionWorktree(ctx, repo, req.Branch, p.worktrees, req.ProviderID)
+	var extraRoots []string
+	sandboxed := len(req.Repos) > 0
+	if sandboxed {
+		// A multi-repo sandbox is a container directory holding one git
+		// worktree per requested repo, so the session's working directory
+		// shows every repo as a sibling and the model can work across them.
+		// Resolving and branch/directory naming live in provisionWorktrees;
+		// on any failure the worktrees created so far are rolled back so a
+		// bad repo never leaves a half-open sandbox behind.
+		sandboxDir := filepath.Join(p.worktrees, req.ProviderID)
+		wts, err := provisionWorktrees(ctx, req.ProviderID, req.Repos, sandboxDir)
 		if err != nil {
-			_ = p.c.PostHostProviderError(ctx, p.hostID, req.ProviderID, err.Error())
+			for _, w := range wts {
+				if rerr := removeWorktree(w.repo, w.path, w.branch); rerr != nil {
+					log.Printf("execution host: rollback %s: %v", w.path, rerr)
+				}
+			}
+			_ = os.RemoveAll(sandboxDir)
+			// The provision ctx may have expired (git worktree add on a slow
+			// repo can eat the whole budget), so report the failure on a
+			// fresh context: the server's provision wait resolves with the
+			// real error instead of its own timeout.
+			errCtx, errCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			_ = p.c.PostHostProviderError(errCtx, p.hostID, req.ProviderID, err.Error())
+			errCancel()
 			return nil
 		}
 		sctx, scancel := context.WithCancel(context.Background())
 		p.mu.Lock()
-		p.serves[req.ProviderID] = &serveState{cancel: scancel, repo: repo, path: path, branch: branch}
+		p.serves[req.ProviderID] = &serveState{cancel: scancel, dir: sandboxDir, worktrees: wts}
 		p.mu.Unlock()
-		dir = path
+		dir = sandboxDir
 		serveCtx = sctx
+		for _, w := range wts {
+			extraRoots = append(extraRoots, w.path)
+		}
 	}
 
-	env, err := exec.Discover(dir)
+	// DiscoverRoots lists files from the container and every worktree (each
+	// bounded by its own file budget) and finds skills across every worktree
+	// too, so a repo's skills load wherever it sits in the sandbox. With no
+	// extra roots it behaves exactly like Discover.
+	env, err := exec.DiscoverRoots(dir, extraRoots)
 	if err != nil {
-		if req.Repo != "" {
+		if sandboxed {
 			p.release(api.HostRequest{ProviderID: req.ProviderID})
 		}
 		_ = p.c.PostHostProviderError(ctx, p.hostID, req.ProviderID, err.Error())
@@ -202,10 +228,10 @@ func (p *provisioner) provision(req api.HostRequest) error {
 	// active and resolves the server's provision wait. ServeExec retries on
 	// drops, so a brief network blip reconnects the provider without
 	// re-provisioning. Sandboxed providers serve under a cancellable context
-	// so a release request can stop them and remove the worktree; plain-dir
+	// so a release request can stop them and remove the worktrees; plain-dir
 	// provisions serve for the process.
 	if err := p.c.PostExecContext(ctx, req.SessionID, env); err != nil {
-		if req.Repo != "" {
+		if sandboxed {
 			p.release(api.HostRequest{ProviderID: req.ProviderID})
 		}
 		_ = p.c.PostHostProviderError(ctx, p.hostID, req.ProviderID, err.Error())
@@ -217,9 +243,10 @@ func (p *provisioner) provision(req api.HostRequest) error {
 }
 
 // release tears down a worktree sandbox the host created for a session: it
-// stops the sandbox's serve loop and removes the worktree and its branch. It
-// is idempotent — an unknown provider id (a duplicate release, or a
-// non-sandboxed provision, whose serve loop lives for the process) is a
+// stops the sandbox's serve loop, removes every worktree (and its branch),
+// prunes each repo's worktree admin entries, and removes the container
+// directory. It is idempotent — an unknown provider id (a duplicate release,
+// or a non-sandboxed provision, whose serve loop lives for the process) is a
 // no-op — so a stale release from a reconnecting server is harmless.
 func (p *provisioner) release(req api.HostRequest) {
 	p.mu.Lock()
@@ -231,9 +258,21 @@ func (p *provisioner) release(req api.HostRequest) {
 	if !ok {
 		return
 	}
-	st.cancel()
-	if err := removeWorktree(st.repo, st.path, st.branch); err != nil {
-		log.Printf("execution host: release %s: %v", req.ProviderID, err)
+	if st.cancel != nil {
+		st.cancel()
+	}
+	pruned := map[string]bool{}
+	for _, w := range st.worktrees {
+		if err := removeWorktree(w.repo, w.path, w.branch); err != nil {
+			log.Printf("execution host: release %s: %v", req.ProviderID, err)
+		}
+		pruned[w.repo] = true
+	}
+	if st.dir != "" {
+		_ = os.RemoveAll(st.dir)
+	}
+	for repo := range pruned {
+		pruneRepoWorktrees(repo)
 	}
 }
 

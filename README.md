@@ -40,13 +40,16 @@ A tree of turns. Each turn has a single parent and can fork into many children.
   use curl vs wget, or macOS BSD vs GNU userland), working directory, files
   there, and the skills it can load — when it connects. The server injects this
   as a system-message prefix on every request, so the model knows where commands
-  will run without guessing.
+  will run without guessing. A multi-repo sandbox lists files from each repo,
+  prefixed with the repo's directory name (`porter/go.mod`) and bounded per
+  repo, so the model sees the shape of every repo it can work in.
 - Skills live at `<root>/.agents/skills/*/SKILL.md` or
   `<root>/.*/skills/*/SKILL.md` (any hidden dir's skills subdir), found under
   the repo root (`git rev-parse --show-toplevel`) or the user root (`~/`),
   deduplicated by name (repo wins). They are exposed to the model as a single
   **load_skill** tool whose description lists every skill; calling it returns
-  the full SKILL.md body.
+  the full SKILL.md body. A multi-repo sandbox searches every sandboxed repo
+  (each worktree is a repo root), so each repo's committed skills load.
 - CLI tools the provider declares available ride along the environment: a
   curated manifest at `~/.porter/clis.json` (`{"clis": {"gt": "Graphite stack
   management (submit, split, restack, up/down)"}}`) lists what the model can
@@ -239,9 +242,11 @@ Terms used throughout this README, grouped by the part of the system they belong
 - **Execution provider** — where a session's commands run. The local server
   process (always available) or a connected execution client, e.g. the REPL on
   a laptop. An **execution host** (`make host`) is a persistent agent that can
-  provision these per-chat: given a repo path it creates a git worktree sandbox
-  (its own branch) so multiple chats can work on the same repo independently,
-  and serves that sandbox as the chat's provider. A session can have several connected at once; one is **active** and
+  provision these per-chat: given one or more repo paths it creates a sandbox
+  container holding a git worktree per repo (each its own branch) so multiple
+  chats can work on the same repos independently — and a chat can work across
+  several repos at once, or the same repo twice on different branches to
+  compare them — and serves that sandbox as the chat's provider. A session can have several connected at once; one is **active** and
   receives the tool calls. The web picker switches the active provider; a
   deselected client stays connected, so it can be picked again without
   reconnecting.
@@ -267,10 +272,10 @@ Build order:
         local server or any connected client; switching takes effect on the
         next message)
   - [x] Execution Host (`make host`): a persistent agent on a machine that
-        provisions a per-chat sandbox — a working directory, or a git worktree
-        on a shared repo (each chat gets its own branch) — and serves it as
-        that chat's execution provider; archiving a sandboxed chat releases
-        its worktree
+        provisions a per-chat sandbox — a working directory, or git worktrees
+        on one or more shared repos (each chat gets its own branch per repo) —
+        and serves it as that chat's execution provider; archiving a sandboxed
+        chat releases its worktrees
 - [ ] Metrics & performance (tokens/sec, tool timing, worktree cache)
 - [x] Tool output trimming (`tool_output` head+tail model view, `read_output` recall) — full output kept in History/DB, only the model view trimmed
 - [ ] Token budget before send

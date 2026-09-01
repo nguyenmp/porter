@@ -87,6 +87,19 @@ const (
 	HostProviderErrorPath = "/api/hosts/{host_id}/providers/{provider_id}/error"
 )
 
+// RepoRef names one local git repository to sandbox a session in, and the
+// base branch ("" = the repo's HEAD) to check out. A sandboxed provision
+// carries one RepoRef per repo: the host creates a git worktree for each — a
+// fresh branch porter/<provider_id> (the second worktree of the same repo gets
+// porter/<provider_id>-2, and so on) — inside a container directory that
+// becomes the session's working directory, so a chat can work across several
+// repos at once without trampling anyone. Repeating the same repo with
+// different branches compares branches side by side.
+type RepoRef struct {
+	Path   string `json:"path"`
+	Branch string `json:"branch,omitempty"`
+}
+
 // HostRequest is one message the server pushes to a registered execution host
 // over its persistent exec connection. Kind "provision" asks the host to
 // create an execution environment (a sandbox) for a session and register
@@ -94,22 +107,18 @@ const (
 // provisioning creates an environment and returns an Execution Provider. Kind
 // "release" asks the host to tear down a sandbox it created earlier (sent
 // when the session that owns it is archived). CWD names a working directory
-// for the environment ("" = the host's default). Repo names a local git
-// repository to sandbox the session in: the host provisions a git worktree — a
-// fresh branch porter/<provider_id> based at Branch (or the repo's HEAD when
-// empty) — and serves the session from it, so many chats can work on the same
-// repo without trampling each other. With no Repo, the environment is just the
-// working directory.
+// for the environment ("" = the host's default). Repos names the local git
+// repositories to sandbox the session in (a git worktree each); with no
+// Repos, the environment is just the working directory.
 type HostRequest struct {
 	Kind string `json:"kind"` // "provision" | "release"
 	// ProviderID is the id the host's provisioned provider registers under on
 	// the session. The server generates it so it is unique and safe.
 	ProviderID string `json:"provider_id,omitempty"`
 	// SessionID is the session the provider will serve.
-	SessionID string `json:"session_id,omitempty"`
-	CWD       string `json:"cwd,omitempty"`
-	Repo      string `json:"repo,omitempty"`
-	Branch    string `json:"branch,omitempty"`
+	SessionID string    `json:"session_id,omitempty"`
+	CWD       string    `json:"cwd,omitempty"`
+	Repos     []RepoRef `json:"repos,omitempty"`
 }
 
 // ExecRequest is one message the server pushes to a session's execution
@@ -138,13 +147,12 @@ type SessionInfo struct {
 
 // CreateRequest is the optional body of POST /api/sessions. Host names an
 // execution host to provision the new session's execution provider on ("" or
-// "local" uses the server process); CWD and Repo/Branch are passed to the
-// host so it can create the right environment.
+// "local" uses the server process); CWD and Repos are passed to the host so
+// it can create the right environment (Repos = one git worktree per repo).
 type CreateRequest struct {
-	Host   string `json:"host,omitempty"`
-	CWD    string `json:"cwd,omitempty"`
-	Repo   string `json:"repo,omitempty"`
-	Branch string `json:"branch,omitempty"`
+	Host  string    `json:"host,omitempty"`
+	CWD   string    `json:"cwd,omitempty"`
+	Repos []RepoRef `json:"repos,omitempty"`
 }
 
 // HostSummary describes one registered execution host for the web UI's "new
@@ -400,13 +408,13 @@ type MCPTool struct {
 // credentials never leave the provider. Tools are the server's tool list as
 // discovered when the provider connected.
 type MCPServer struct {
-	Name        string    `json:"name"`
-	Description string    `json:"description"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
 	// Host is the execution host that serves this server (the provider's id),
 	// shown in FindMCP so the model knows where the call will run.
-	Host   string `json:"host,omitempty"`
-	Status string `json:"status,omitempty"` // "ok" | "error" | "pending"
-	Error  string `json:"error,omitempty"`
+	Host   string    `json:"host,omitempty"`
+	Status string    `json:"status,omitempty"` // "ok" | "error" | "pending"
+	Error  string    `json:"error,omitempty"`
 	Tools  []MCPTool `json:"tools,omitempty"`
 }
 

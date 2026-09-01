@@ -19,15 +19,19 @@
 			<select id="new-chat-host" name="host" title="Run on" aria-label="Run on">
 				<option value="">local</option>
 			</select>
-			{{/* Sandbox fields (hidden until a host is chosen): a repo makes
+			{{/* Sandbox fields (hidden until a host is chosen): each repo makes
 			     that host provision this chat in a git worktree on the repo —
-			     one branch per chat, so sessions don't trample each other. The
-			     repo list is populated from the host's discovered repos; the
-			     branch defaults to the repo's current branch. */}}
+			     one worktree per repo, so sessions don't trample each other
+			     and a chat can work across several repos at once. Add the same
+			     repo twice with different base branches to compare branches
+			     side by side. The repo list is populated from the host's
+			     discovered repos; a repo's branch defaults to its current
+			     branch. Rows are added/removed client-side and post as
+			     repeated repo=/branch= fields, aligned by index. */}}
 			<div id="new-chat-sandbox" hidden>
-				<input type="text" id="new-chat-repo" name="repo" list="repo-options" placeholder="Repo (worktree sandbox)" title="Local git repo on the host to sandbox this chat in — one worktree per chat" autocomplete="off">
+				<div id="repo-rows"></div>
+				<button type="button" id="add-repo-btn">+ Add repo</button>
 				<datalist id="repo-options"></datalist>
-				<input type="text" id="new-chat-branch" name="branch" placeholder="Base branch (optional)" title="Base branch for the sandbox; defaults to the repo's current branch" autocomplete="off">
 			</div>
 		</form>
 		<ul id="session-list" hidden></ul>
@@ -186,13 +190,45 @@
       // Selecting a host reveals the sandbox fields and populates the repo
       // suggestions with that host's discovered repos (the repos under the
       // host's home directory). There is deliberately no default: the repo is
-      // chosen per chat, and the value is cleared on host switch so a chat
+      // chosen per chat, and the rows are cleared on host switch so a chat
       // never silently runs against the wrong repo. A repo the scan missed
-      // can still be typed directly.
+      // can still be typed directly. Multiple repos are supported — each row
+      // posts a repo= and branch= field, aligned by index server-side, so a
+      // chat can sandbox several repos at once (or the same repo twice with
+      // different branches to compare them).
       const sandbox = document.getElementById('new-chat-sandbox');
-      const repoInput = document.getElementById('new-chat-repo');
+      const repoRows = document.getElementById('repo-rows');
       const repoList = document.getElementById('repo-options');
-      if (sandbox && repoInput && repoList) {
+      const addRepoBtn = document.getElementById('add-repo-btn');
+      if (sandbox && repoRows && repoList && addRepoBtn) {
+        function addRepoRow() {
+          const row = document.createElement('div');
+          row.className = 'repo-row';
+          const repo = document.createElement('input');
+          repo.type = 'text';
+          repo.name = 'repo';
+          repo.setAttribute('list', 'repo-options');
+          repo.placeholder = 'Repo (worktree sandbox)';
+          repo.title = 'Local git repo on the host to sandbox this chat in — one worktree per repo; add the same repo twice with different base branches to compare branches';
+          repo.autocomplete = 'off';
+          const branch = document.createElement('input');
+          branch.type = 'text';
+          branch.name = 'branch';
+          branch.placeholder = 'Base branch (optional)';
+          branch.title = "Base branch for this repo's sandbox; defaults to the repo's current branch";
+          branch.autocomplete = 'off';
+          const remove = document.createElement('button');
+          remove.type = 'button';
+          remove.textContent = '×';
+          remove.title = 'Remove this repo';
+          remove.setAttribute('aria-label', 'Remove repo');
+          remove.addEventListener('click', function() { row.remove(); });
+          row.appendChild(repo);
+          row.appendChild(branch);
+          row.appendChild(remove);
+          repoRows.appendChild(row);
+        }
+        addRepoBtn.addEventListener('click', addRepoRow);
         sel.addEventListener('change', function() {
           const h = byID[sel.value];
           repoList.innerHTML = '';
@@ -203,7 +239,8 @@
             o.value = r;
             repoList.appendChild(o);
           }
-          repoInput.value = '';
+          repoRows.innerHTML = '';
+          addRepoRow();
           sandbox.hidden = false;
         });
       }
