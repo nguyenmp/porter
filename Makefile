@@ -48,7 +48,7 @@ porter-macos: $(SRC)
 ## want provisioned chats to work in; a chat can request a different one when
 ## it's created.
 host: porter-macos
-	$(if $(wildcard .env),set -a; . ./.env; set +a;) ./porter-macos host
+	$(if $(wildcard .env),set -a; . ./.env; set +a;) caffeinate -is ./porter-macos host
 
 ## repl: interactive REPL client against the server (URL + basic auth from .env)
 repl: porter-macos
