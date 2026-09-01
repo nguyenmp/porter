@@ -821,6 +821,29 @@ func TestIndexNoSessionRendersEmptyState(t *testing.T) {
 	}
 }
 
+// TestIndexHead verifies HEAD / answers 200 with an empty body and the same
+// Content-Type as the homepage GET, so the homepage can serve as a liveness
+// healthcheck without paying for a page render.
+func TestIndexHead(t *testing.T) {
+	srv := newTestServer(t, plainLLM())
+	defer srv.Close()
+
+	resp, err := http.Head(srv.URL + "/")
+	if err != nil {
+		t.Fatalf("HEAD /: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
+		t.Errorf("Content-Type = %q, want text/html", ct)
+	}
+	if body, _ := io.ReadAll(resp.Body); len(body) != 0 {
+		t.Errorf("HEAD body = %q, want empty", body)
+	}
+}
+
 func TestIndexPassesSessionParam(t *testing.T) {
 	srv := newTestServer(t, plainLLM())
 	c := client.New(srv.URL)

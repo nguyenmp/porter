@@ -284,6 +284,7 @@ func (s *Server) ListenAndServe() error {
 func (s *Server) Handler() http.Handler {
 	r := chi.NewRouter()
 	r.Get("/", s.handleIndex)
+	r.Head("/", s.handleHead)
 	// Static assets for the web UI (vendored client libraries). webFS embeds
 	// the whole web/ directory, so markdown-it ships inside the binary; /web/*
 	// serves it with the directory prefix stripped.
@@ -896,4 +897,16 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		Name:          ses.Name(),
 		Preview:       ses.Preview(),
 	})
+}
+
+// handleHead answers HEAD / so the homepage can double as a liveness
+// healthcheck. It mirrors the GET route's Content-Type header (per RFC 9110 a
+// HEAD response must carry the same headers as the corresponding GET would)
+// but skips the template render and session lookup entirely. The http server
+// discards any body written on HEAD, so none is written here; the 200 is
+// explicit so a proxy (e.g. Caddy) never sees an implicit zero-byte response
+// as anything other than success.
+func (s *Server) handleHead(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
 }
