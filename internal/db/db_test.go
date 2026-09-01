@@ -935,3 +935,140 @@ func TestMigratesFromV6ToV7(t *testing.T) {
 		t.Errorf("list after archive = %+v, want one archived row", list)
 	}
 }
+
+// TestVariantRoundTrip writes humanize passes and reads them back with the
+// session, verifying the derived-data contract: variants attach to a message
+// by its bus seq, chain by index, and survive a reload in message order.
+func TestVariantRoundTrip(t *testing.T) {
+	d := openTemp(t)
+	sid, err := d.CreateSession(1)
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	if err := d.AppendMessage(sid, Message{Seq: 1, ChatMessage: llm.UserMessage("hi")}); err != nil {
+		t.Fatalf("AppendMessage: %v", err)
+	}
+	if err := d.AppendMessage(sid, Message{Seq: 2, ChatMessage: llm.AssistantMessage("some long original reply", "", nil)}); err != nil {
+		t.Fatalf("AppendMessage: %v", err)
+	}
+
+	pass0 := Variant{MessageSeq: 2, Index: 0, Source: -1, Content: "the first rewrite", PromptVersion: "plain-language-v1", CreatedAt: 3}
+	pass1 := Variant{MessageSeq: 2, Index: 1, Source: 0, Content: "the second rewrite", PromptVersion: "plain-language-v1", CreatedAt: 4}
+	failed := Variant{MessageSeq: 2, Index: 2, Source: 1, Error: "provider error", PromptVersion: "plain-language-v1", CreatedAt: 5}
+	for _, v := range []Variant{pass0, pass1, failed} {
+		if err := d.AppendVariant(sid, v); err != nil {
+			t.Fatalf("AppendVariant: %v", err)
+		}
+	}
+
+	got, err := d.LoadSession(sid)
+	if err != nil {
+		t.Fatalf("LoadSession: %v", err)
+	}
+	if len(got.Variants) != 3 {
+		t.Fatalf("variants = %d, want 3", len(got.Variants))
+	}
+	for i, want := range []Variant{pass0, pass1, failed} {
+		v := got.Variants[i]
+		if v.MessageSeq != want.MessageSeq || v.Index != want.Index || v.Source != want.Source ||
+			v.Content != want.Content || v.Error != want.Error || v.PromptVersion != want.PromptVersion || v.CreatedAt != want.CreatedAt {
+			t.Errorf("variant %d = %+v, want %+v", i, v, want)
+		}
+	}
+
+	// A second session never sees another session's variants.
+	sid2, err := d.CreateSession(2)
+	if err != nil {
+		t.Fatalf("CreateSession 2: %v", err)
+	}
+	got2, err := d.LoadSession(sid2)
+	if err != nil {
+		t.Fatalf("LoadSession 2: %v", err)
+	}
+	if len(got2.Variants) != 0 {
+		t.Errorf("session 2 variants = %d, want 0", len(got2.Variants))
+	}
+}
+
+// TestMigratesFromV8ToV9 creates a v8 database and verifies Open migrates it:
+// the variants table exists, pre-existing sessions still load, and the schema
+// version advances to 9.
+func TestMigratesFromV8ToV9(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "porter.db")
+
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open raw v8 db: %v", err)
+	}
+	_, err = raw.Exec(`
+		CREATE TABLE sessions (
+			id         INTEGER PRIMARY KEY AUTOINCREMENT,
+			created_at INTEGER NOT NULL,
+			archived_at_epoch_ms INTEGER NOT NULL DEFAULT 0,
+			name       TEXT    NOT NULL DEFAULT ''
+		);
+		CREATE TABLE messages (
+			session_id   INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+			seq          INTEGER NOT NULL,
+			role         TEXT    NOT NULL,
+			content      TEXT    NOT NULL DEFAULT '',
+			reasoning    TEXT    NOT NULL DEFAULT '',
+			tool_call_id TEXT    NOT NULL DEFAULT '',
+			tool_calls   TEXT    NOT NULL DEFAULT '[]',
+			started_at   INTEGER NOT NULL DEFAULT 0,
+			finished_at  INTEGER NOT NULL DEFAULT 0,
+			cancelled    INTEGER NOT NULL DEFAULT 0,
+			tool_output  TEXT    NOT NULL DEFAULT '',
+			PRIMARY KEY (session_id, seq)
+		);
+		CREATE TABLE queries (
+			session_id   INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+			turn_seq     INTEGER NOT NULL,
+			idx          INTEGER NOT NULL,
+			cached_input INTEGER NOT NULL DEFAULT 0,
+			uncached_input INTEGER NOT NULL DEFAULT 0,
+			output       INTEGER NOT NULL DEFAULT 0,
+			error        TEXT    NOT NULL DEFAULT '',
+			stopped      INTEGER NOT NULL DEFAULT 0,
+			PRIMARY KEY (session_id, turn_seq, idx)
+		);
+		PRAGMA user_version=8;
+	`)
+	if err != nil {
+		t.Fatalf("create v8 schema: %v", err)
+	}
+	res, err := raw.Exec(`INSERT INTO sessions (created_at) VALUES (7)`)
+	if err != nil {
+		t.Fatalf("insert v8 session: %v", err)
+	}
+	id, _ := res.LastInsertId()
+	if err := raw.Close(); err != nil {
+		t.Fatalf("close raw db: %v", err)
+	}
+
+	d, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open after v8: %v", err)
+	}
+	defer d.Close()
+
+	// The migrated database accepts variant writes.
+	if err := d.AppendVariant(id, Variant{MessageSeq: 1, Index: 0, Source: -1, Content: "rewritten", PromptVersion: "plain-language-v1", CreatedAt: 8}); err != nil {
+		t.Fatalf("AppendVariant after migration: %v", err)
+	}
+	got, err := d.LoadSession(id)
+	if err != nil {
+		t.Fatalf("LoadSession after migration: %v", err)
+	}
+	if len(got.Variants) != 1 || got.Variants[0].Content != "rewritten" {
+		t.Errorf("variants after migration = %+v, want the appended pass", got.Variants)
+	}
+
+	var v int
+	if err := d.db.QueryRow("PRAGMA user_version").Scan(&v); err != nil {
+		t.Fatalf("read user_version: %v", err)
+	}
+	if v != schemaVersion {
+		t.Errorf("user_version after migration = %d, want %d", v, schemaVersion)
+	}
+}

@@ -106,7 +106,7 @@
 		<div id="sse-processor"
 		     hx-ext="sse"
 		     sse-connect="/api/sessions/{{.Session}}/stream?since={{.Seq}}"
-		     sse-swap="message_committed,llm,tool_started,tool_result,tool_result_delta,tool_cancelled,turn_completed,exec_status,session_renamed"
+		     sse-swap="message_committed,llm,tool_started,tool_result,tool_result_delta,tool_cancelled,turn_completed,exec_status,session_renamed,variant_started,variant_ready"
 		     hx-swap="none"
 		     hx-on:htmx:sse-message="sseMessage(event)"
 		     hx-on:htmx:sse-open="onSSEOpen()"
@@ -750,6 +750,13 @@
   const renderedTurnErrors = new Set();
   const renderedTurnTokens = new Set();
   const renderedTurnStopped = new Set();
+  // variantState remembers every variant envelope applied this page load
+  // (keyed "msgSeq:idx" → the variant payload, null while pending), so a /view
+  // innerHTML swap can restore tabs whose envelopes arrived just before the
+  // swap wiped the DOM — the same problem renderedCommits solves for messages,
+  // minus the server-side render (in-flight and just-finished passes are not
+  // in the /view HTML yet).
+  const variantState = new Map();
 
   // A turn's outcome (error block or token line) is rendered once per turn,
   // keyed by the turn's user-message seq. /view renders past outcomes with
@@ -806,6 +813,13 @@
     // form submit can never yank the user back down.
     chat.addEventListener('htmx:afterSwap', function() {
       initReasoningBlocks(chat);
+      // Restore humanize variant tabs that a /view swap may have wiped: every
+      // envelope applied this page load is re-applied against the fresh DOM.
+      // Idempotent — tabs already rendered by /view are updated in place.
+      variantState.forEach(function(v, key) {
+        const parts = key.split(':');
+        setVariantTab(Number(parts[0]), Number(parts[1]), v);
+      });
       // A /view innerHTML swap can wipe live blocks appended before history
       // landed (e.g. opening the page mid-run); re-fetch in-flight runs so
       // running tool blocks are restored after every history render.
@@ -828,6 +842,35 @@
         if (turnRunning) seedLiveFromServer();
       }
       if (autoScroll) chat.scrollTop = chat.scrollHeight;
+    });
+    // Humanize variant tabs: clicking a tab switches the visible pane; the
+    // "+" button chains another plain-language pass from the latest version.
+    // One delegated listener covers both /view-rendered tabs (reload) and
+    // live-built tabs (variant envelopes), so no per-tab binding is needed.
+    chat.addEventListener('click', function(e) {
+      const tab = e.target.closest('.variant-tab');
+      if (tab) {
+        const bar = tab.closest('.variant-tabs');
+        const idx = tab.dataset.variant;
+        bar.querySelectorAll('.variant-tab').forEach(function(t) {
+          t.classList.toggle('variant-active', t === tab);
+        });
+        bar.querySelectorAll('.variant-pane').forEach(function(pane) {
+          pane.classList.toggle('variant-active', pane.dataset.variant === idx);
+        });
+        return;
+      }
+      const add = e.target.closest('.variant-add');
+      if (add) {
+        const bar = add.closest('.variant-tabs');
+        const app = document.getElementById('app');
+        const sess = app ? app.dataset.session : null;
+        if (sess && bar) {
+          fetch('/api/sessions/' + encodeURIComponent(sess) +
+                '/messages/' + encodeURIComponent(bar.dataset.msgSeq) +
+                '/humanize', { method: 'POST' });
+        }
+      }
     });
   }
 
@@ -1383,7 +1426,109 @@
       });
   }
 
-  function finalizeAssistant(m, html) {
+  // --- Humanize variant tabs ---
+  // Assistant replies can carry plain-language rewrite passes, shown as tabs
+  // above the message content: "Original" plus one "Humanized N" tab per pass.
+  // The first pass is automatic (started server-side at commit); more passes
+  // chain from the latest via the "+" button. /view renders tabs server-side
+  // (a reload shows the same tabs the live stream produced); live messages get
+  // theirs from variant_started / variant_ready envelopes on the bus. Tabs are
+  // derived data — they never touch history or the model's context.
+
+  function variantMessage(msgSeq) {
+    return chat.querySelector('.msg[data-msg-seq="' + msgSeq + '"]');
+  }
+
+  // ensureVariantBar wraps a message's committed content (or an empty slot)
+  // in the tab structure, returning the tabs container. Idempotent: a message
+  // that already has one is returned as-is.
+  function ensureVariantBar(msgSeq) {
+    const msg = variantMessage(msgSeq);
+    if (!msg) return null;
+    let bar = msg.querySelector('.variant-tabs');
+    if (bar) return bar;
+    const panes = document.createElement('div');
+    panes.className = 'variant-panes';
+    const orig = document.createElement('div');
+    orig.className = 'variant-pane variant-active';
+    orig.dataset.variant = '-1';
+    const content = msg.querySelector('.msg-content');
+    if (content) orig.appendChild(content);
+    panes.appendChild(orig);
+    bar = document.createElement('div');
+    bar.className = 'variant-tabs';
+    bar.dataset.msgSeq = String(msgSeq);
+    const origBtn = document.createElement('button');
+    origBtn.type = 'button';
+    origBtn.className = 'variant-tab variant-active';
+    origBtn.dataset.variant = '-1';
+    origBtn.textContent = 'Original';
+    const add = document.createElement('button');
+    add.type = 'button';
+    add.className = 'variant-add';
+    add.textContent = '+';
+    add.title = 'Humanize again (chained from the latest version)';
+    bar.appendChild(origBtn);
+    bar.appendChild(add);
+    bar.appendChild(panes);
+    msg.appendChild(bar);
+    return bar;
+  }
+
+  // setVariantTab adds or updates the tab for one pass. v is the api.Variant
+  // payload; null means the pass started (show a pending spinner until
+  // variant_ready fills it). Idempotent, so replayed envelopes (SSE reconnect)
+  // update an existing tab instead of duplicating it.
+  function setVariantTab(msgSeq, idx, v) {
+    // Record before touching the DOM so a /view swap can restore the tab.
+    variantState.set(msgSeq + ':' + idx, v);
+    const bar = ensureVariantBar(msgSeq);
+    if (!bar) return null;
+    let btn = bar.querySelector('.variant-tab[data-variant="' + idx + '"]');
+    if (!btn) {
+      btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'variant-tab';
+      btn.dataset.variant = String(idx);
+      btn.textContent = 'Humanized ' + (idx + 1);
+      // Keep the "+" button last.
+      bar.insertBefore(btn, bar.querySelector('.variant-add'));
+    }
+    let pane = bar.querySelector('.variant-pane[data-variant="' + idx + '"]');
+    if (!pane) {
+      pane = document.createElement('div');
+      pane.className = 'variant-pane';
+      pane.dataset.variant = String(idx);
+      bar.querySelector('.variant-panes').appendChild(pane);
+    }
+    if (!v) {
+      // Pass started: pending until variant_ready fills it.
+      btn.classList.add('variant-pending-tab');
+      btn.classList.remove('variant-failed');
+      btn.title = '';
+      pane.textContent = '';
+      pane.innerHTML = '<span class="variant-pending">Humanizing…</span>';
+    } else if (v.error) {
+      btn.classList.remove('variant-pending-tab');
+      btn.classList.add('variant-failed');
+      btn.title = 'Humanize pass ' + (idx + 1) + ' failed: ' + v.error;
+      pane.textContent = '';
+      pane.innerHTML = '<em class="variant-error">Humanize pass ' + (idx + 1) + ' failed: ' + escapeHTML(v.error) + '</em>';
+    } else {
+      btn.classList.remove('variant-pending-tab');
+      btn.classList.remove('variant-failed');
+      btn.title = '';
+      pane.textContent = '';
+      // v.html is the server-rendered markdown (same source as /view); fall
+      // back to the client renderer when absent. The .msg-content wrapper
+      // keeps the pane styled exactly like the rest of the chat (paragraph
+      // spacing, code blocks, tables).
+      pane.innerHTML = '<div class="msg-content">' + (v.html || mdText.render(v.content || '')) + '</div>';
+    }
+    return pane;
+  }
+
+  function finalizeAssistant(m, html, seq) {
     // Replace the live text with the committed version (server-rendered
     // markdown when supplied) and ensure tool calls are present. html is
     // carried on the message_committed envelope so the committed copy matches
@@ -1424,6 +1569,10 @@
       // committed content rather than an empty bubble.
       div = appendMessage('assistant', contentHTML);
     }
+    // Tag the element with the message's bus seq so humanize variant
+    // envelopes (variant_started / variant_ready) can find the right message
+    // and attach their tabs.
+    if (seq) div.dataset.msgSeq = seq;
     if (m.reasoning && !hadLiveReasoning) {
       const r = document.createElement('div');
       r.className = 'reasoning';
@@ -1581,7 +1730,7 @@
 		  chat.appendChild(sysDiv);
 		  hadNewContent = true;
 		} else if (m.role === 'assistant') {
-          finalizeAssistant(m, env.message_html);
+          finalizeAssistant(m, env.message_html, env.seq);
           hadNewContent = true;
         } else if (m.role === 'tool') {
           currentAssistant = null;
@@ -1607,6 +1756,16 @@
           insertToolResult(run.resultEl);
           hadNewContent = true;
         }
+        break;
+      case 'variant_started':
+        // A plain-language pass began: show a pending tab on the message.
+        // Idempotent — a replayed start (SSE reconnect) must not duplicate it.
+        if (env.variant) setVariantTab(env.variant.message_seq, env.variant.index, null);
+        break;
+      case 'variant_ready':
+        // A pass finished (or failed): fill its tab with the rewrite.
+        if (env.variant) setVariantTab(env.variant.message_seq, env.variant.index, env.variant);
+        hadNewContent = true;
         break;
       case 'llm':
         // Every live LLM envelope carries the session's monotonic live

@@ -44,7 +44,7 @@ func TestWebRendersRenameControl(t *testing.T) {
 		">Deploy notes<",
 		`id="rename-btn"`,
 		`id="rename-input"`,
-		`sse-swap="message_committed,llm,tool_started,tool_result,tool_result_delta,tool_cancelled,turn_completed,exec_status,session_renamed"`,
+		`sse-swap="message_committed,llm,tool_started,tool_result,tool_result_delta,tool_cancelled,turn_completed,exec_status,session_renamed,variant_started,variant_ready"`,
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("page missing %q", want)

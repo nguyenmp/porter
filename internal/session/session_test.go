@@ -15,6 +15,7 @@ import (
 	"porter/internal/codec"
 	"porter/internal/config"
 	"porter/internal/db"
+	"porter/internal/humanize"
 	"porter/internal/llm"
 	"porter/internal/mcp"
 	"porter/internal/tools"
@@ -1424,5 +1425,189 @@ func TestProviderExposesRemoteMCPServers(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("no exec request routed to the client")
+	}
+}
+
+// longReply is an assistant reply that clears the auto-humanize thresholds
+// (>= MinWords words and >= MinSentences sentences, prose not code).
+func longReply() string {
+	return strings.Repeat("This is a perfectly ordinary sentence with more than enough words to qualify. ", 6)
+}
+
+// llmStub returns a streaming Chat Completions server that replies with long
+// on every request. The turn and the humanize pass share it, so the rewritten
+// variant equals the original reply.
+func llmStub(t *testing.T, long string) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprintf(w,
+			`data: {"choices":[{"delta":{"content":%q},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":3}}`+"\n\n"+
+				`data: [DONE]`+"\n", long)
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// waitVariant drains a bus subscription until a variant_ready for the given
+// index arrives (or the deadline hits), returning every variant envelope seen.
+func waitVariant(t *testing.T, stream <-chan api.Envelope, wantIdx int) (started, ready *api.Variant) {
+	t.Helper()
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case env := <-stream:
+			switch env.Kind {
+			case api.KindVariantStarted:
+				if env.Variant != nil {
+					started = env.Variant
+				}
+			case api.KindVariant:
+				if env.Variant != nil && env.Variant.Index == wantIdx {
+					return started, env.Variant
+				}
+			}
+		case <-deadline:
+			t.Fatalf("timed out waiting for variant %d; started=%+v ready=%+v", wantIdx, started, ready)
+		}
+	}
+}
+
+// TestCommitAutoHumanizesLongReply drives the automatic plain-language pass
+// end to end: a long assistant reply qualifies at commit, the background pass
+// runs against the LLM stub, and the bus carries variant_started then
+// variant_ready with the rewrite persisted.
+func TestCommitAutoHumanizesLongReply(t *testing.T) {
+	long := longReply()
+	srv := llmStub(t, long)
+	client := llm.NewClient(config.Config{BaseURL: srv.URL + "/v1", Model: "m", APIKey: "k"}, nil)
+	nctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	st := NewStore(memPersister(t), nil, nctx)
+	s, err := st.Create(client)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	ctx, stop := context.WithCancel(context.Background())
+	defer stop()
+	stream := s.From(ctx, 0)
+	s.Enqueue("hello")
+
+	started, ready := waitVariant(t, stream, 0)
+	if started == nil || started.Index != 0 || started.Source != -1 {
+		t.Errorf("variant_started = %+v, want first pass (idx 0, source -1)", started)
+	}
+	// Rewrite trims its output, so compare against the trimmed source.
+	want := strings.TrimSpace(long)
+	if ready.Content != want {
+		t.Errorf("variant_ready content = %q, want the rewrite %q", ready.Content, want)
+	}
+	if ready.Error != "" {
+		t.Errorf("variant_ready error = %q, want none", ready.Error)
+	}
+	if ready.HTML == "" {
+		t.Errorf("variant_ready html = empty, want server-rendered markdown")
+	}
+
+	// The terminal pass is persisted: a reload renders the same tab.
+	ps, err := s.Persisted()
+	if err != nil {
+		t.Fatalf("Persisted: %v", err)
+	}
+	if len(ps.Variants) != 1 || ps.Variants[0].Content != want || ps.Variants[0].PromptVersion != humanize.PromptVersion {
+		t.Errorf("persisted variants = %+v, want the completed pass", ps.Variants)
+	}
+}
+
+// TestManualHumanizeChainsFromLatest verifies the "+" path: a manual pass on
+// a message that already has a variant chains from that variant (source = its
+// index) and allocates the next index, so passes never collide.
+func TestManualHumanizeChainsFromLatest(t *testing.T) {
+	long := longReply()
+	srv := llmStub(t, long)
+	client := llm.NewClient(config.Config{BaseURL: srv.URL + "/v1", Model: "m", APIKey: "k"}, nil)
+	nctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	st := NewStore(memPersister(t), nil, nctx)
+	s, err := st.Create(client)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	ctx, stop := context.WithCancel(context.Background())
+	defer stop()
+	stream := s.From(ctx, 0)
+	// Commit the turn's messages directly; the long reply's commit triggers
+	// the automatic first pass.
+	if err := s.commit(llm.UserMessage("hello")); err != nil {
+		t.Fatalf("commit user: %v", err)
+	}
+	if err := s.commit(llm.AssistantMessage(long, "", nil)); err != nil {
+		t.Fatalf("commit assistant: %v", err)
+	}
+	waitVariant(t, stream, 0) // let the auto pass finish
+
+	if err := s.HumanizeMessage(2); err != nil {
+		t.Fatalf("HumanizeMessage: %v", err)
+	}
+	started, ready := waitVariant(t, stream, 1)
+	if started == nil || started.Index != 1 || started.Source != 0 {
+		t.Errorf("manual variant_started = %+v, want idx 1 chained from idx 0", started)
+	}
+	if ready.Index != 1 || ready.Source != 0 {
+		t.Errorf("manual variant_ready = %+v, want idx 1 chained from idx 0", ready)
+	}
+
+	ps, err := s.Persisted()
+	if err != nil {
+		t.Fatalf("Persisted: %v", err)
+	}
+	if len(ps.Variants) != 2 || ps.Variants[1].Index != 1 || ps.Variants[1].Source != 0 {
+		t.Errorf("persisted variants = %+v, want two chained passes", ps.Variants)
+	}
+}
+
+// TestHumanizeSkipsShortReplies ensures the auto pass never fires for replies
+// under the thresholds: no variant envelopes, no rows, no extra LLM calls.
+func TestHumanizeSkipsShortReplies(t *testing.T) {
+	srv := llmStub(t, longReply())
+	client := llm.NewClient(config.Config{BaseURL: srv.URL + "/v1", Model: "m", APIKey: "k"}, nil)
+	nctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	st := NewStore(memPersister(t), nil, nctx)
+	s, err := st.Create(client)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	ctx, stop := context.WithCancel(context.Background())
+	defer stop()
+	stream := s.From(ctx, 0)
+	if err := s.commit(llm.UserMessage("hello")); err != nil {
+		t.Fatalf("commit user: %v", err)
+	}
+	if err := s.commit(llm.AssistantMessage("done", "", nil)); err != nil {
+		t.Fatalf("commit assistant: %v", err)
+	}
+
+	// Drain for a moment and assert no variant activity appeared.
+	deadline := time.After(300 * time.Millisecond)
+	for {
+		select {
+		case env := <-stream:
+			if env.Kind == api.KindVariantStarted || env.Kind == api.KindVariant {
+				t.Fatalf("short reply produced a variant envelope: %+v", env)
+			}
+		case <-deadline:
+			ps, err := s.Persisted()
+			if err != nil {
+				t.Fatalf("Persisted: %v", err)
+			}
+			if len(ps.Variants) != 0 {
+				t.Errorf("persisted variants = %+v, want none for a short reply", ps.Variants)
+			}
+			return
+		}
 	}
 }

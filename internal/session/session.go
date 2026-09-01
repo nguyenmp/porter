@@ -21,6 +21,7 @@ import (
 	"porter/internal/api"
 	"porter/internal/db"
 	"porter/internal/exec"
+	"porter/internal/humanize"
 	"porter/internal/llm"
 	"porter/internal/mcp"
 	"porter/internal/render"
@@ -51,6 +52,10 @@ type Persister interface {
 	// message stream (a failed request produces no message). It is what lets a
 	// reload rebuild per-turn token totals and failed-turn errors.
 	AppendQuery(sessionID int64, q db.Query) error
+	// AppendVariant writes one completed humanize pass (a rewritten assistant
+	// reply) for a committed message. Variants are derived data — view-only
+	// attachments, never part of history or the model's context.
+	AppendVariant(sessionID int64, v db.Variant) error
 	// LoadSession returns a session's full persisted state: its creation time,
 	// every committed message in seq order, every query record, and the highest
 	// seq written.
@@ -387,6 +392,15 @@ type Session struct {
 	// a full queue drops the notice (real-time status still streams via
 	// KindExecStatus).
 	notices chan string
+
+	// humanize tracks in-flight plain-language passes. variantIdx is the next
+	// pass index to allocate per message, seeded from the persisted count on
+	// first use so a restarted server keeps numbering where it left off; the
+	// counter is what makes concurrent passes (auto + manual) never collide on
+	// an index. It is guarded by its own mutex so a pass running on a
+	// background goroutine never contends with the scheduler's history lock.
+	humanizeMu sync.Mutex
+	variantIdx map[uint64]int
 }
 
 // toolRun is the accumulated state of one in-flight tool execution: what was
@@ -421,6 +435,7 @@ func newSession(id string, client *llm.Client, js tools.Provider, persist Persis
 		activeExec:  "local",
 		queue:       make(chan string, 16),
 		notices:     make(chan string, 32),
+		variantIdx:  map[uint64]int{},
 	}
 }
 
@@ -775,8 +790,22 @@ func (s *Session) commit(m llm.ChatMessage) error {
 	// renders the same size/truncation/recall badge /view renders from the
 	// persisted copy.
 	env.ToolOutput = m.ToolOutput
-	_, err := s.commitEnv(env)
-	return err
+	seq, err := s.commitEnv(env)
+	if err != nil {
+		return err
+	}
+	// Auto humanize: a long plain-prose assistant reply gets a plain-language
+	// pass in the background, shown as a "Humanized" tab next to the original.
+	// The pass runs off the turn queue (a fresh LLM request carrying just the
+	// text), so it never blocks the turn or the next message; the scheduler
+	// broadcasts variant_started here (same goroutine, so it always follows
+	// the message commit), and the pass goroutine broadcasts variant_ready
+	// with the rewrite when it finishes. Intermediate assistant messages that
+	// carry tool calls are never humanized — only the final plain-text reply.
+	if s.client != nil && m.Role == "assistant" && m.Content != "" && len(m.ToolCalls) == 0 && humanize.Should(m.Content) {
+		s.startHumanize(seq, m.Content, -1)
+	}
+	return nil
 }
 
 // commitEnv is the tail of commit: stamp the envelope with the next bus
@@ -816,6 +845,185 @@ func (s *Session) commitEnv(env api.Envelope) (uint64, error) {
 	s.mu.Unlock()
 	s.sendTo(subs, env)
 	return next, nil
+}
+
+// startHumanize launches a background plain-language pass over content,
+// attaching it to the committed assistant message at msgSeq. source is the
+// variant index the pass chains from (-1 = the original message). The pass
+// announces itself on the bus (variant_started) before it runs, so the UI can
+// show a pending tab immediately; its terminal state is broadcast as
+// variant_ready and persisted when done. A failure is not fatal: the variant
+// is persisted with its error so the tab renders as failed and "+" can retry
+// from the previous good version.
+func (s *Session) startHumanize(msgSeq uint64, content string, source int) {
+	// A session without an LLM client (tests, embedders) cannot run a pass;
+	// the auto path already guards before calling, this covers the manual
+	// endpoint defensively.
+	if s.client == nil {
+		log.Printf("humanize session %s message %d: no LLM client", s.id, msgSeq)
+		return
+	}
+	// Index allocation: the automatic first pass (source -1) claims index 0 —
+	// the message just committed, so no variant can exist for it yet. Manual
+	// passes seed the counter from the persisted count on first use, so a
+	// restarted server keeps numbering where it left off and concurrent passes
+	// never collide.
+	s.humanizeMu.Lock()
+	idx := s.variantIdx[msgSeq]
+	s.variantIdx[msgSeq] = idx + 1
+	s.humanizeMu.Unlock()
+	if source >= 0 && idx == 0 {
+		// Manual pass on a message with no in-memory counter yet: seed from
+		// the persisted count (a restarted server, or a message humanized
+		// before this session loaded).
+		idx = s.seedVariantIdx(msgSeq)
+	}
+	s.commitVariant(api.Envelope{
+		Kind: api.KindVariantStarted,
+		Variant: &api.Variant{
+			MessageSeq: msgSeq,
+			Index:      idx,
+			Source:     source,
+		},
+	}, nil)
+	go s.runHumanize(msgSeq, idx, source, content)
+}
+
+// seedVariantIdx returns the next free pass index for a message by counting
+// its persisted variants. It is only used when the in-memory counter is empty
+// for a message that already has variants (e.g. after a restart), so it is a
+// rare full-session read, not per-pass overhead.
+func (s *Session) seedVariantIdx(msgSeq uint64) int {
+	ps, err := s.persist.LoadSession(s.dbID)
+	n := 0
+	if err == nil {
+		for _, v := range ps.Variants {
+			if v.MessageSeq == msgSeq && v.Index >= n {
+				n = v.Index + 1
+			}
+		}
+	}
+	s.humanizeMu.Lock()
+	if cur, ok := s.variantIdx[msgSeq]; ok && cur > n {
+		n = cur
+	}
+	s.variantIdx[msgSeq] = n + 1
+	s.humanizeMu.Unlock()
+	return n
+}
+
+// runHumanize is the background pass itself: one plain-language rewrite over
+// the given content, then a variant_ready commit with the result (or the
+// error). It runs on its own goroutine with its own context, so a slow
+// provider never blocks the turn queue or the bus.
+func (s *Session) runHumanize(msgSeq uint64, idx, source int, content string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	out, err := humanize.Rewrite(ctx, s.client, content)
+	if err != nil {
+		log.Printf("humanize session %s message %d: %v", s.id, msgSeq, err)
+		s.commitVariant(api.Envelope{
+			Kind: api.KindVariant,
+			Variant: &api.Variant{
+				MessageSeq:    msgSeq,
+				Index:         idx,
+				Source:        source,
+				Error:         err.Error(),
+				PromptVersion: humanize.PromptVersion,
+			},
+		}, &db.Variant{
+			MessageSeq:    msgSeq,
+			Index:         idx,
+			Source:        source,
+			Error:         err.Error(),
+			PromptVersion: humanize.PromptVersion,
+			CreatedAt:     time.Now().UnixMilli(),
+		})
+		return
+	}
+	s.commitVariant(api.Envelope{
+		Kind: api.KindVariant,
+		Variant: &api.Variant{
+			MessageSeq:    msgSeq,
+			Index:         idx,
+			Source:        source,
+			Content:       out,
+			HTML:          render.Markdown(out),
+			PromptVersion: humanize.PromptVersion,
+		},
+	}, &db.Variant{
+		MessageSeq:    msgSeq,
+		Index:         idx,
+		Source:        source,
+		Content:       out,
+		PromptVersion: humanize.PromptVersion,
+		CreatedAt:     time.Now().UnixMilli(),
+	})
+}
+
+// commitVariant stamps a variant envelope with the next bus position, buffers
+// it for replay, and broadcasts it. Terminal variants (v != nil) are persisted
+// first, fail-fast like a message commit; variant_started (v == nil) is
+// live-and-replay-only — in-flight state is not persisted, so a pass that
+// never finishes (e.g. a restart) simply leaves no row and /view renders no
+// tab. Variants ride the same bus counter as messages so their order relative
+// to commits is well-defined and a reconnect replays a pass's start marker.
+// Unlike commitEnv, the live tail is NOT cleared: a variant commit is
+// unrelated to the in-flight assistant block and must not wipe it.
+func (s *Session) commitVariant(env api.Envelope, v *db.Variant) (uint64, error) {
+	s.mu.Lock()
+	s.logSeq++
+	next := s.logSeq
+	env.Seq = next
+	s.mu.Unlock()
+
+	if v != nil {
+		if err := s.persist.AppendVariant(s.dbID, *v); err != nil {
+			return 0, fmt.Errorf("persist variant: %w", err)
+		}
+	}
+
+	s.mu.Lock()
+	s.bufferLocked(env)
+	subs := s.subs
+	s.mu.Unlock()
+	s.sendTo(subs, env)
+	return next, nil
+}
+
+// HumanizeMessage starts a manual plain-language pass on a committed assistant
+// message, chaining from its latest variant (or the original message when none
+// exist). It is the "+" button's backend: the pass runs in the background like
+// the automatic one. It returns an error when the message is not a humanizable
+// assistant reply (so the handler can 404).
+func (s *Session) HumanizeMessage(msgSeq uint64) error {
+	ps, err := s.persist.LoadSession(s.dbID)
+	if err != nil {
+		return err
+	}
+	var content string
+	var found bool
+	for _, m := range ps.Messages {
+		if m.Seq == msgSeq && m.Role == "assistant" && m.Content != "" && len(m.ToolCalls) == 0 {
+			content = m.Content
+			found = true
+			break
+		}
+	}
+	if !found {
+		return fmt.Errorf("no humanizable assistant message at seq %d", msgSeq)
+	}
+	// Chain from the latest variant that produced content; a failed pass has
+	// none, so it falls back to the previous good version (or the original).
+	source := -1
+	for _, v := range ps.Variants {
+		if v.MessageSeq == msgSeq && v.Content != "" && v.Index > source {
+			source = v.Index
+			content = v.Content
+		}
+	}
+	s.startHumanize(msgSeq, content, source)
+	return nil
 }
 
 // commitQuery persists one request's usage/error under the given turn, at the

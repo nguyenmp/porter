@@ -22,7 +22,7 @@ var ErrNotFound = errors.New("db: session not found")
 
 // schemaVersion is the current schema revision, tracked in PRAGMA user_version.
 // Bump it and extend migrate when the schema changes.
-const schemaVersion = 8
+const schemaVersion = 9
 
 // DB wraps the SQLite database handle. It deliberately uses a single
 // connection: pragmas like foreign_keys are per-connection, and a single
@@ -225,6 +225,35 @@ ALTER TABLE queries DROP COLUMN input;
 			return fmt.Errorf("set user_version: %w", err)
 		}
 	}
+	if v < 9 {
+		// v9: humanize variants — rewritten copies of assistant replies, shown
+		// as extra tabs in the web UI. They are derived data (view-only, never
+		// part of the model's context or the message stream): each row is one
+		// completed pass, keyed by the rewritten message's bus seq and the pass
+		// index. Only terminal passes are stored — a pass that never finished
+		// (e.g. a server restart) simply leaves no row, and the live
+		// variant_started/variant_ready envelopes carry in-flight state.
+		const ddl = `
+CREATE TABLE IF NOT EXISTS variants (
+	session_id     INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+	message_seq    INTEGER NOT NULL,
+	idx            INTEGER NOT NULL,
+	source         INTEGER NOT NULL DEFAULT -1,  -- pass this chains from; -1 = the original message
+	content        TEXT    NOT NULL DEFAULT '',
+	error          TEXT    NOT NULL DEFAULT '',
+	prompt_version TEXT    NOT NULL DEFAULT '',
+	created_at     INTEGER NOT NULL DEFAULT 0,
+	PRIMARY KEY (session_id, message_seq, idx)
+);
+CREATE INDEX IF NOT EXISTS idx_variants_message ON variants(session_id, message_seq);
+`
+		if _, err := d.db.Exec(ddl); err != nil {
+			return fmt.Errorf("apply schema v9: %w", err)
+		}
+		if _, err := d.db.Exec("PRAGMA user_version=9"); err != nil {
+			return fmt.Errorf("set user_version: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -256,6 +285,32 @@ type Query struct {
 	Stopped bool
 }
 
+// Variant is one completed humanize pass on an assistant message: a rewritten
+// copy shown as an extra tab in the web UI. Variants are derived data — they
+// are never part of history (the model's context or the message stream) and
+// never resubmitted to the model; they are view-only attachments to the
+// message they rewrite.
+type Variant struct {
+	// MessageSeq is the bus seq of the assistant message this variant rewrites.
+	MessageSeq uint64
+	// Index is the pass number: 0 is the automatic first pass, 1 the second
+	// (chained from pass 0), and so on.
+	Index int
+	// Source is the index of the variant this pass chained from, or -1 when it
+	// rewrote the original message directly.
+	Source int
+	// Content is the rewritten markdown. Empty when the pass failed.
+	Content string
+	// Error is set when the pass failed, so the UI can render the tab as
+	// failed (and the "+" retry chains from the previous good version).
+	Error string
+	// PromptVersion is the humanize prompt revision that produced this pass
+	// (see humanize.PromptVersion).
+	PromptVersion string
+	// CreatedAt is the epoch-ms time the pass completed.
+	CreatedAt int64
+}
+
 // Session is the full persisted state of one session: its creation time, all
 // committed messages in seq order, and every per-request usage/error record.
 // MaxSeq is the highest seq written, which is where a restarted session resumes
@@ -270,6 +325,8 @@ type Session struct {
 	Name     string
 	Messages []Message
 	Queries  []Query
+	// Variants are the session's completed humanize passes, in message order.
+	Variants []Variant
 	MaxSeq   uint64
 }
 
@@ -360,6 +417,21 @@ func (d *DB) AppendQuery(sessionID int64, q Query) error {
 	return nil
 }
 
+// AppendVariant writes one completed humanize pass for a committed assistant
+// message. Index is unique per message; a pass that failed is still stored
+// (with its error) so the UI can render the tab as failed.
+func (d *DB) AppendVariant(sessionID int64, v Variant) error {
+	_, err := d.db.Exec(
+		`INSERT INTO variants (session_id, message_seq, idx, source, content, error, prompt_version, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		sessionID, v.MessageSeq, v.Index, v.Source, v.Content, v.Error, v.PromptVersion, v.CreatedAt,
+	)
+	if err != nil {
+		return fmt.Errorf("insert variant: %w", err)
+	}
+	return nil
+}
+
 // LoadSession returns a session's full persisted state, or ErrNotFound if the
 // session does not exist.
 func (d *DB) LoadSession(id int64) (Session, error) {
@@ -412,6 +484,25 @@ func (d *DB) LoadSession(id int64) (Session, error) {
 	// before issuing the queries query (a second query cannot start while a
 	// result set is still open on the one connection).
 	rows.Close()
+	vrows, err := d.db.Query(
+		`SELECT message_seq, idx, source, content, error, prompt_version, created_at
+		 FROM variants WHERE session_id = ? ORDER BY message_seq ASC, idx ASC`, id)
+	if err != nil {
+		return Session{}, fmt.Errorf("load variants for %d: %w", id, err)
+	}
+	for vrows.Next() {
+		var v Variant
+		if err := vrows.Scan(&v.MessageSeq, &v.Index, &v.Source, &v.Content, &v.Error, &v.PromptVersion, &v.CreatedAt); err != nil {
+			vrows.Close()
+			return Session{}, fmt.Errorf("scan variant: %w", err)
+		}
+		s.Variants = append(s.Variants, v)
+	}
+	if err := vrows.Err(); err != nil {
+		vrows.Close()
+		return Session{}, fmt.Errorf("iterate variants: %w", err)
+	}
+	vrows.Close()
 	qrows, err := d.db.Query(
 		`SELECT turn_seq, idx, cached_input, uncached_input, output, error, stopped
 		 FROM queries WHERE session_id = ? ORDER BY turn_seq ASC, idx ASC`, id)

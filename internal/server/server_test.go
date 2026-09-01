@@ -3633,3 +3633,75 @@ func TestReadCreateRequestReposJSON(t *testing.T) {
 		}
 	}
 }
+
+// longLLM is a streaming handler whose reply is long enough to trigger the
+// auto humanize pass; the same text also serves as the pass's rewrite, so the
+// variant renders deterministically.
+func longLLM() http.HandlerFunc {
+	long := strings.Repeat("This is a perfectly ordinary sentence with more than enough words to qualify. ", 6)
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprintf(w,
+			`data: {"choices":[{"delta":{"content":%q},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":2}}`+"\n\n"+
+				`data: [DONE]`+"\n", long)
+	}
+}
+
+// TestViewRendersHumanizeTabs drives the automatic plain-language pass end to
+// end through the server and verifies /view renders the variant tab bar —
+// Original + a Humanized tab with the rewrite — exactly as the live stream
+// produced it, so a reload shows the same tabs.
+func TestViewRendersHumanizeTabs(t *testing.T) {
+	srv := newTestServer(t, longLLM())
+	c := client.New(srv.URL)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	info, err := c.Create(ctx)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := c.Append(ctx, info.ID, "write a long explanation"); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+
+	// Wait for the turn AND the background pass to finish.
+	var ready *api.Variant
+	err = c.Subscribe(ctx, info.ID, info.Seq, func(env api.Envelope) {
+		if env.Kind == api.KindVariant && env.Variant != nil {
+			ready = env.Variant
+		}
+	}, func(env api.Envelope) bool { return ready != nil })
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	if ready == nil || ready.Error != "" {
+		t.Fatalf("variant_ready = %+v, want a successful pass", ready)
+	}
+
+	resp, err := http.Get(srv.URL + "/api/sessions/" + info.ID + "/view")
+	if err != nil {
+		t.Fatalf("GET view: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	s := string(body)
+
+	for _, want := range []string{
+		`class="variant-tabs"`,
+		`class="variant-tab variant-active" data-variant="-1">Original`,
+		`data-variant="0">Humanized 1`,
+		`class="variant-add"`,
+		`data-msg-seq="`,
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("view missing %q", want)
+		}
+	}
+	if strings.Contains(s, "Humanizing…") {
+		t.Errorf("view shows a pending pass; the pass already completed")
+	}
+}

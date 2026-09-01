@@ -170,6 +170,34 @@ its command, and the partial output is committed to history marked *cancelled*
 so a reload (and the model, on the next turn) sees the run was aborted rather
 than completed. The backend surface is `POST /api/sessions/{id}/cancel/{call_id}`.
 
+### Humanized variants (plain language)
+
+Long assistant replies (roughly 4+ sentences / 60+ words of prose) get a
+plain-language rewrite in the background, shown as tabs above the message in
+the web UI: **Original** stays the default, and each pass adds a **Humanized
+N** tab. The first pass is automatic — the server kicks it off the moment the
+reply commits, on its own goroutine with its own LLM request carrying just the
+text, so it never blocks the turn or the next message. A **+** button on any
+variant tab chains another pass from the latest version, so you can keep
+humanizing more and more if you want.
+
+The rewrite is derived data, not conversation: variants are never part of
+history, never resubmitted to the model, and never cost a turn. They are
+attached to the message by its bus seq and persisted in a `variants` table
+(schema v9), so a reload renders the same tabs the live stream produced;
+in-flight passes ride the bus as `variant_started` / `variant_ready` envelopes
+and are simply absent from a reload if they never finished (e.g. a restart).
+A failed pass renders its tab as failed and the **+** retry chains from the
+previous good version.
+
+The prompt is hard-coded in `internal/humanize` (distilled from the
+plain-language skill — no web fetches, no commentary, markdown preserved,
+facts and code untouched) and stamped on every pass as `prompt_version`, so
+old tabs still explain themselves when you tweak the prompt. The trigger
+thresholds (`MinWords`, `MinSentences`, code-block detection) and the prompt
+live there too. The backend surface is
+`POST /api/sessions/{id}/messages/{seq}/humanize`.
+
 ### Quiet REPL logs
 
 In the REPL the human-readable conversation goes to stdout while the structured JSONL event stream (plus progress lines) goes to stderr. When run interactively through a container, both land on the same terminal and the JSONL can get noisy. Set `PORTER_LOG=/path/to/porter.log` in `.env` to redirect that stream to a file instead — the REPL then only prints the conversation. When running via `make shell` (which mounts the repo at `/app`), a relative path like `porter.log` is written into the repo and gitignored.

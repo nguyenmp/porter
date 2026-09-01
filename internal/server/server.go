@@ -152,6 +152,7 @@ var templates = template.Must(template.New("").Funcs(template.FuncMap{
 	"argsSnippet":    argsSnippet,
 	"tokenLine":      tokenLine,
 	"fmtBytes":       fmtBytes,
+	"add1":           func(n int) int { return n + 1 },
 }).ParseFS(webFS, "web/*.tmpl"))
 
 // pageData is the data passed to every page template.
@@ -214,7 +215,10 @@ type viewFooter struct {
 // stream does.
 type viewItem struct {
 	Message *llm.ChatMessage
-	Footer  *viewFooter
+	// Seq is the message's bus seq, tagged on the rendered element so the
+	// live client can attach humanize variant tabs to the right message.
+	Seq    uint64
+	Footer *viewFooter
 }
 
 // viewData is passed to the view fragment template. Items is the session's
@@ -223,6 +227,9 @@ type viewItem struct {
 type viewData struct {
 	Items []viewItem
 	Tools map[string]ToolRunInfo
+	// Variants maps an assistant message's bus seq to its completed humanize
+	// passes, so the view renders the same variant tabs the live stream does.
+	Variants map[uint64][]db.Variant
 }
 
 // Server owns the LLM client and all sessions.
@@ -305,6 +312,7 @@ func (s *Server) Handler() http.Handler {
 	r.Post(api.SessionArchivePath, s.handleArchive)
 	r.Post(api.SessionUnarchivePath, s.handleUnarchive)
 	r.Post(api.SessionRenamePath, s.handleRename)
+	r.Post(api.SessionHumanizePath, s.handleHumanize)
 	r.Post(api.SessionExecContextPath, s.handleExecContext)
 	r.Get(api.SessionExecStatusPath, s.handleExecStatus)
 	r.Post(api.SessionExecSelectPath, s.handleExecSelect)
@@ -469,6 +477,28 @@ func readAppendContent(r *http.Request) (string, error) {
 		return "", fmt.Errorf("invalid request: %w", err)
 	}
 	return req.Content, nil
+}
+
+// handleHumanize starts a manual plain-language pass on a committed assistant
+// message (the "+" button in the web UI). It validates the message exists and
+// is humanizable, then returns 202 — the pass runs in the background and the
+// client tracks it via variant_started / variant_ready envelopes on the bus.
+func (s *Server) handleHumanize(w http.ResponseWriter, r *http.Request) {
+	ses, ok := s.store.Get(chi.URLParam(r, "id"))
+	if !ok {
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+	seq, err := strconv.ParseUint(chi.URLParam(r, "seq"), 10, 64)
+	if err != nil {
+		http.Error(w, "invalid message seq", http.StatusBadRequest)
+		return
+	}
+	if err := ses.HumanizeMessage(seq); err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	w.WriteHeader(http.StatusAccepted)
 }
 
 // handleHistory returns the session's authoritative history and seq.
@@ -841,7 +871,7 @@ func (s *Server) handleView(w http.ResponseWriter, r *http.Request) {
 			curTurn = m.Seq
 		}
 		cm := m.ChatMessage
-		items = append(items, viewItem{Message: &cm})
+		items = append(items, viewItem{Message: &cm, Seq: m.Seq})
 		for _, c := range m.ToolCalls {
 			tools[c.ID] = ToolRunInfo{Name: c.Function.Name, Arguments: c.Function.Arguments}
 		}
@@ -861,9 +891,14 @@ func (s *Server) handleView(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	variants := make(map[uint64][]db.Variant)
+	for _, v := range ps.Variants {
+		variants[v.MessageSeq] = append(variants[v.MessageSeq], v)
+	}
 	render(w, "view.tmpl", viewData{
-		Items: items,
-		Tools: tools,
+		Items:    items,
+		Tools:    tools,
+		Variants: variants,
 	})
 }
 

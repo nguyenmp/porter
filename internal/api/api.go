@@ -62,6 +62,13 @@ const (
 	// back to the first-message preview. Renaming an archived session keeps it
 	// archived.
 	SessionRenamePath = "/api/sessions/{id}/rename"
+	// SessionHumanizePath runs a plain-language humanize pass on a committed
+	// assistant message, adding another variant tab: POST. The pass chains
+	// from the message's latest variant (or the original message when none
+	// exist) and runs in the background; the response is accepted before the
+	// pass finishes, and the UI tracks it via variant_started / variant_ready
+	// envelopes on the bus.
+	SessionHumanizePath = "/api/sessions/{id}/messages/{seq}/humanize"
 	// SessionExecContextPath registers the environment context of the connected
 	// execution provider (system, working directory, files, skills): POST.
 	SessionExecContextPath = "/api/sessions/{id}/exec/context"
@@ -274,6 +281,16 @@ const (
 	// replayed, because a freshly loaded page gets the name from GET
 	// /api/sessions.
 	KindSessionRenamed = "session_renamed"
+	// KindVariantStarted announces that a humanize pass on a committed
+	// assistant message has begun, so the UI can show a pending tab. The pass
+	// itself is derived data: it is not a message, never enters history or the
+	// model's context, and is not persisted until it completes.
+	KindVariantStarted = "variant_started"
+	// KindVariant carries the terminal state of a humanize pass: its rewritten
+	// content (variant_ready), or the error when the pass failed. The terminal
+	// variant is also persisted, so a reload renders the same tabs the live
+	// stream produced.
+	KindVariant = "variant_ready"
 )
 
 // Envelope is a single NDJSON line on a session's event bus. Kind selects which
@@ -309,11 +326,15 @@ type Envelope struct {
 	// KindMessage commit, so the live UI renders the same badge /view renders
 	// from the persisted copy.
 	ToolOutput *llm.ToolOutputMeta `json:"tool_output,omitempty"` // KindToolResult, KindMessage
-	Delta      string              `json:"delta,omitempty"`       // KindToolResultDelta
-	StartedAt  int64               `json:"started_at,omitempty"`  // KindToolStarted, KindToolResult
-	FinishedAt int64               `json:"finished_at,omitempty"` // KindToolResult
-	TurnID     int64               `json:"turn_id,omitempty"`     // KindTurnDone
-	TurnSeq    uint64              `json:"turn_seq,omitempty"`    // KindTurnDone (the user message seq that started the turn)
+	// Variant is one humanize pass on a committed assistant message: set on
+	// KindVariantStarted (with no content yet) and KindVariant (with the
+	// rewrite or the error).
+	Variant    *Variant `json:"variant,omitempty"`     // KindVariantStarted, KindVariant
+	Delta      string   `json:"delta,omitempty"`       // KindToolResultDelta
+	StartedAt  int64    `json:"started_at,omitempty"`  // KindToolStarted, KindToolResult
+	FinishedAt int64    `json:"finished_at,omitempty"` // KindToolResult
+	TurnID     int64    `json:"turn_id,omitempty"`     // KindTurnDone
+	TurnSeq    uint64   `json:"turn_seq,omitempty"`    // KindTurnDone (the user message seq that started the turn)
 	// CachedInput/UncachedInput are the turn's prompt-token split (cache hits
 	// vs misses); Output is its completion tokens. Total input is their sum,
 	// derived where display needs it. KindTurnDone.
@@ -348,6 +369,32 @@ type Envelope struct {
 	// cleared back to the preview fallback). KindSessionRenamed.
 	SessionName string `json:"session_name,omitempty"` // KindSessionRenamed
 	Queue       int    `json:"queue,omitempty"`        // KindMessage (user)
+}
+
+// Variant is one humanize pass on a committed assistant message, as broadcast
+// on the bus. It is derived data: a rewritten copy shown as an extra tab in
+// the web UI, never part of history or the model's context. KindVariantStarted
+// announces a pass beginning (the UI shows a pending tab); KindVariant carries
+// its result. Terminal variants are also persisted and rendered by /view, so a
+// reload shows the same tabs the live stream produced.
+type Variant struct {
+	// MessageSeq is the bus seq of the assistant message being rewritten.
+	MessageSeq uint64 `json:"message_seq"`
+	// Index is the pass number: 0 is the automatic first pass, 1 the second
+	// (chained from pass 0), and so on.
+	Index int `json:"index"`
+	// Source is the pass this chains from; -1 = the original message.
+	Source int `json:"source"`
+	// Content is the rewritten markdown (KindVariant only).
+	Content string `json:"content,omitempty"`
+	// HTML is the server-rendered markdown of Content, so the live client
+	// renders the variant exactly as /view would (KindVariant only).
+	HTML string `json:"html,omitempty"`
+	// Error is set when the pass failed; Content is then empty (KindVariant
+	// only).
+	Error string `json:"error,omitempty"`
+	// PromptVersion is the humanize prompt revision that produced this pass.
+	PromptVersion string `json:"prompt_version,omitempty"`
 }
 
 // SessionSummary is one row of the session list (GET /api/sessions). ID and

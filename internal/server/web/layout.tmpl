@@ -163,6 +163,24 @@
 		.msg-content ul, .msg-content ol { padding-left: 1.5em; }
 		.msg-content blockquote { border-left: 3px solid #ccc; margin: 0.5em 0; padding-left: 1em; color: #666; }
 		.msg-content h1, .msg-content h2, .msg-content h3 { margin: 0.5em 0 0.3em; }
+		/* Humanize variant tabs: an assistant reply that got plain-language
+		   passes shows "Original" + "Humanized N" tabs above its content. The
+		   first pass is automatic; the "+" button chains another pass from the
+		   latest version. The active tab's pane is the visible one. */
+		.variant-tabs { margin: 0.15rem 0 0.4rem; }
+		.variant-tab, .variant-add {
+			font-size: 0.8em; padding: 0.15rem 0.6rem; margin-right: 0.25rem;
+			border: 1px solid #ccc; border-radius: 10px; background: #fff;
+			color: #555; cursor: pointer;
+		}
+		.variant-tab:hover, .variant-add:hover { background: #f0f0f0; color: #333; }
+		.variant-tab.variant-active { background: #e0e7ff; border-color: #b3c0ff; color: #223; font-weight: bold; }
+		.variant-tab.variant-failed { border-color: #f5c2c2; color: #b33; }
+		.variant-tab.variant-pending-tab { color: #888; font-style: italic; }
+		.variant-pane { display: none; }
+		.variant-pane.variant-active { display: block; }
+		.variant-pending { color: #888; font-size: 0.85em; font-style: italic; }
+		.variant-error { color: #b33; font-size: 0.85em; }
 		/* Live-streamed markdown is rendered per segment (.md-seg) while the
 		   committed copy is one contiguous block, so normalize the first/last
 		   element margins to match .msg-content p:first-child/:last-child and
