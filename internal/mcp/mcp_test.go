@@ -776,3 +776,55 @@ func TestRPCErrorData(t *testing.T) {
 		t.Errorf("plain Error() = %q, want %q", got, want)
 	}
 }
+
+func TestCallMCPPreflightMissingArgs(t *testing.T) {
+	m := &mockMCP{
+		tools: []map[string]any{
+			{"name": "search", "description": "Search the web for a query", "inputSchema": map[string]any{
+				"type": "object", "properties": map[string]any{"q": map[string]any{"type": "string"}}, "required": []string{"q"},
+			}},
+		},
+	}
+	ts := httptest.NewServer(m.handler())
+	defer ts.Close()
+
+	h, err := Load(writeConfig(t, serverEntry("web", ts.URL, "")), nil)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	// Call with no args at all: rejected locally before the network, naming
+	// the missing required field and pointing at the schema.
+	out, err := h.Run(context.Background(), CallTool, []byte(`{"server_name":"web","tool_name":"search"}`))
+	if err == nil {
+		data, _ := io.ReadAll(out)
+		_ = out.Close()
+		t.Fatalf("CallMCP no-args: want error, got result %q", data)
+	}
+	if !strings.Contains(err.Error(), `missing required arguments: q`) || !strings.Contains(err.Error(), `inputSchema`) {
+		t.Errorf("no-args error = %v, want a pointer at missing q and the schema", err)
+	}
+	if len(m.calls) != 0 {
+		t.Errorf("pre-flight must not reach the server, got %d remote calls", len(m.calls))
+	}
+
+	// Missing only one of several required fields is caught too.
+	out, err = h.Run(context.Background(), CallTool, []byte(`{"server_name":"web","tool_name":"search","args":{"not_q":1}}`))
+	if err == nil || !strings.Contains(err.Error(), "q") {
+		t.Errorf("wrong-key args: want error naming q, got %v", err)
+	}
+
+	// Correct args still go through.
+	out, err = h.Run(context.Background(), CallTool, []byte(`{"server_name":"web","tool_name":"search","args":{"q":"hi"}}`))
+	if err != nil {
+		t.Fatalf("CallMCP with args: %v", err)
+	}
+	data, _ := io.ReadAll(out)
+	_ = out.Close()
+	if string(data) != "result of search" {
+		t.Errorf("result = %q", data)
+	}
+	if len(m.calls) != 1 {
+		t.Errorf("remote calls = %d, want 1", len(m.calls))
+	}
+}

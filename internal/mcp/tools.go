@@ -278,6 +278,38 @@ func snippet(desc string) string {
 	return desc
 }
 
+// requiredArgs returns the top-level required argument names of a JSON Schema
+// input schema: the "required" array of strings (when present). Schemas built
+// in tests may carry a []string while decoded server schemas hold []any, so
+// both shapes are accepted.
+func requiredArgs(schema map[string]any) []string {
+	switch req := schema["required"].(type) {
+	case []string:
+		return req
+	case []any:
+		out := make([]string, 0, len(req))
+		for _, v := range req {
+			if s, ok := v.(string); ok {
+				out = append(out, s)
+			}
+		}
+		return out
+	}
+	return nil
+}
+
+// missingArgs returns the tool's required argument names that are absent from
+// the caller's args (nil args counts as absent for everything).
+func missingArgs(schema map[string]any, args map[string]any) []string {
+	var missing []string
+	for _, name := range requiredArgs(schema) {
+		if _, ok := args[name]; !ok {
+			missing = append(missing, name)
+		}
+	}
+	return missing
+}
+
 func (h *Hub) runCall(ctx context.Context, args []byte) (io.ReadCloser, error) {
 	h.refreshErrored(ctx)
 	var in struct {
@@ -313,6 +345,17 @@ func (h *Hub) runCall(ctx context.Context, args []byte) (io.ReadCloser, error) {
 			return nil, fmt.Errorf("CallMCP: args must be a JSON object: %w", err)
 		}
 	}
+	// Pre-flight: fail locally, before the network round-trip, when the args
+	// omit a field the tool's schema requires. The server would reject the
+	// call with a generic -32602, but pointing at the missing names (and the
+	// tool's schema) gives the model an actionable fix for the next attempt.
+	var inputSchema map[string]any
+	if t, ok := s.Tool(in.ToolName); ok {
+		inputSchema = t.InputSchema
+		if missing := missingArgs(inputSchema, argMap); len(missing) > 0 {
+			return nil, fmt.Errorf("CallMCP %s: missing required arguments: %s (tool inputSchema: %s; use FindMCP full=true to see it)", in.ToolName, strings.Join(missing, ", "), schemaJSON(inputSchema))
+		}
+	}
 	params := map[string]any{"name": in.ToolName}
 	if len(argMap) > 0 {
 		params["arguments"] = argMap
@@ -337,6 +380,19 @@ func (h *Hub) runCall(ctx context.Context, args []byte) (io.ReadCloser, error) {
 		text = "(no content)"
 	}
 	return newResultStream(text), nil
+}
+
+// schemaJSON renders a tool input schema as compact JSON for error messages
+// ("" when there is none).
+func schemaJSON(schema map[string]any) string {
+	if len(schema) == 0 {
+		return "{}"
+	}
+	b, err := json.Marshal(schema)
+	if err != nil {
+		return "{}"
+	}
+	return string(b)
 }
 
 // callResult is the result of tools/call.

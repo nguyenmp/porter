@@ -103,6 +103,16 @@ func (s *Server) Tools() []Tool {
 	return s.tools
 }
 
+// Tool returns the discovered tool with the given name, or ok=false.
+func (s *Server) Tool(name string) (Tool, bool) {
+	for _, t := range s.Tools() {
+		if t.Name == name {
+			return t, true
+		}
+	}
+	return Tool{}, false
+}
+
 func (s *Server) setStatus(status, err string) {
 	s.mu.Lock()
 	s.status, s.err = status, err
