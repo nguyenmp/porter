@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"sync/atomic"
 
@@ -212,8 +213,8 @@ func (h *Hub) runFind(ctx context.Context, args []byte, extra []api.MCPServer) (
 				}
 			case !in.Full && matched <= findSnippetMaxTools:
 				fmt.Fprintf(&b, "  %s: %s", t.Name, snippet(t.Description))
-				if reqs := requiredArgs(t.InputSchema); len(reqs) > 0 {
-					fmt.Fprintf(&b, " [requires: %s]", strings.Join(reqs, ", "))
+				if hint := argsHint(t.InputSchema); hint != "" {
+					fmt.Fprintf(&b, " [%s]", hint)
 				}
 				fmt.Fprintf(&b, "\n")
 			}
@@ -259,8 +260,8 @@ func (h *Hub) runFind(ctx context.Context, args []byte, extra []api.MCPServer) (
 				}
 			case !in.Full && matched <= findSnippetMaxTools:
 				fmt.Fprintf(&b, "  %s: %s", t.Name, snippet(t.Description))
-				if reqs := requiredArgs(t.InputSchema); len(reqs) > 0 {
-					fmt.Fprintf(&b, " [requires: %s]", strings.Join(reqs, ", "))
+				if hint := argsHint(t.InputSchema); hint != "" {
+					fmt.Fprintf(&b, " [%s]", hint)
 				}
 				fmt.Fprintf(&b, "\n")
 			}
@@ -316,6 +317,46 @@ func missingArgs(schema map[string]any, args map[string]any) []string {
 		}
 	}
 	return missing
+}
+
+// argsHint renders a tool's argument names for one FindMCP snippet line:
+// required names first, then optional names (properties the schema does not
+// require), so the model sees the full surface without a full-schema lookup.
+// Both halves are sorted for determinism; the optional list caps at
+// snippetOptionalMax to keep wide schemas compact.
+const snippetOptionalMax = 6
+
+func argsHint(schema map[string]any) string {
+	props, _ := schema["properties"].(map[string]any)
+	if len(props) == 0 {
+		return ""
+	}
+	req := make(map[string]bool, len(props))
+	for _, name := range requiredArgs(schema) {
+		req[name] = true
+	}
+	required, optional := make([]string, 0, len(req)), make([]string, 0, len(props)-len(req))
+	for name := range props {
+		if req[name] {
+			required = append(required, name)
+		} else {
+			optional = append(optional, name)
+		}
+	}
+	sort.Strings(required)
+	sort.Strings(optional)
+	var parts []string
+	if len(required) > 0 {
+		parts = append(parts, "requires: "+strings.Join(required, ", "))
+	}
+	if len(optional) > 0 {
+		if n := len(optional) - snippetOptionalMax; n > 0 {
+			parts = append(parts, fmt.Sprintf("optional: %s, +%d more", strings.Join(optional[:snippetOptionalMax], ", "), n))
+		} else {
+			parts = append(parts, "optional: "+strings.Join(optional, ", "))
+		}
+	}
+	return strings.Join(parts, "; ")
 }
 
 func (h *Hub) runCall(ctx context.Context, args []byte) (io.ReadCloser, error) {

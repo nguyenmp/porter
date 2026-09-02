@@ -235,7 +235,7 @@ func TestFetchAndCall(t *testing.T) {
 	m := &mockMCP{
 		tools: []map[string]any{
 			{"name": "search", "description": "Search the web for a query", "inputSchema": map[string]any{
-				"type": "object", "properties": map[string]any{"q": map[string]any{"type": "string"}}, "required": []string{"q"},
+				"type": "object", "properties": map[string]any{"q": map[string]any{"type": "string"}, "limit": map[string]any{"type": "integer"}}, "required": []string{"q"},
 			}},
 			{"name": "fetch_page", "description": "Fetch a web page"},
 		},
@@ -273,8 +273,8 @@ func TestFetchAndCall(t *testing.T) {
 	if !strings.Contains(string(data), "server web (2 tools)") || !strings.Contains(string(data), "search") {
 		t.Errorf("FindMCP snippet output = %q", data)
 	}
-	if !strings.Contains(string(data), "[requires: q]") {
-		t.Errorf("FindMCP snippet should list required args inline: %q", data)
+	if !strings.Contains(string(data), "[requires: q; optional: limit]") {
+		t.Errorf("FindMCP snippet should list required and optional args inline: %q", data)
 	}
 	if strings.Contains(string(data), "fetch_page") {
 		t.Errorf("FindMCP query filter leaked fetch_page: %q", data)
@@ -785,7 +785,7 @@ func TestCallMCPPreflightMissingArgs(t *testing.T) {
 	m := &mockMCP{
 		tools: []map[string]any{
 			{"name": "search", "description": "Search the web for a query", "inputSchema": map[string]any{
-				"type": "object", "properties": map[string]any{"q": map[string]any{"type": "string"}}, "required": []string{"q"},
+				"type": "object", "properties": map[string]any{"q": map[string]any{"type": "string"}, "limit": map[string]any{"type": "integer"}}, "required": []string{"q"},
 			}},
 		},
 	}
@@ -869,5 +869,39 @@ func TestCallMCPValidationErrorDecoration(t *testing.T) {
 		if !strings.Contains(text, want) {
 			t.Errorf("decorated result missing %q:\n%s", want, text)
 		}
+	}
+}
+
+func TestArgsHint(t *testing.T) {
+	// Required and optional names are both shown, sorted, in that order.
+	got := argsHint(map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"b": map[string]any{"type": "string"},
+			"a": map[string]any{"type": "string"},
+			"c": map[string]any{"type": "integer"},
+		},
+		"required": []string{"b"},
+	})
+	if want := "requires: b; optional: a, c"; got != want {
+		t.Errorf("argsHint = %q, want %q", got, want)
+	}
+
+	// Optional list is capped, with the overflow counted.
+	props := map[string]any{"req": map[string]any{"type": "string"}}
+	for i := 0; i < snippetOptionalMax+2; i++ {
+		props[fmt.Sprintf("p%d", i)] = map[string]any{"type": "string"}
+	}
+	got = argsHint(map[string]any{"type": "object", "properties": props, "required": []string{"req"}})
+	if want := "requires: req; optional: p0, p1, p2, p3, p4, p5, +2 more"; got != want {
+		t.Errorf("argsHint capped = %q, want %q", got, want)
+	}
+
+	// No schema or no properties: no hint.
+	if got := argsHint(nil); got != "" {
+		t.Errorf("argsHint(nil) = %q, want empty", got)
+	}
+	if got := argsHint(map[string]any{"type": "object", "properties": map[string]any{}}); got != "" {
+		t.Errorf("argsHint(no props) = %q, want empty", got)
 	}
 }
