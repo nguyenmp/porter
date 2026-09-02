@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -221,6 +222,98 @@ func TestLoginFlow(t *testing.T) {
 	}
 	if store.Get(asSrv.URL) != nil {
 		t.Error("token still stored after logout")
+	}
+}
+
+// TestProtectedResourceCandidates proves RFC 9728 discovery tries the root
+// well-known URI first, then RFC 9728 §3.1's path-inserted form.
+func TestProtectedResourceCandidates(t *testing.T) {
+	got := protectedResourceCandidates("https://api.example.com/mcp")
+	want := []string{
+		"https://api.example.com/.well-known/oauth-protected-resource",
+		"https://api.example.com/.well-known/oauth-protected-resource/mcp",
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("candidates for /mcp = %v, want %v", got, want)
+	}
+	got = protectedResourceCandidates("https://api.example.com")
+	want = []string{"https://api.example.com/.well-known/oauth-protected-resource"}
+	if !slices.Equal(got, want) {
+		t.Errorf("candidates for root = %v, want %v", got, want)
+	}
+}
+
+// TestLoginViaProtectedResourceMetadata proves porter follows the MCP spec's
+// OAuth discovery order:when the MCP resource server (like Greptile's
+// api.greptile.com/mcp) publishes only RFC 9728 protected-resource metadata
+// naming an authorization server on a different origin (auth.greptile.com),
+// RFC 8414 discovery must happen against that advertised origin, not the
+// resource's own (which 404s).
+func TestLoginViaProtectedResourceMetadata(t *testing.T) {
+	as := &mockOAuth{authCode: "code-2", accessTok: "tok-2", refreshTok: "ref-2"}
+	asSrv := httptest.NewServer(as.handler())
+	defer asSrv.Close()
+
+	// Resource server: publishes ONLY RFC 9728 metadata, mirroring the
+	// Greptile split between api.greptile.com and auth.greptile.com.No RFC 8414
+	// document exists at this origin at all.
+
+	var mcpSrv *httptest.Server
+	mcpSrv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/.well-known/oauth-protected-resource" ||
+			r.URL.Path == "/.well-known/oauth-protected-resource/mcp" {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"resource":                 mcpSrv.URL + "/mcp",
+				"authorization_servers":    []string{asSrv.URL},
+				"scopes_supported":         []string{"read", "write"},
+				"bearer_methods_supported": []string{"header"},
+			})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer mcpSrv.Close()
+
+	store, err := OpenTokenStoreAt(filepath.Join(t.TempDir(), "tokens.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stdout strings.Builder
+	var opened string
+	openBrowser := func(u string) error {
+		opened = u
+		au, err := url.Parse(u)
+		if err != nil {
+			return err
+		}
+		// Simulate the browser completing consent (the AS has no /authorize in
+		// this mock; the flow only needs the loopback callback).
+		resp, err := http.Get(au.Query().Get("redirect_uri") + "?code=code-2")
+		if err != nil {
+			return err
+		}
+		resp.Body.Close()
+		return nil
+	}
+
+	mcpURL := mcpSrv.URL + "/mcp" // the resource carries a path, like /mcp
+
+	if err := login(context.Background(), http.DefaultClient, mcpURL, "greptile", "", &stdout, openBrowser, store); err != nil {
+		t.Fatalf("login: %v", err)
+	}
+	e := store.Get(mcpURL)
+	if e == nil {
+		t.Fatal("no token stored after login")
+	}
+	if e.AccessToken != "tok-2" || e.RefreshToken != "ref-2" || e.ClientID != "mock-client" {
+		t.Errorf("stored entry = %+v", e)
+	}
+	if e.TokenURL != asSrv.URL+"/token" {
+		t.Errorf("token URL = %q, want the authorization server's %q (shows RFC 8414 came from the advertised AS, not the resource)", e.TokenURL, asSrv.URL+"/token")
+	}
+	if !strings.Contains(opened, "client_id=mock-client") {
+		t.Errorf("authorize URL missing registered client: %s", opened)
 	}
 }
 

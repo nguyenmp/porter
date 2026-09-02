@@ -167,13 +167,75 @@ type wellKnown struct {
 	CodeChallengeMethods  []string `json:"code_challenge_methods_supported"`
 }
 
-// discover fetches the OAuth metadata for an MCP server's base URL. The
-// well-known path is relative to the server's origin (RFC 8414):
-// https://<host>/.well-known/oauth-authorization-server. A server may be
-// reached through a path, but the metadata document always lives at the
-// origin.
-func discover(ctx context.Context, client *http.Client, serverURL string) (*wellKnown, error) {
+// protectedResource is the RFC 9728 protected-resource metadata document.
+type protectedResource struct {
+	Resource               string   `json:"resource"`
+	AuthorizationServers   []string `json:"authorization_servers"`
+	ScopesSupported        []string `json:"scopes_supported"`
+	BearerMethodsSupported []string `json:"bearer_methods_supported"`
+}
+
+// protectedResourceCandidates enumerates the well-known URIs for RFC 9728
+// discovery against serverURL:the root form, then RFC 9728 §3.1's
+// path-inserted form when the MCP URL carries a path (e.g. for
+// https://host/mcp the path form is https://host/.well-known/oauth-protected-resource/mcp).
+func protectedResourceCandidates(serverURL string) []string {
 	u, err := url.Parse(serverURL)
+	if err != nil {
+		return nil
+	}
+	root := *u
+	root.Path = "/.well-known/oauth-protected-resource"
+	root.RawQuery = ""
+	root.Fragment = ""
+	candidates := []string{root.String()}
+	if p := strings.Trim(u.Path, "/"); p != "" {
+		pathForm := *u
+		pathForm.Path = "/.well-known/oauth-protected-resource/" + p
+		pathForm.RawQuery = ""
+		pathForm.Fragment = ""
+		candidates = append(candidates, pathForm.String())
+	}
+	return candidates
+}
+
+// discoverProtectedResource fetches the RFC 9728 protected-resource metadata
+// for the MCP server, or returns nil without error when the server publishes none
+// (pre-RFC 9728 servers). It tries the root well-known URI first, then
+// RFC 9728 §3.1's path-inserted form.The resource's authorization_servers
+// names the authorization server to discover next (the MCP spec's discovery
+// chain: RFC 9728, then RFC 8414 against the advertised server).
+func discoverProtectedResource(ctx context.Context, client *http.Client, serverURL string) (*protectedResource, error) {
+	for _, u := range protectedResourceCandidates(serverURL) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+		if err != nil {
+			return nil, err
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			continue
+		}
+		var m protectedResource
+		if err := json.Unmarshal(raw, &m); err != nil {
+			continue // not an RFC 9728 document; try the next form
+		}
+		if len(m.AuthorizationServers) > 0 || m.Resource != "" {
+			return &m, nil
+		}
+	}
+	return nil, nil // no protected-resource metadata published
+}
+
+// discoverWellKnown fetches the RFC 8414 authorization-server metadata from
+// the given server's origin. The well-known path is relative to the server's
+// origin: https://<host>/.well-known/oauth-authorization-server.
+func discoverWellKnown(ctx context.Context, client *http.Client, server string) (*wellKnown, error) {
+	u, err := url.Parse(server)
 	if err != nil {
 		return nil, fmt.Errorf("parse server URL: %w", err)
 	}
@@ -200,6 +262,32 @@ func discover(ctx context.Context, client *http.Client, serverURL string) (*well
 		return nil, errors.New("OAuth metadata missing authorization or token endpoint")
 	}
 	return &meta, nil
+}
+
+// discover fetches the OAuth authorization-server metadata for an MCP server,
+// following the MCP spec's discovery order: RFC 9728 protected-resource
+// metadata from the resource (whose authorization_servers names the true
+// authorization server), falling back to RFC 8414 discovery against the
+// resource's own origin for servers that don't publish protected-resource metadata
+// (including the common single-origin layout where both documents live at the
+// same host). This matters for servers like Greptile, where the MCP resource
+// (api.greptile.com) and the authorization server (auth.greptile.com) live on
+// different origins and only the RFC 9728 document exists at the resource's
+// origin.
+func discover(ctx context.Context, client *http.Client, serverURL string) (*wellKnown, error) {
+	if prm, err := discoverProtectedResource(ctx, client, serverURL); err != nil {
+		return nil, err
+	} else if prm != nil {
+		for _, asURL := range prm.AuthorizationServers {
+			if meta, err := discoverWellKnown(ctx, client, asURL); err == nil {
+				return meta, nil
+			}
+		}
+	}
+	// Legacy fallback: pre-RFC 9728 servers and single-origin servers serve
+	// RFC 8414 directly against the resource's origin.This is where porter
+	// always looked before.
+	return discoverWellKnown(ctx, client, serverURL)
 }
 
 // registerClient dynamically registers a public OAuth client (RFC 7591) with
