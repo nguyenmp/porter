@@ -799,7 +799,9 @@
   // re-pins that stick the view to the bottom, so the disarm check can catch
   // intent without a fragile position heuristic. A proximity-based scroll
   // listener stays only as the fallback for scrollbar drags, which emit no
-  // wheel/touch/key events. The button stays visible as the mode indicator —
+  // wheel/touch/key events; position alone is a weaker signal than a real
+  // gesture, so that fallback uses a wider ~100px threshold before it reads
+  // as intent. The button stays visible as the mode indicator —
   // "Stop following" while on, "Follow new output" while off — and is the only
   // way back in.
 
@@ -812,6 +814,13 @@
   let touchLastX = null;
   let touchLastY = null;
   const FOLLOW_DEADBAND = 8;
+  // FOLLOW_SCROLLBAR_THRESHOLD is how far above the bottom the positional
+  // fallback (below) must be before a scroll reads as intent. It is much wider
+  // than FOLLOW_DEADBAND because position is a weaker signal than a real
+  // wheel/touch gesture: the scroll event also fires for incidental jitter and
+  // momentum, whereas re-pins land exactly at the bottom (distance 0), so a
+  // deliberate scrollbar drag has to climb ~100px to disarm.
+  const FOLLOW_SCROLLBAR_THRESHOLD = 100;
   const followBtn = document.getElementById('follow-btn');
 
   function updateFollowButton() {
@@ -884,11 +893,14 @@
     });
 
     // Fallback: scrollbar drags fire no wheel/touch/key events, so a
-    // proximity check remains the only way to catch them. Safe because
-    // programmatic re-pins land exactly at the bottom (distance 0), so this
-    // only trips when the reader actually moves away.
+    // proximity check remains the only way to catch them. Its threshold is
+    // deliberately wide (~100px, FOLLOW_SCROLLBAR_THRESHOLD) because position
+    // is not an intent signal the way a wheel/touch gesture is: this listener
+    // also sees incidental scrolls, while programmatic re-pins land exactly at
+    // the bottom (distance 0) and never trip it. Only a drag that climbs well
+    // up the pane reads as "I want to look back".
     chat.addEventListener('scroll', function() {
-      if (followMode && !isNearBottom(chat)) disarmFollow();
+      if (followMode && !isNearBottom(chat, FOLLOW_SCROLLBAR_THRESHOLD)) disarmFollow();
     });
 
     // After the initial /view load (hx-trigger="load") lands, pin to the
@@ -1031,12 +1043,14 @@
   }
 
   // Returns true if the chat is scrolled to (or within `threshold` px of) the
-  // bottom. Now only the fallback disarm path for scrollbar drags, which emit
-  // no wheel/touch/key events; the threshold is the same FOLLOW_DEADBAND the
-  // gesture paths use. Programmatic re-pins set scrollTop exactly to
-  // scrollHeight, so they always satisfy this and can never disarm follow.
+  // bottom. Used only by the fallback disarm path for scrollbar drags, which
+  // emit no wheel/touch/key events. It is called with FOLLOW_SCROLLBAR_THRESHOLD
+  // (100px): wide, because position is a weaker intent signal than a real
+  // gesture and this listener also fires on incidental scrolls, while
+  // programmatic re-pins set scrollTop exactly to scrollHeight (distance 0) and
+  // so always satisfy it.
   function isNearBottom(el, threshold) {
-    const t = threshold || FOLLOW_DEADBAND;
+    const t = threshold || FOLLOW_SCROLLBAR_THRESHOLD;
     return el.scrollHeight - el.scrollTop - el.clientHeight <= t;
   }
 
