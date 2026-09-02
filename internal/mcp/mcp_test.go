@@ -828,3 +828,42 @@ func TestCallMCPPreflightMissingArgs(t *testing.T) {
 		t.Errorf("remote calls = %d, want 1", len(m.calls))
 	}
 }
+
+func TestCallMCPValidationErrorDecoration(t *testing.T) {
+	m := &mockMCP{
+		tools: []map[string]any{
+			{"name": "search", "description": "Search", "inputSchema": map[string]any{
+				"type": "object", "properties": map[string]any{"q": map[string]any{"type": "string"}},
+			}},
+		},
+		callRPCErr: &rpcError{Code: -32602, Message: "Input validation error", Data: json.RawMessage(`[{"code":"invalid_type","received":"undefined","path":[]}]`)},
+	}
+	ts := httptest.NewServer(m.handler())
+	defer ts.Close()
+
+	h, err := Load(writeConfig(t, serverEntry("web", ts.URL, "")), nil)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	// A -32602 rejection from the server gets the "no arguments" note and the
+	// tool's schema appended, so the model can correct the call.
+	out, err := h.Run(context.Background(), CallTool, []byte(`{"server_name":"web","tool_name":"search"}`))
+	if err != nil {
+		t.Fatalf("CallMCP: %v", err)
+	}
+	data, _ := io.ReadAll(out)
+	_ = out.Close()
+	text := string(data)
+	for _, want := range []string{
+		"MCP error -32602: Input validation error",
+		"received",
+		"note: the call was sent with no arguments",
+		"inputSchema",
+		`"q"`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("decorated result missing %q:\n%s", want, text)
+		}
+	}
+}

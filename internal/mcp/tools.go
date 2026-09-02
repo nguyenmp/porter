@@ -365,8 +365,10 @@ func (h *Hub) runCall(ctx context.Context, args []byte) (io.ReadCloser, error) {
 	if err != nil {
 		// The call reached the server but failed (HTTP/JSON-RPC/timeout):
 		// report as result content, like a command failure, so the model can
-		// react (retry, pick another tool).
-		return newResultStream("error: " + err.Error()), nil
+		// react (retry, pick another tool). A -32602 invalid-params rejection
+		// that slipped past pre-flight gets the tool's schema appended, so
+		// the model can see exactly what shape the args must take.
+		return newResultStream("error: " + describeCallError(err, inputSchema, argMap)), nil
 	}
 	var cr callResult
 	if err := json.Unmarshal(result, &cr); err != nil {
@@ -393,6 +395,29 @@ func schemaJSON(schema map[string]any) string {
 		return "{}"
 	}
 	return string(b)
+}
+
+// describeCallError renders a failed tools/call for the model. For an
+// invalid-params rejection (-32602) it appends the tool's input schema and a
+// note when the call carried no arguments, so a caller-side contract break is
+// unmistakable; every other failure keeps the server's own message.
+func describeCallError(err error, inputSchema map[string]any, args map[string]any) string {
+	var code int
+	if cerr, ok := err.(*callError); ok {
+		code = cerr.rpcCode
+	}
+	if code != -32602 {
+		return err.Error()
+	}
+	var b strings.Builder
+	b.WriteString(err.Error())
+	if len(args) == 0 {
+		b.WriteString("\nnote: the call was sent with no arguments")
+	}
+	if len(inputSchema) > 0 {
+		fmt.Fprintf(&b, "\ntool inputSchema: %s", schemaJSON(inputSchema))
+	}
+	return b.String()
 }
 
 // callResult is the result of tools/call.
