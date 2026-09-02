@@ -790,17 +790,28 @@
   // The reasoning text itself is plain, selectable text with no click handler,
   // so it behaves like normal content. The complete text is always kept in
   // memory on the element so expanded blocks keep updating live as deltas stream in.
-  // --- Follow mode (semi-lock) ---
+  // --- Follow mode ---
   // Following is an explicit mode, not a pixel-distance measurement. When on,
-  // new output keeps the view pinned to the bottom; scrolling up disarms it
-  // immediately (one-way: scrolling back down does NOT re-enable it). The
-  // button stays visible as the mode indicator — "Stop following" while on,
-  // "Follow new output" while off — and is the only way back in. Because
-  // nothing is measured apart from the tiny disarm threshold, background
-  // layout churn (humanize tab bars, pane growth, commit re-render) can
-  // never silently trip it.
+  // new output keeps the view pinned to the bottom. Real reader gestures disarm
+  // it one-way (scrolling back down does NOT re-enable it): wheel and touch use
+  // an 8px deadband on the vertical axis, and scroll keys disarm instantly.
+  // Those events fire only for genuine gestures, never for the programmatic
+  // re-pins that stick the view to the bottom, so the disarm check can catch
+  // intent without a fragile position heuristic. A proximity-based scroll
+  // listener stays only as the fallback for scrollbar drags, which emit no
+  // wheel/touch/key events. The button stays visible as the mode indicator —
+  // "Stop following" while on, "Follow new output" while off — and is the only
+  // way back in.
 
   let followMode = true;
+  // scrollIntent accumulates the vertical distance (px) traveled by wheel/touch
+  // gestures while following. Below FOLLOW_DEADBAND it is trackpad/inertia
+  // noise; reaching the deadband means "I want to look back" and disarms.
+  let scrollIntent = 0;
+  // touchLastX/Y is the previous touch sample used to measure per-move deltas.
+  let touchLastX = null;
+  let touchLastY = null;
+  const FOLLOW_DEADBAND = 8;
   const followBtn = document.getElementById('follow-btn');
 
   function updateFollowButton() {
@@ -810,18 +821,77 @@
   }
   updateFollowButton();
 
+  // One-way exit from follow mode. Every genuine-gesture disarm path calls
+  // this; it is deliberately not re-armed by scrolling back down.
+  function disarmFollow() {
+    if (!followMode) return;
+    followMode = false;
+    updateFollowButton();
+  }
+
   if (chat) {
-    // Semi-lock: any user scroll away from the bottom disarms follow right
-    // away; the button flips to "Follow new output". Programmatic re-pins
-    // land at the bottom, so they never trip this. Scrolling back down does
-    // NOT re-enable it — the button is the only way back in.
-    chat.addEventListener('scroll', function() {
-      if (followMode && !isNearBottom(chat)) {
-        followMode = false;
-        updateFollowButton();
+    // Wheel: only real user scrolling fires wheel events, so run purely on
+    // intent. Accumulate the vertical delta (normalized from lines/pages to
+    // px) and disarm once it passes the deadband. Pinch-zoom arrives as a
+    // ctrlKey wheel (its deltaY is zoom, not scroll) and horizontal trackpad
+    // swipes are sideways panning, so both are ignored.
+    chat.addEventListener('wheel', function(e) {
+      if (!followMode || e.ctrlKey) return;
+      if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) return;
+      scrollIntent += Math.abs(wheelDeltaY(e, chat));
+      if (scrollIntent >= FOLLOW_DEADBAND) disarmFollow();
+    }, { passive: true });
+
+    // Touch: same deadband, dominant-axis rule so horizontal swipes never trip
+    // it. Only vertical moves accumulate; each move's |dy| adds to scrollIntent.
+    chat.addEventListener('touchstart', function(e) {
+      const t = e.touches[0];
+      if (t) {
+        touchLastX = t.clientX;
+        touchLastY = t.clientY;
+      }
+    }, { passive: true });
+    chat.addEventListener('touchmove', function(e) {
+      if (!followMode) return;
+      const t = e.touches[0];
+      if (!t || touchLastX === null || touchLastY === null) return;
+      const dx = t.clientX - touchLastX;
+      const dy = t.clientY - touchLastY;
+      touchLastX = t.clientX;
+      touchLastY = t.clientY;
+      if (Math.abs(dx) > Math.abs(dy)) return;
+      scrollIntent += Math.abs(dy);
+      if (scrollIntent >= FOLLOW_DEADBAND) disarmFollow();
+    }, { passive: true });
+    function resetTouch() {
+      touchLastX = null;
+      touchLastY = null;
+    }
+    chat.addEventListener('touchend', resetTouch, { passive: true });
+    chat.addEventListener('touchcancel', resetTouch, { passive: true });
+
+    // Scroll keys: instant disarm. They only mean "scroll this view" when
+    // focus is outside the composer/inputs (and other Space/Enter-activatable
+    // controls), so typing, editing, or toggling never trips it.
+    document.addEventListener('keydown', function(e) {
+      if (!followMode || isScrollKeyTarget(e.target)) return;
+      const k = e.key;
+      if (k === ' ' || k === 'PageUp' || k === 'PageDown' ||
+          k === 'ArrowUp' || k === 'ArrowDown' || k === 'ArrowLeft' ||
+          k === 'ArrowRight' || k === 'Home' || k === 'End') {
+        disarmFollow();
       }
     });
-    // After the initial /view load (hx-trigger="load") lands,pin to the
+
+    // Fallback: scrollbar drags fire no wheel/touch/key events, so a
+    // proximity check remains the only way to catch them. Safe because
+    // programmatic re-pins land exactly at the bottom (distance 0), so this
+    // only trips when the reader actually moves away.
+    chat.addEventListener('scroll', function() {
+      if (followMode && !isNearBottom(chat)) disarmFollow();
+    });
+
+    // After the initial /view load (hx-trigger="load") lands, pin to the
     // bottom when in follow mode. Guarded by followMode so a manual-mode
     // form submit can never yank the user back down.
     chat.addEventListener('htmx:afterSwap', function() {
@@ -888,19 +958,39 @@
   }
 
   if (followBtn) {
-    // The one button is the mode indicator and the only entry/exit point:
-    // while following it reads "Stop following" and releases the scroll; while
-    // idle it re-enters follow modeand pins to the bottom.
-
+    // The one button is the mode indicator and the only way back in: while
+    // following it reads "Stop following" and releases the scroll; while idle
+    // it re-enters follow mode, resets the gesture deadband, and pins to the
+    // bottom.
     followBtn.addEventListener('click', function() {
       if (followMode) {
         followMode = false;
       } else {
         followMode = true;
+        scrollIntent = 0;
+        touchLastX = null;
+        touchLastY = null;
         chat.scrollTop = chat.scrollHeight;
       }
       updateFollowButton();
     });
+  }
+
+  // wheelDeltaY converts a wheel's deltaY to pixels regardless of its
+  // deltaMode (0 px, 1 lines, 2 pages). A page jump counts as one viewport.
+  function wheelDeltaY(e, el) {
+    if (e.deltaMode === 1) return e.deltaY * 16; // lines -> approximate px
+    if (e.deltaMode === 2) return e.deltaY * (el.clientHeight || 480); // pages -> viewport
+    return e.deltaY;
+  }
+
+  // Returns true when a key target should consume Space/scroll keys itself
+  // (the composer, other inputs, and activatable controls), so the key is not
+  // scroll intent.
+  function isScrollKeyTarget(el) {
+    if (!el || !el.closest) return false;
+    if (el.isContentEditable) return true;
+    return !!el.closest('input, textarea, select, button, [role="button"]');
   }
 
   function escapeHTML(s) {
@@ -940,13 +1030,14 @@
     return '';
   }
 
-  // Returns true if the chat is scrolled to (or within `threshold` px of the
-  // bottom. Only used to disarm follow on a user scroll;the threshold is a
-  // tiny 8px — enough to swallow wheel bounce / inertial overscroll,not
-  // intent, so the layout churn streamed content causes (humanize tab bars,
-  // pane growth, commit re-render) cannot silently disarm follow.
+  // Returns true if the chat is scrolled to (or within `threshold` px of) the
+  // bottom. Now only the fallback disarm path for scrollbar drags, which emit
+  // no wheel/touch/key events; the threshold is the same FOLLOW_DEADBAND the
+  // gesture paths use. Programmatic re-pins set scrollTop exactly to
+  // scrollHeight, so they always satisfy this and can never disarm follow.
   function isNearBottom(el, threshold) {
-    const t = threshold || 8;
+    const t = threshold || FOLLOW_DEADBAND;
+    return el.scrollHeight - el.scrollTop - el.clientHeight <= t;
   }
 
   // --- Collapsible reasoning ---
