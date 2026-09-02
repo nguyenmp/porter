@@ -1416,3 +1416,77 @@ func TestRunTurnReadOutputUnknownCallID(t *testing.T) {
 		t.Errorf("read_output error not committed to history")
 	}
 }
+
+// TestRunTurnFlagsRepeatedIdenticalFailure makes the model submit the exact
+// same failing tool call twice in a row: the second failure must carry a hint
+// that the call already failed, so the loop stops silently burning
+// round-trips on the same mistake.
+func TestRunTurnFlagsRepeatedIdenticalFailure(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Messages []json.RawMessage `json:"messages"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		w.Header().Set("Content-Type", "text/event-stream")
+		// Count how many assistant tool-calls the model has already made by
+		// scanning the messages it received.
+		prior := 0
+		for _, m := range req.Messages {
+			var msg struct {
+				Role      string `json:"role"`
+				ToolCalls []struct {
+					ID string `json:"id"`
+				} `json:"tool_calls"`
+			}
+			_ = json.Unmarshal(m, &msg)
+			if msg.Role == "assistant" {
+				prior += len(msg.ToolCalls)
+			}
+		}
+		switch prior {
+		case 0:
+			// First turn: call shell with an empty command, which fails to start.
+			fmt.Fprintf(w, `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"shell","arguments":"{\"command\":\"\"}"}}]},"finish_reason":"tool_calls"}]}`+"\n\n"+`data: [DONE]`+"\n")
+		case 1:
+			// Second turn: the model re-issues the identical call.
+			fmt.Fprintf(w, `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_2","type":"function","function":{"name":"shell","arguments":"{\"command\":\"\"}"}}]},"finish_reason":"tool_calls"}]}`+"\n\n"+`data: [DONE]`+"\n")
+		default:
+			fmt.Fprintf(w, `data: {"choices":[{"delta":{"content":"done"},"finish_reason":"stop"}]}`+"\n\n"+`data: [DONE]`+"\n")
+		}
+	}))
+	defer srv.Close()
+
+	cfg := config.Config{BaseURL: srv.URL + "/v1", Model: "test", APIKey: "k"}
+	client := llm.NewClient(cfg, nil)
+
+	res, err := RunTurn(context.Background(), client, []llm.ChatMessage{llm.UserMessage("run it")}, tools.NewDispatcher(), nil, nil)
+	if err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+	if res.Text != "done" {
+		t.Errorf("final text = %q, want done", res.Text)
+	}
+
+	var toolResults []string
+	for _, m := range res.History {
+		if m.Role == "tool" {
+			toolResults = append(toolResults, m.Content)
+		}
+	}
+	if len(toolResults) != 2 {
+		t.Fatalf("tool results = %d, want 2", len(toolResults))
+	}
+	first, second := toolResults[0], toolResults[1]
+	if !strings.Contains(first, "error: shell command is empty") {
+		t.Errorf("first result = %q, want the start error", first)
+	}
+	if !strings.Contains(second, "error: shell command is empty") {
+		t.Errorf("second result = %q, want the start error", second)
+	}
+	if !strings.Contains(second, "this exact tool call already failed earlier in this turn") {
+		t.Errorf("second result should flag the repeated identical call: %q", second)
+	}
+	if strings.Contains(first, "already failed earlier") {
+		t.Errorf("first failure must not carry the repeat note: %q", first)
+	}
+}

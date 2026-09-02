@@ -139,6 +139,21 @@ func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage,
 		return nil
 	}
 
+	// Repeated identical failing calls within one turn (a model re-issuing the
+	// same malformed call, as MCP validation errors invite) get a hint appended
+	// on the second failure, so the loop does not silently burn round-trips on
+	// the same mistake. Keyed by tool name + raw arguments; a success with the
+	// same key clears the record.
+	lastFails := map[string]string{}
+	noteRepeat := func(key, result string) string {
+		prev, ok := lastFails[key]
+		if !ok {
+			lastFails[key] = result
+			return result
+		}
+		return result + "\n\n[this exact tool call already failed earlier in this turn: " + noteTrim(prev) + " — change the arguments or the approach]"
+	}
+
 	for i := 0; ; i++ {
 		var reply strings.Builder
 		var reasoning string
@@ -353,7 +368,7 @@ func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage,
 			if err != nil {
 				// The tool never started; there is nothing to stream, so emit the
 				// terminal envelope directly (matching the old single-shot shape).
-				result := "error: " + err.Error()
+				result := noteRepeat(c.Name+"\x00"+c.Arguments, "error: "+err.Error())
 				meta := recall.Meta(result)
 				if emit != nil {
 					emit(api.Envelope{Kind: api.KindToolResult, ToolCallID: c.ID, Name: c.Name, Arguments: c.Arguments, Result: result, ToolOutput: meta})
@@ -385,6 +400,7 @@ func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage,
 			// the start/finish clocks so subscribers reconcile to one complete,
 			// server-timed record.
 			var result strings.Builder
+			errFailed := false
 			buf := make([]byte, 32*1024)
 			for {
 				n, rerr := stream.Read(buf)
@@ -397,6 +413,7 @@ func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage,
 				}
 				if rerr != nil {
 					if rerr != io.EOF {
+						errFailed = true
 						errChunk := "error: " + rerr.Error()
 						result.WriteString(errChunk)
 						if emit != nil {
@@ -452,15 +469,25 @@ func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage,
 				return res, ErrToolCancelled
 			}
 
-			meta := recall.Meta(result.String())
-			if emit != nil {
-				emit(api.Envelope{Kind: api.KindToolResult, ToolCallID: c.ID, Name: c.Name, Arguments: c.Arguments, StartedAt: startedAt, FinishedAt: finishedAt, Result: result.String(), ToolOutput: meta})
+			// A repeated identical failure gets the hint appended (a success
+			// clears the record), so the model does not loop on the same call.
+			final := result.String()
+			key := c.Name + "\x00" + c.Arguments
+			if errFailed || strings.HasPrefix(final, "error:") {
+				final = noteRepeat(key, final)
+			} else {
+				delete(lastFails, key)
 			}
-			// The committed tool message carries the server clocks (json:"-" so
+
+			meta := recall.Meta(final)
+			if emit != nil {
+				emit(api.Envelope{Kind: api.KindToolResult, ToolCallID: c.ID, Name: c.Name, Arguments: c.Arguments, StartedAt: startedAt, FinishedAt: finishedAt, Result: final, ToolOutput: meta})
+			}
+			// The committed tool message carries the server metadata (json:"-" so
 			// they never reach the model or the history API), letting /view
 			// render timing on reload. Committing in completion order is what
 			// keeps history (and the live DOM) ordered by completion time.
-			m := llm.ToolResult(c.ID, result.String())
+			m := llm.ToolResult(c.ID, final)
 			m.StartedAt = startedAt
 			m.FinishedAt = finishedAt
 			m.ToolOutput = meta
@@ -469,6 +496,16 @@ func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage,
 			}
 		}
 	}
+}
+
+// noteTrim shortens a prior failure's text for embedding in a repeat note so
+// a long error does not inflate the model's context.
+func noteTrim(s string) string {
+	s = strings.Join(strings.Fields(s), " ")
+	if len(s) > 140 {
+		return s[:140] + "…"
+	}
+	return s
 }
 
 // reportQuery hands one request's outcome to the OnQuery hook (if any),
