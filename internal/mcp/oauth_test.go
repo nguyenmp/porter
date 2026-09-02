@@ -176,13 +176,14 @@ func TestLoginFlow(t *testing.T) {
 	openBrowser := func(u string) error {
 		opened = u
 		// Simulate the browser completing consent: parse the authorize URL,
-		// then hit the loopback redirect with the authorization code.
+		// then hit the loopback redirect with the authorization code and the
+		// state echoed back (the AS's redirect would carry both).
 		au, err := url.Parse(u)
 		if err != nil {
 			return err
 		}
 		redirect := au.Query().Get("redirect_uri")
-		resp, err := http.Get(redirect + "?code=code-1")
+		resp, err := http.Get(redirect + "?code=code-1&state=" + url.QueryEscape(au.Query().Get("state")))
 		if err != nil {
 			return err
 		}
@@ -201,6 +202,15 @@ func TestLoginFlow(t *testing.T) {
 		!strings.Contains(opened, "scope=mcp%3Aread") ||
 		!strings.Contains(opened, "client_id=mock-client") {
 		t.Errorf("authorize URL missing expected params: %s", opened)
+	}
+	// The authorize URL must carry a CSRF state with enough entropy for
+	// servers like Greptile that reject states shorter than 8 characters.
+	au, err := url.Parse(opened)
+	if err != nil {
+		t.Fatalf("parse authorize URL: %v", err)
+	}
+	if st := au.Query().Get("state"); len(st) < 8 {
+		t.Errorf("authorize URL state = %q, want at least 8 characters", st)
 	}
 	e := store.Get(asSrv.URL)
 	if e == nil {
@@ -288,8 +298,9 @@ func TestLoginViaProtectedResourceMetadata(t *testing.T) {
 			return err
 		}
 		// Simulate the browser completing consent (the AS has no /authorize in
-		// this mock; the flow only needs the loopback callback).
-		resp, err := http.Get(au.Query().Get("redirect_uri") + "?code=code-2")
+		// this mock; the flow only needs the loopback callback), echoing the
+		// state back as the AS's redirect would.
+		resp, err := http.Get(au.Query().Get("redirect_uri") + "?code=code-2&state=" + url.QueryEscape(au.Query().Get("state")))
 		if err != nil {
 			return err
 		}
@@ -314,6 +325,46 @@ func TestLoginViaProtectedResourceMetadata(t *testing.T) {
 	}
 	if !strings.Contains(opened, "client_id=mock-client") {
 		t.Errorf("authorize URL missing registered client: %s", opened)
+	}
+}
+
+// TestLoginRejectsStateMismatch proves the loopback callback is rejected when
+// the state echoed back doesn't match the one sent in the authorize URL (the
+// CSRF protection state exists for): a callback with a missing or wrong state
+// must never yield a token.
+func TestLoginRejectsStateMismatch(t *testing.T) {
+	as := &mockOAuth{authCode: "code-3", accessTok: "tok-3", refreshTok: "ref-3"}
+	asSrv := httptest.NewServer(as.handler())
+	defer asSrv.Close()
+
+	store, err := OpenTokenStoreAt(filepath.Join(t.TempDir(), "tokens.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stdout strings.Builder
+	openBrowser := func(u string) error {
+		au, err := url.Parse(u)
+		if err != nil {
+			return err
+		}
+		// A hostile or buggy redirect: the state is dropped (or wrong).
+		resp, err := http.Get(au.Query().Get("redirect_uri") + "?code=code-3")
+		if err != nil {
+			return err
+		}
+		resp.Body.Close()
+		return nil
+	}
+
+	err = login(context.Background(), http.DefaultClient, asSrv.URL, "retool", "", &stdout, openBrowser, store)
+	if err == nil {
+		t.Fatal("login succeeded despite a state mismatch in the callback")
+	}
+	if !strings.Contains(err.Error(), "state mismatch") {
+		t.Errorf("login error = %q, want a state mismatch error", err)
+	}
+	if store.Get(asSrv.URL) != nil {
+		t.Error("token stored despite state mismatch")
 	}
 }
 

@@ -345,8 +345,21 @@ func pkcePair() (verifier, challenge string, err error) {
 	return verifier, challenge, nil
 }
 
-// buildAuthorizeURL assembles the authorization endpoint URL with PKCE.
-func buildAuthorizeURL(endpoint, clientID, redirect, challenge, scope string) (string, error) {
+// stateValue generates a random OAuth state value for CSRF protection
+// (RFC 6749 §10.12). 16 random bytes base64url-encoded is 22 characters —
+// comfortably past the 8-character minimum servers like Greptile enforce.
+func stateValue() (string, error) {
+	buf := make([]byte, 16)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(buf), nil
+}
+
+// buildAuthorizeURL assembles the authorization endpoint URL with PKCE and a
+// CSRF state value. state must be echoed back on the redirect; waitForCode
+// rejects callbacks that don't.
+func buildAuthorizeURL(endpoint, clientID, redirect, challenge, scope, state string) (string, error) {
 	u, err := url.Parse(endpoint)
 	if err != nil {
 		return "", err
@@ -357,6 +370,7 @@ func buildAuthorizeURL(endpoint, clientID, redirect, challenge, scope string) (s
 	q.Set("redirect_uri", redirect)
 	q.Set("code_challenge", challenge)
 	q.Set("code_challenge_method", "S256")
+	q.Set("state", state)
 	if scope != "" {
 		q.Set("scope", scope)
 	}
@@ -509,7 +523,11 @@ func login(ctx context.Context, client *http.Client, serverURL, name, scope stri
 	if err != nil {
 		return err
 	}
-	authURL, err := buildAuthorizeURL(meta.AuthorizationEndpoint, clientID, redirect, challenge, scope)
+	state, err := stateValue()
+	if err != nil {
+		return err
+	}
+	authURL, err := buildAuthorizeURL(meta.AuthorizationEndpoint, clientID, redirect, challenge, scope, state)
 	if err != nil {
 		return err
 	}
@@ -525,7 +543,7 @@ func login(ctx context.Context, client *http.Client, serverURL, name, scope stri
 	}
 	codeCh := make(chan codeResult, 1)
 	go func() {
-		code, err := waitForCode(ctx, ln)
+		code, err := waitForCode(ctx, ln, state)
 		codeCh <- codeResult{code: code, err: err}
 	}()
 
@@ -558,8 +576,10 @@ const loginTimeout = 5 * time.Minute
 
 // waitForCode accepts one HTTP request on the loopback listener and returns
 // the authorization code from its query string (or an error for an OAuth
-// error response, a malformed request, or a timeout).
-func waitForCode(ctx context.Context, ln net.Listener) (string, error) {
+// error response, a state mismatch, a malformed request, or a timeout).
+// state is the CSRF value sent in the authorize URL; a callback that doesn't
+// echo it back is rejected before the code is accepted.
+func waitForCode(ctx context.Context, ln net.Listener, state string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, loginTimeout)
 	defer cancel()
 	type res struct {
@@ -609,6 +629,10 @@ func waitForCode(ctx context.Context, ln net.Listener) (string, error) {
 			} else {
 				ch <- res{err: fmt.Errorf("authorization failed: %s", e)}
 			}
+			return
+		}
+		if got := u.Query().Get("state"); got != state {
+			ch <- res{err: errors.New("authorization response state mismatch (possible CSRF)")}
 			return
 		}
 		code := u.Query().Get("code")
