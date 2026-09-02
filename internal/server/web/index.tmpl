@@ -790,26 +790,39 @@
   // The reasoning text itself is plain, selectable text with no click handler,
   // so it behaves like normal content. The complete text is always kept in
   // memory on the element so expanded blocks keep updating live as deltas stream in.
-  // --- Scroll modes ---
-  // Auto-scroll is on by default and keeps the view pinned to the bottom as
-  // new output streams in. The first time the user scrolls away from the
-  // bottom, auto-scroll is disabled (one-way: scrolling back down does NOT
-  // re-enable it). While disabled, a "Follow new output" button appears when
-  // new content streams in; clicking it re-enables auto-scroll.
-  let autoScroll = true;
+  // --- Follow mode (semi-lock) ---
+  // Following is an explicit mode, not a pixel-distance measurement. When on,
+  // new output keeps the view pinned to the bottom; scrolling up disarms it
+  // immediately (one-way: scrolling back down does NOT re-enable it). The
+  // button stays visible as the mode indicator — "Stop following" while on,
+  // "Follow new output" while off — and is the only way back in. Because
+  // nothing is measured apart from the tiny disarm threshold, background
+  // layout churn (humanize tab bars, pane growth, commit re-render) can
+  // never silently trip it.
+
+  let followMode = true;
   const followBtn = document.getElementById('follow-btn');
 
+  function updateFollowButton() {
+    if (!followBtn) return;
+    followBtn.textContent = followMode ? 'Stop following' : 'Follow new output';
+    followBtn.hidden = false;
+  }
+  updateFollowButton();
+
   if (chat) {
-    // A user-initiated scroll away from the bottom turns auto-scroll off.
-    // Programmatic scrolls to the bottom land at the bottom, so they don't
-    // trip this and auto-scroll stays enabled.
+    // Semi-lock: any user scroll away from the bottom disarms follow right
+    // away; the button flips to "Follow new output". Programmatic re-pins
+    // land at the bottom, so they never trip this. Scrolling back down does
+    // NOT re-enable it — the button is the only way back in.
     chat.addEventListener('scroll', function() {
-      if (!isNearBottom(chat)) {
-        autoScroll = false;
+      if (followMode && !isNearBottom(chat)) {
+        followMode = false;
+        updateFollowButton();
       }
     });
-    // After the initial /view load (hx-trigger="load") lands, pin to the
-    // bottom when in auto-scroll mode. Guarded by autoScroll so a manual-mode
+    // After the initial /view load (hx-trigger="load") lands,pin to the
+    // bottom when in follow mode. Guarded by followMode so a manual-mode
     // form submit can never yank the user back down.
     chat.addEventListener('htmx:afterSwap', function() {
       initReasoningBlocks(chat);
@@ -841,7 +854,7 @@
         lastLiveSeq = 0;
         if (turnRunning) seedLiveFromServer();
       }
-      if (autoScroll) chat.scrollTop = chat.scrollHeight;
+      if (followMode) chat.scrollTop = chat.scrollHeight;
     });
     // Humanize variant tabs: clicking a tab switches the visible pane; the
     // "+" button chains another plain-language pass from the latest version.
@@ -875,10 +888,18 @@
   }
 
   if (followBtn) {
+    // The one button is the mode indicator and the only entry/exit point:
+    // while following it reads "Stop following" and releases the scroll; while
+    // idle it re-enters follow modeand pins to the bottom.
+
     followBtn.addEventListener('click', function() {
-      autoScroll = true;
-      followBtn.hidden = true;
-      chat.scrollTop = chat.scrollHeight;
+      if (followMode) {
+        followMode = false;
+      } else {
+        followMode = true;
+        chat.scrollTop = chat.scrollHeight;
+      }
+      updateFollowButton();
     });
   }
 
@@ -920,11 +941,12 @@
   }
 
   // Returns true if the chat is scrolled to (or within `threshold` px of the
-  // bottom. Used to decide whether to auto-follow new content: if the user has
-  // scrolled up to read earlier messages, don't yank the view back down.
+  // bottom. Only used to disarm follow on a user scroll;the threshold is a
+  // tiny 8px — enough to swallow wheel bounce / inertial overscroll,not
+  // intent, so the layout churn streamed content causes (humanize tab bars,
+  // pane growth, commit re-render) cannot silently disarm follow.
   function isNearBottom(el, threshold) {
-    const t = threshold || 40;
-    return el.scrollHeight - el.scrollTop - el.clientHeight <= t;
+    const t = threshold || 8;
   }
 
   // --- Collapsible reasoning ---
@@ -1665,7 +1687,6 @@
     fetch('/api/sessions/' + encodeURIComponent(sess) + '/live')
       .then(function(resp) { return resp.ok ? resp.json() : null; })
       .then(function(data) {
-        let hadNewContent = false;
         // Apply the tail (fresh from the server), then whatever streamed in
         // while we fetched. The same merge rule covers both, so an envelope
         // the SSE stream already applied (e.g. a reconnect replay beating the
@@ -1674,15 +1695,14 @@
         const applyMerged = function(env) {
           if (env.live_seq && env.live_seq <= lastLiveSeq) return;
           if (env.live_seq) lastLiveSeq = env.live_seq;
-          if (applyLLM(env.event)) hadNewContent = true;
+          applyLLM(env.event);
         };
         if (data && data.events) {
           for (const env of data.events) applyMerged(env);
         }
         seedingLive = false;
         while (pendingLive.length) applyMerged(pendingLive.shift());
-        if (autoScroll) chat.scrollTop = chat.scrollHeight;
-        else if (hadNewContent && followBtn) followBtn.hidden = false;
+        if (followMode) chat.scrollTop = chat.scrollHeight;
       })
       .catch(function() {
         // The seed failed (network); fall back to applying what streamed.
@@ -1691,24 +1711,21 @@
         // absence means we start mid-block, the next commit reconciles —
         // exactly the behavior before /live existed.
         seedingLive = false;
-        let hadNewContent = false;
         while (pendingLive.length) {
           const env = pendingLive.shift();
           if (env.live_seq && env.live_seq <= lastLiveSeq) continue;
           if (env.live_seq) lastLiveSeq = env.live_seq;
-          if (applyLLM(env.event)) hadNewContent = true;
+          applyLLM(env.event);
         }
-        if (autoScroll) chat.scrollTop = chat.scrollHeight;
-        else if (hadNewContent && followBtn) followBtn.hidden = false;
+        if (followMode) chat.scrollTop = chat.scrollHeight;
       });
   }
 
   window.sseMessage = function(evt) {
     const env = JSON.parse(evt.detail.data);
-    // Track whether this SSE event actually added content to the DOM. If
-    // auto-scroll is disabled, new content is what surfaces the "Follow new
-    // output" button (there's nothing to follow otherwise).
-    let hadNewContent = false;
+    // Follow mode handles sticking to the bottom, so there is no per-event
+    // "new content" bookkeeping (the button is always visible as the mode
+    // indicator, regardless of event type).
     switch (env.kind) {
       case 'message_committed':
         const m = env.message;
@@ -1725,7 +1742,6 @@
           turnRunning = true;
           queueDepth = env.queue || 0;
           updateStatus();
-          hadNewContent = true;
 		} else if (m.role === 'system') {
 		  // A committed system message (e.g. an execution-provider change
 		  // notice) renders as a dim status block, matching /view.
@@ -1735,10 +1751,8 @@
 		  sysDiv.className = 'msg msg-system';
 		  sysDiv.innerHTML = '<span class="msg-role">exec</span><div class="msg-content">' + escapeHTML(m.content).replace(/\n/g, '<br>') + '</div>';
 		  chat.appendChild(sysDiv);
-		  hadNewContent = true;
 		} else if (m.role === 'assistant') {
           finalizeAssistant(m, env.message_html, env.seq);
-          hadNewContent = true;
         } else if (m.role === 'tool') {
           currentAssistant = null;
           currentReasoning = null;
@@ -1761,7 +1775,6 @@
           // message, matching /view's history layout (live placement already
           // does this via insertToolResult).
           insertToolResult(run.resultEl);
-          hadNewContent = true;
         }
         break;
       case 'variant_started':
@@ -1770,9 +1783,10 @@
         if (env.variant) setVariantTab(env.variant.message_seq, env.variant.index, null);
         break;
       case 'variant_ready':
-        // A pass finished (or failed): fill its tab with the rewrite.
+        // A pass finished (or failed): fill its tab with the rewrite. An
+        // in-place pane update — often on a hidden tab — is not scroll-
+        // worthy output, so it does not affect follow mode.
         if (env.variant) setVariantTab(env.variant.message_seq, env.variant.index, env.variant);
-        hadNewContent = true;
         break;
       case 'llm':
         // Every live LLM envelope carries the session's monotonic live
@@ -1792,7 +1806,7 @@
           break;
         }
         if (env.live_seq) lastLiveSeq = env.live_seq;
-        if (applyLLM(env.event)) hadNewContent = true;
+        applyLLM(env.event);
         break;
       case 'tool_started':
         // The tool began running on the server. Claim its run and start the
@@ -1809,7 +1823,6 @@
         ensureResult(tsRun);
         renderResult(tsRun);
         startToolTimer();
-        hadNewContent = true;
         break;
       case 'tool_result':
         // The terminal result arrives once the tool exits. It may follow a
@@ -1830,7 +1843,6 @@
         trRun.finishedAt = env.finished_at || 0;
         ensureResult(trRun);
         renderResult(trRun);
-        hadNewContent = true;
         break;
       case 'tool_cancelled':
         // The user cancelled this run: reconcile the block to the server's
@@ -1849,7 +1861,6 @@
         tcRun.cancelling = false;
         ensureResult(tcRun);
         renderResult(tcRun);
-        hadNewContent = true;
         break;
       case 'tool_result_delta':
         // One live chunk of a running tool's output: append to the run so
@@ -1865,7 +1876,6 @@
         trdRun.status = trdRun.status === 'done' ? 'done' : 'running';
         ensureResult(trdRun);
         renderResult(trdRun);
-        hadNewContent = true;
         break;
 		case 'exec_status':
 		  // The session's execution provider changed (connected, disconnected,
@@ -1926,7 +1936,6 @@
           }
           stopDiv.textContent = label;
           chat.appendChild(stopDiv);
-          hadNewContent = true;
         } else if (env.error && !turnOutcomeRendered('error', tseq)) {
           markTurnOutcomeRendered('error', tseq);
           const errDiv = document.createElement('div');
@@ -1935,7 +1944,6 @@
           errDiv.innerHTML = '<span class="msg-role">error</span><div class="msg-content">' +
             escapeHTML(env.error).replace(/\n/g, '<br>') + '</div>';
           chat.appendChild(errDiv);
-          hadNewContent = true;
         } else if ((env.cached_input > 0 || env.uncached_input > 0 || env.output > 0) && !turnOutcomeRendered('token', tseq)) {
           markTurnOutcomeRendered('token', tseq);
           const tokDiv = document.createElement('div');
@@ -1943,7 +1951,6 @@
           if (tseq) tokDiv.dataset.turnSeq = tseq;
           tokDiv.textContent = tokenLine(env.cached_input || 0, env.uncached_input || 0, env.output || 0);
           chat.appendChild(tokDiv);
-          hadNewContent = true;
         }
         // The session total below the input box is authoritative on the
         // completion marker: set (never add) from the carried totals, so an
@@ -1960,17 +1967,12 @@
           }
         }
         updateStatus();
-        hadNewContent = true;
         break;
     }
-    // Modes: in auto-scroll mode we keep the view pinned to the bottom as new
-    // output arrives. If the user scrolled up, auto-scroll is off and we
-    // respect their position, surfacing the follow button so they can resume.
-    if (autoScroll) {
-      chat.scrollTop = chat.scrollHeight;
-    } else if (hadNewContent && followBtn) {
-      followBtn.hidden = false;
-    }
+    // Follow mode keeps the view pinned to the bottom as content arrives. If
+    // the user scrolled up,follow is off and we respect their position — the
+    // always-visible button is how they resume.
+    if (followMode) chat.scrollTop = chat.scrollHeight;
   };
 
   // After sending a message, clear the input and keep focus. The form only
