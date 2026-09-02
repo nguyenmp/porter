@@ -905,3 +905,22 @@ func TestArgsHint(t *testing.T) {
 		t.Errorf("argsHint(no props) = %q, want empty", got)
 	}
 }
+
+func TestCallDefRequiresArgs(t *testing.T) {
+	def := callDef()
+	params := def.Function.Parameters
+	required, _ := params["required"].([]string)
+	found := false
+	for _, r := range required {
+		if r == "args" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("callDef required = %v, want args required so the model cannot omit it", required)
+	}
+	desc, _ := params["properties"].(map[string]any)["args"].(map[string]any)["description"].(string)
+	if !strings.Contains(desc, "Always pass this") {
+		t.Errorf("args description should make the requirement explicit: %q", desc)
+	}
+}

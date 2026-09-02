@@ -113,9 +113,9 @@ func callDef() llm.Tool {
 				"properties": map[string]any{
 					"server_name": map[string]any{"type": "string", "description": "The MCP server to call (see FindMCP for configured servers)."},
 					"tool_name":   map[string]any{"type": "string", "description": "The tool to call on that server."},
-					"args":        map[string]any{"type": "object", "description": "The tool's arguments, matching its input schema (see FindMCP with full=true)."},
+					"args":        map[string]any{"type": "object", "description": "The tool's arguments, as a JSON object matching its input schema (see FindMCP with full=true). Example: {\"urls\": [\"https://example.com\"]} for exa-web_fetch_exa. Always pass this; if the tool takes no arguments, pass {}."},
 				},
-				"required": []string{"server_name", "tool_name"},
+				"required": []string{"server_name", "tool_name", "args"},
 			},
 		},
 	}
