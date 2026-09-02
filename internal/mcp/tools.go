@@ -211,7 +211,11 @@ func (h *Hub) runFind(ctx context.Context, args []byte, extra []api.MCPServer) (
 					fmt.Fprintf(&b, "    inputSchema: %s\n", schema)
 				}
 			case !in.Full && matched <= findSnippetMaxTools:
-				fmt.Fprintf(&b, "  %s: %s\n", t.Name, snippet(t.Description))
+				fmt.Fprintf(&b, "  %s: %s", t.Name, snippet(t.Description))
+				if reqs := requiredArgs(t.InputSchema); len(reqs) > 0 {
+					fmt.Fprintf(&b, " [requires: %s]", strings.Join(reqs, ", "))
+				}
+				fmt.Fprintf(&b, "\n")
 			}
 		}
 		switch {
@@ -254,7 +258,11 @@ func (h *Hub) runFind(ctx context.Context, args []byte, extra []api.MCPServer) (
 					fmt.Fprintf(&b, "    inputSchema: %s\n", schema)
 				}
 			case !in.Full && matched <= findSnippetMaxTools:
-				fmt.Fprintf(&b, "  %s: %s\n", t.Name, snippet(t.Description))
+				fmt.Fprintf(&b, "  %s: %s", t.Name, snippet(t.Description))
+				if reqs := requiredArgs(t.InputSchema); len(reqs) > 0 {
+					fmt.Fprintf(&b, " [requires: %s]", strings.Join(reqs, ", "))
+				}
+				fmt.Fprintf(&b, "\n")
 			}
 		}
 		switch {

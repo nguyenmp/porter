@@ -262,7 +262,8 @@ func TestFetchAndCall(t *testing.T) {
 		t.Fatalf("tools = %d, want 2", got)
 	}
 
-	// FindMCP: snippet mode with a query.
+	// FindMCP: snippet mode with a query. The schema's required field shows
+	// up inline so the model knows arguments are mandatory without full mode.
 	out, err := h.Run(context.Background(), FindTool, []byte(`{"server_name":"web","query":"search"}`))
 	if err != nil {
 		t.Fatalf("FindMCP: %v", err)
@@ -271,6 +272,9 @@ func TestFetchAndCall(t *testing.T) {
 	_ = out.Close()
 	if !strings.Contains(string(data), "server web (2 tools)") || !strings.Contains(string(data), "search") {
 		t.Errorf("FindMCP snippet output = %q", data)
+	}
+	if !strings.Contains(string(data), "[requires: q]") {
+		t.Errorf("FindMCP snippet should list required args inline: %q", data)
 	}
 	if strings.Contains(string(data), "fetch_page") {
 		t.Errorf("FindMCP query filter leaked fetch_page: %q", data)
