@@ -264,6 +264,19 @@ func discoverWellKnown(ctx context.Context, client *http.Client, server string) 
 	return &meta, nil
 }
 
+// oauthMetadata bundles the authorization-server metadata with the scopes the
+// MCP resource server itself advertises (RFC 9728 protected-resource
+// metadata), when it publishes any. The authorization server's own
+// scopes_supported list is not enough to rely on for servers like Greptile: its
+// AS lists offline_access, offline, openid, and read, while the MCP API
+// itself requires read and write (and "write" is missing entirely from the AS
+// list). When the config specifies no scope, the resource-advertised scopes
+// are what porter should request:
+type oauthMetadata struct {
+	meta   *wellKnown
+	scopes []string // the RFC 9728 protected-resource scopes (nil when none published)
+}
+
 // discover fetches the OAuth authorization-server metadata for an MCP server,
 // following the MCP spec's discovery order: RFC 9728 protected-resource
 // metadata from the resource (whose authorization_servers names the true
@@ -274,20 +287,24 @@ func discoverWellKnown(ctx context.Context, client *http.Client, server string) 
 // (api.greptile.com) and the authorization server (auth.greptile.com) live on
 // different origins and only the RFC 9728 document exists at the resource's
 // origin.
-func discover(ctx context.Context, client *http.Client, serverURL string) (*wellKnown, error) {
+func discover(ctx context.Context, client *http.Client, serverURL string) (*oauthMetadata, error) {
 	if prm, err := discoverProtectedResource(ctx, client, serverURL); err != nil {
 		return nil, err
 	} else if prm != nil {
 		for _, asURL := range prm.AuthorizationServers {
 			if meta, err := discoverWellKnown(ctx, client, asURL); err == nil {
-				return meta, nil
+				return &oauthMetadata{meta: meta, scopes: prm.ScopesSupported}, nil
 			}
 		}
 	}
 	// Legacy fallback: pre-RFC 9728 servers and single-origin servers serve
 	// RFC 8414 directly against the resource's origin.This is where porter
 	// always looked before.
-	return discoverWellKnown(ctx, client, serverURL)
+	meta, err := discoverWellKnown(ctx, client, serverURL)
+	if err != nil {
+		return nil, err
+	}
+	return &oauthMetadata{meta: meta}, nil
 }
 
 // registerClient dynamically registers a public OAuth client (RFC 7591) with
@@ -502,9 +519,19 @@ func Login(ctx context.Context, client *http.Client, serverURL, name, scope stri
 
 // login is Login with an explicit token store (tests inject a temp one).
 func login(ctx context.Context, client *http.Client, serverURL, name, scope string, stdout io.Writer, openBrowser func(string) error, store *TokenStore) error {
-	meta, err := discover(ctx, client, serverURL)
+	om, err := discover(ctx, client, serverURL)
 	if err != nil {
 		return err
+	}
+	meta := om.meta
+	// When the config specifies no scope, request whatever scopes the resource
+	// itself advertises via RFC 9728 (Greptile advertises read write there,
+	// while its AS's scopes_supported omits write). Without this, sending no
+	// scope makes servers like Greptile issue an empty-scope token and every call
+	// fails with "Insufficient scope". Servers without protected-resource metadata
+	// keep the old behavior: no scope is sent, and their own defaults apply.
+	if scope == "" {
+		scope = strings.Join(om.scopes, " ")
 	}
 	// Ephemeral loopback redirect: bind port 0 so the OS picks a free port
 	// and the redirect URI always matches this run's registration.
@@ -685,9 +712,9 @@ func logout(ctx context.Context, client *http.Client, serverURL string, store *T
 	if e == nil {
 		return nil
 	}
-	if meta, err := discover(ctx, client, serverURL); err == nil && meta.RevocationEndpoint != "" && e.AccessToken != "" {
+	if om, err := discover(ctx, client, serverURL); err == nil && om.meta.RevocationEndpoint != "" && e.AccessToken != "" {
 		form := url.Values{"token": {e.AccessToken}, "client_id": {e.ClientID}}
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, meta.RevocationEndpoint, strings.NewReader(form.Encode()))
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, om.meta.RevocationEndpoint, strings.NewReader(form.Encode()))
 		if err == nil {
 			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 			if resp, err := client.Do(req); err == nil {

@@ -109,9 +109,10 @@ host is the session's active provider, matching how `shell` behaves on it.
 
 Auth is either a static bearer token (`"auth": {"type": "bearer", "token":
 "..."}`) or OAuth 2.0 (`"auth": {"type": "oauth"}`) for servers that only
-accept OAuth (e.g. Retool's MCP). `scope` is optional — omit it to use the
-server's default scopes, or set it (e.g. `"scope": "mcp:read"`) to request
-least privilege. OAuth uses dynamic client registration and the
+accept OAuth (e.g. Retool's MCP). `scope` is optional — set it (e.g.
+`"scope": "mcp:read"`) to request least privilege, or omit it to request
+the scopes the server advertises (Greptile's protected-resource metadata lists
+`read write`).
 authorization-code flow with PKCE over an ephemeral loopback redirect: run
 `porter mcp login <server-name>` on the machine that can reach the server —
 it opens a browser, and stores tokens in `~/.porter/mcp/tokens.json` (0600).

@@ -323,6 +323,15 @@ func TestLoginViaProtectedResourceMetadata(t *testing.T) {
 	if e.TokenURL != asSrv.URL+"/token" {
 		t.Errorf("token URL = %q, want the authorization server's %q (shows RFC 8414 came from the advertised AS, not the resource)", e.TokenURL, asSrv.URL+"/token")
 	}
+	// With no scope configured, the login must request the scopes the resource
+	// itself advertises (RFC 9728 protected-resource metadata), so the token
+	// is not issued empty. The mock advertises "read write".
+	if !strings.Contains(opened, "scope=read+write") {
+		t.Errorf("authorize URL missing resource-advertised scope: %s", opened)
+	}
+	if e.Scope != "read write" {
+		t.Errorf("stored scope = %q, want resource-advertised %q", e.Scope, "read write")
+	}
 	if !strings.Contains(opened, "client_id=mock-client") {
 		t.Errorf("authorize URL missing registered client: %s", opened)
 	}

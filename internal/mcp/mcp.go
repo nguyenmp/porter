@@ -58,7 +58,8 @@ type Tool struct {
 // a static token; type "oauth" uses the OAuth 2.0 authorization-code flow
 // (see oauth.go): tokens live in the user's ~/.porter/mcp/tokens.json, are
 // refreshed automatically, and never appear in the config file. Scope is the
-// OAuth scope to request ("" = the server's defaults).
+// OAuth scope to request ("" =the server's advertised scopes,, or its defaults
+// when none are advertised).)
 type Auth struct {
 	Type  string
 	Token string
