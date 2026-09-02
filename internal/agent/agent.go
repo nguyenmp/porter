@@ -7,6 +7,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"strings"
@@ -140,18 +141,39 @@ func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage,
 	}
 
 	// Repeated identical failing calls within one turn (a model re-issuing the
-	// same malformed call, as MCP validation errors invite) get a hint appended
-	// on the second failure, so the loop does not silently burn round-trips on
-	// the same mistake. Keyed by tool name + raw arguments; a success with the
-	// same key clears the record.
-	lastFails := map[string]string{}
+	// same malformed call, as MCP validation errors invite) are flagged on the
+	// second failure and blocked outright from the cap onward, so the loop
+	// does not burn round-trips on the same mistake. Keyed by tool name + raw
+	// arguments; a success with the same key clears the record, so a call that
+	// was actually fixed starts a fresh budget.
+	repeatCapAt := 3 // an identical call may fail this many times, then it is blocked
+	type failRec struct {
+		prev  string // first failure's text, for the "already failed" hint
+		count int
+	}
+	lastFails := map[string]*failRec{}
+	blockedText := func(key string) string {
+		name := key
+		if i := strings.IndexByte(key, 0); i >= 0 {
+			name = key[:i]
+		}
+		n := 1
+		if f := lastFails[key]; f != nil {
+			n = f.count
+		}
+		return fmt.Sprintf("[this tool call is blocked: %s has already failed %d times in a row with these exact arguments. Do not repeat it; fix the arguments (see the error and the tool's inputSchema), call a different tool, or stop tool use and reply.]", name, n)
+	}
 	noteRepeat := func(key, result string) string {
-		prev, ok := lastFails[key]
+		f, ok := lastFails[key]
 		if !ok {
-			lastFails[key] = result
+			lastFails[key] = &failRec{prev: result, count: 1}
 			return result
 		}
-		return result + "\n\n[this exact tool call already failed earlier in this turn: " + noteTrim(prev) + " — change the arguments or the approach]"
+		f.count++
+		if f.count >= repeatCapAt {
+			return result + "\n\n" + blockedText(key)
+		}
+		return result + "\n\n[this exact tool call already failed earlier in this turn: " + noteTrim(f.prev) + " — change the arguments or the approach]"
 	}
 
 	for i := 0; ; i++ {
@@ -311,6 +333,21 @@ func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage,
 			return res, err
 		}
 		for _, c := range calls {
+			// A call already at the repeat cap is never issued again: commit
+			// the block as its tool result (the assistant message advertising
+			// the call is already committed, so history stays well-formed) and
+			// move on instead of executing the same failing call once more.
+			blockKey := c.Name + "\x00" + c.Arguments
+			if f, ok := lastFails[blockKey]; ok && f.count >= repeatCapAt {
+				blocked := blockedText(blockKey)
+				if emit != nil {
+					emit(api.Envelope{Kind: api.KindToolResult, ToolCallID: c.ID, Name: c.Name, Arguments: c.Arguments, Result: blocked})
+				}
+				if err := commit(llm.ToolResult(c.ID, blocked)); err != nil {
+					return res, err
+				}
+				continue
+			}
 			// Each tool runs under its own context so it can be cancelled
 			// independently of the turn (a user clicking Cancel in the UI stops
 			// one runaway command without tearing down the whole session). The

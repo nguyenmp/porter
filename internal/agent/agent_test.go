@@ -1490,3 +1490,72 @@ func TestRunTurnFlagsRepeatedIdenticalFailure(t *testing.T) {
 		t.Errorf("first failure must not carry the repeat note: %q", first)
 	}
 }
+
+// TestRunTurnBlocksRepeatedIdenticalFailure sends the same failing tool call
+// four times: the first is a plain error, the second carries the "already
+// failed" hint, the third carries the block directive, and the fourth is never
+// executed — the loop commits the block as its result instead of running the
+// tool again, so a runaway loop caps at repeatCapAt executions.
+func TestRunTurnBlocksRepeatedIdenticalFailure(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Messages []json.RawMessage `json:"messages"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		w.Header().Set("Content-Type", "text/event-stream")
+		prior := 0
+		for _, m := range req.Messages {
+			var msg struct {
+				Role      string `json:"role"`
+				ToolCalls []struct {
+					ID string `json:"id"`
+				} `json:"tool_calls"`
+			}
+			_ = json.Unmarshal(m, &msg)
+			if msg.Role == "assistant" {
+				prior += len(msg.ToolCalls)
+			}
+		}
+		switch {
+		case prior < 4:
+			callID := fmt.Sprintf("call_%d", prior+1)
+			fmt.Fprintf(w, `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":%q,"type":"function","function":{"name":"shell","arguments":"{\"command\":\"\"}"}}]},"finish_reason":"tool_calls"}]}`+"\n\n"+`data: [DONE]`+"\n", callID)
+		default:
+			fmt.Fprintf(w, `data: {"choices":[{"delta":{"content":"done"},"finish_reason":"stop"}]}`+"\n\n"+`data: [DONE]`+"\n")
+		}
+	}))
+	defer srv.Close()
+
+	cfg := config.Config{BaseURL: srv.URL + "/v1", Model: "test", APIKey: "k"}
+	client := llm.NewClient(cfg, nil)
+
+	res, err := RunTurn(context.Background(), client, []llm.ChatMessage{llm.UserMessage("run it")}, tools.NewDispatcher(), nil, nil)
+	if err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+	if res.Text != "done" {
+		t.Errorf("final text = %q, want done", res.Text)
+	}
+
+	var toolResults []string
+	for _, m := range res.History {
+		if m.Role == "tool" {
+			toolResults = append(toolResults, m.Content)
+		}
+	}
+	if len(toolResults) != 4 {
+		t.Fatalf("tool results = %d, want 4 (3 failures + 1 block)", len(toolResults))
+	}
+	if strings.Contains(toolResults[0], "already failed") {
+		t.Errorf("first failure must not carry the repeat note: %q", toolResults[0])
+	}
+	if !strings.Contains(toolResults[1], "already failed earlier in this turn") {
+		t.Errorf("second failure should carry the repeat hint: %q", toolResults[1])
+	}
+	if !strings.Contains(toolResults[2], "is blocked") {
+		t.Errorf("third failure should carry the block directive: %q", toolResults[2])
+	}
+	if !strings.Contains(toolResults[3], "is blocked") || strings.Contains(toolResults[3], "shell command is empty") {
+		t.Errorf("fourth result should be the block, not another run of the tool: %q", toolResults[3])
+	}
+}
