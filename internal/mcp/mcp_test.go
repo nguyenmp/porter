@@ -818,6 +818,18 @@ func TestCallMCPPreflightMissingArgs(t *testing.T) {
 		t.Errorf("wrong-key args: want error naming q, got %v", err)
 	}
 
+	// An args member sent empty ("" or {}) is distinguished from omitted, so
+	// the model can see which of its behaviors was wrong and fix it: the
+	// fix for "I sent nothing" differs from the fix for "I sent {}".
+	out, err = h.Run(context.Background(), CallTool, []byte(`{"server_name":"web","tool_name":"search","args":""}`))
+	if err == nil || !strings.Contains(err.Error(), "present but empty") {
+		t.Errorf("empty-string args: want the present-but-empty note, got %v", err)
+	}
+	out, err = h.Run(context.Background(), CallTool, []byte(`{"server_name":"web","tool_name":"search","args":{}}`))
+	if err == nil || !strings.Contains(err.Error(), "present but empty") {
+		t.Errorf("empty-object args: want the present-but-empty note, got %v", err)
+	}
+
 	// Correct args still go through.
 	out, err = h.Run(context.Background(), CallTool, []byte(`{"server_name":"web","tool_name":"search","args":{"q":"hi"}}`))
 	if err != nil {

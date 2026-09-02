@@ -382,6 +382,13 @@ func (h *Hub) runCall(ctx context.Context, args []byte) (io.ReadCloser, error) {
 
 	// Models sometimes pass args as a JSON string; unwrap it before use.
 	raw := bytes.TrimSpace(in.Args)
+	// argsPresent records whether the caller sent the "args" member at all
+	// ("" and {} both count as present-but-empty). It is judged on the raw
+	// value before the string-unwrap below, because args:"" unwraps to an
+	// empty buffer that would otherwise read as "omitted". The pre-flight
+	// error distinguishes omitted from empty: the two failures need different
+	// fixes, and models repeatedly send one when they meant the other.
+	argsPresent := len(raw) > 0 && string(raw) != "null"
 	if len(raw) > 0 && raw[0] == '"' {
 		var s string
 		if err := json.Unmarshal(raw, &s); err == nil {
@@ -402,7 +409,11 @@ func (h *Hub) runCall(ctx context.Context, args []byte) (io.ReadCloser, error) {
 	if t, ok := s.Tool(in.ToolName); ok {
 		inputSchema = t.InputSchema
 		if missing := missingArgs(inputSchema, argMap); len(missing) > 0 {
-			return nil, fmt.Errorf("CallMCP %s: missing required arguments: %s (tool inputSchema: %s; use FindMCP full=true to see it)", in.ToolName, strings.Join(missing, ", "), schemaJSON(inputSchema))
+			msg := fmt.Sprintf("CallMCP %s: missing required arguments: %s (tool inputSchema: %s; use FindMCP full=true to see it)", in.ToolName, strings.Join(missing, ", "), schemaJSON(inputSchema))
+			if argsPresent && len(argMap) == 0 {
+				msg += "\nnote: \"args\" was sent present but empty — the required fields must go inside \"args\" (the object), not omitted or as an empty string/object."
+			}
+			return nil, errors.New(msg)
 		}
 	}
 	params := map[string]any{"name": in.ToolName}
