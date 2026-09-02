@@ -6,7 +6,11 @@
 // prompt caching makes repeat passes cheap), driven by a hard-coded
 // prompt distilled from the plain-language skill — a silent background step
 // must be fast, deterministic, and cheap, not a skill-loading multi-fetch
-// ritual.
+// ritual. The same prompt is also exposed as a built-in skill (BuiltinSkill /
+// Prompt): the server is a single binary with no skill files in its build, so
+// the skill is hard-coded in Go and load_skill serves it from memory. One
+// source of truth means the background pass and the loadable skill can never
+// drift.
 package humanize
 
 import (
@@ -14,6 +18,7 @@ import (
 	"fmt"
 	"strings"
 
+	"porter/internal/api"
 	"porter/internal/codec"
 	"porter/internal/db"
 	"porter/internal/llm"
@@ -23,6 +28,35 @@ import (
 // stamped on every pass so the UI can explain why a tab reads the way it does,
 // and should be bumped whenever the prompt below changes.
 const PromptVersion = "plain-language-v2"
+
+// SkillName is the name the built-in plain-language skill is exposed under,
+// both in the load_skill listing and as the sentinel path that tells the
+// dispatcher to serve its body from memory.
+const SkillName = "plain-language"
+
+// BuiltinPrefix marks a skill whose body is compiled into the binary rather
+// than read from a SKILL.md on disk. The server ships as a single binary with
+// no skill files, so built-in skills use Path = BuiltinPrefix + Name and the
+// dispatcher resolves the body in memory via Prompt.
+const BuiltinPrefix = "builtin:"
+
+// BuiltinSkill returns the plain-language prompt as a built-in skill. Name and
+// Description are what the model sees in load_skill; the sentinel Path tells
+// the dispatcher to serve the body from memory (Prompt) instead of a file, so
+// the skill is available in every build even when no skill files exist.
+func BuiltinSkill() api.Skill {
+	return api.Skill{
+		Name:        SkillName,
+		Description: "Rewrite or write text in plain language: simple, direct, reader-first prose (from the US government plainlanguage.gov guidelines). Load to get the full rewrite rules.",
+		Path:        BuiltinPrefix + SkillName,
+	}
+}
+
+// Prompt returns the current plain-language system prompt. It is the body of
+// the built-in plain-language skill, so the skill a model can load and the
+// prompt the background humanize pass uses are the same text — editing one
+// edits the other, and PromptVersion stamps both.
+func Prompt() string { return systemPrompt }
 
 // Auto-pass thresholds: an assistant reply qualifies when it has at least
 // MinWords words AND at least MinSentences sentences, and is not dominated by

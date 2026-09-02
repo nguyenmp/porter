@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"porter/internal/api"
+	"porter/internal/humanize"
 )
 
 func run(ctx context.Context, p Provider, name string, args []byte) (string, error) {
@@ -213,6 +214,32 @@ func TestLoadSkillReturnsSkillBody(t *testing.T) {
 	}
 	if !strings.Contains(res, "exit code: 0") {
 		t.Errorf("load_skill result missing exit-status line: %q", res)
+	}
+}
+
+// TestLoadSkillReturnsBuiltinBody verifies a built-in skill (sentinel path,
+// e.g. the plain-language prompt compiled into the binary) is served from
+// memory with no file on disk.
+func TestLoadSkillReturnsBuiltinBody(t *testing.T) {
+	d := NewDispatcherWithSkills([]api.Skill{humanize.BuiltinSkill()})
+
+	// The sentinel path is not a real file: resolution must come from memory.
+	if _, err := os.Stat(humanize.BuiltinSkill().Path); !os.IsNotExist(err) {
+		t.Fatalf("built-in sentinel path %q unexpectedly exists on disk", humanize.BuiltinSkill().Path)
+	}
+
+	res, err := run(context.Background(), d, "load_skill", []byte(`{"name":"`+humanize.SkillName+`"}`))
+	if err != nil {
+		t.Fatalf("Run load_skill (built-in): %v", err)
+	}
+	if res != humanize.Prompt()+"\nexit code: 0\n" {
+		t.Errorf("built-in load_skill result mismatch:\n got %q\nwant prompt body with exit line", res)
+	}
+	if !strings.Contains(res, "Rewrite the following text in plain language") {
+		t.Errorf("built-in load_skill result missing prompt body: %q", res)
+	}
+	if !strings.Contains(res, "exit code: 0") {
+		t.Errorf("built-in load_skill result missing exit-status line: %q", res)
 	}
 }
 

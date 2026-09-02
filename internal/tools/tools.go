@@ -17,6 +17,7 @@ import (
 	"sync"
 
 	"porter/internal/api"
+	"porter/internal/humanize"
 	"porter/internal/llm"
 )
 
@@ -184,10 +185,12 @@ func (d *Dispatcher) RunDir(ctx context.Context, name string, args []byte, dir s
 	}
 }
 
-// runLoadSkill reads a discovered skill's SKILL.md and returns its body as a
-// stream (with the conventional trailing exit-status line so the agent's tool
-// handling is uniform). It returns an error only when the skill is unknown or
-// unreadable.
+// runLoadSkill returns a skill's body as a stream (with the conventional
+// trailing exit-status line so the agent's tool handling is uniform). A
+// filesystem skill is read from its SKILL.md; a built-in skill (sentinel Path
+// under humanize.BuiltinPrefix, e.g. the plain-language prompt) is served from
+// memory, because the server is a single binary with no skill files in its
+// build. It returns an error only when the skill is unknown or unreadable.
 func (d *Dispatcher) runLoadSkill(args []byte) (io.ReadCloser, error) {
 	var in struct {
 		Name string `json:"name"`
@@ -201,11 +204,32 @@ func (d *Dispatcher) runLoadSkill(args []byte) (io.ReadCloser, error) {
 	if !ok {
 		return nil, fmt.Errorf("unknown skill: %q", in.Name)
 	}
-	data, err := os.ReadFile(skill.Path)
-	if err != nil {
-		return nil, fmt.Errorf("read skill %q: %w", in.Name, err)
+	var body string
+	if strings.HasPrefix(skill.Path, humanize.BuiltinPrefix) {
+		body, ok = builtinBody(skill.Name)
+		if !ok {
+			return nil, fmt.Errorf("read skill %q: no built-in body for %q", in.Name, skill.Path)
+		}
+	} else {
+		data, err := os.ReadFile(skill.Path)
+		if err != nil {
+			return nil, fmt.Errorf("read skill %q: %w", in.Name, err)
+		}
+		body = string(data)
 	}
-	return &stringStream{strings.NewReader(string(data) + "\nexit code: 0\n")}, nil
+	return &stringStream{strings.NewReader(body + "\nexit code: 0\n")}, nil
+}
+
+// builtinBody returns the in-memory body of a built-in skill by name. It is
+// the counterpart to exec's discovery of built-in skills: skills compiled into
+// the binary have no file to read, so their content lives here, keyed by the
+// same sentinel path prefix.
+func builtinBody(name string) (string, bool) {
+	switch name {
+	case humanize.SkillName:
+		return humanize.Prompt(), true
+	}
+	return "", false
 }
 
 // stringStream is an io.ReadCloser over an in-memory string.

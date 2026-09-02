@@ -17,6 +17,7 @@ import (
 	"strings"
 
 	"porter/internal/api"
+	"porter/internal/humanize"
 )
 
 // maxFiles bounds the file listing included in the context so it stays a small
@@ -185,7 +186,10 @@ func FindSkills(cwd string) []api.Skill {
 // FindSkillsIn discovers skills across the given roots, in order, deduplicated
 // by name so an earlier root's copy wins. Multi-repo sandboxes pass every
 // worktree first, so each repo's own skills load and a name clash resolves to
-// the first repo listed.
+// the first repo listed. After the filesystem scan, the binary's built-in
+// skills are appended (still deduplicated, so a filesystem skill with the same
+// name wins): the server is a single binary with no skill files in its build,
+// so built-in skills are hard-coded in Go and served from memory.
 func FindSkillsIn(roots []string) []api.Skill {
 	seen := make(map[string]bool)
 	var out []api.Skill
@@ -199,7 +203,22 @@ func FindSkillsIn(roots []string) []api.Skill {
 			out = append(out, s)
 		}
 	}
+	for _, s := range builtinSkills() {
+		if seen[s.Name] {
+			continue
+		}
+		seen[s.Name] = true
+		out = append(out, s)
+	}
 	return out
+}
+
+// builtinSkills returns the skills compiled into the binary. There are no
+// SKILL.md files in the server build, so each entry carries a sentinel Path
+// (humanize.BuiltinPrefix) that the dispatcher resolves from memory rather
+// than from disk.
+func builtinSkills() []api.Skill {
+	return []api.Skill{humanize.BuiltinSkill()}
 }
 
 // SkillRoots returns the directories to search for skills, most specific

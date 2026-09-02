@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"porter/internal/api"
+	"porter/internal/humanize"
 )
 
 // writeSkill creates a skill at root/<dir>/skills/<name>/SKILL.md and returns
@@ -313,18 +314,54 @@ func TestListFilesInPerRootBudget(t *testing.T) {
 func TestFindSkillsInOrdering(t *testing.T) {
 	// Two roots (e.g. two worktrees in one sandbox) both define the same
 	// skill name: the first root wins, mirroring FindSkills' repo-over-global
-	// preference.
+	// preference. The built-in plain-language skill is appended after the
+	// filesystem scan (no filesystem copy shadows it in this test), so the
+	// result is the deduped filesystem skill plus the built-in.
 	root1 := t.TempDir()
 	root2 := t.TempDir()
 	writeSkill(t, root1, ".agents", "dup", "# first\n\nfirst version\n")
 	writeSkill(t, root2, ".agents", "dup", "# second\n\nsecond version\n")
 
 	skills := FindSkillsIn([]string{root1, root2})
-	if len(skills) != 1 {
-		t.Fatalf("FindSkillsIn = %d skills, want 1 (deduped)", len(skills))
+	byName := make(map[string]api.Skill, len(skills))
+	for _, s := range skills {
+		byName[s.Name] = s
+	}
+	if len(byName) != 2 {
+		t.Fatalf("FindSkillsIn = %d unique skills, want 2 (filesystem dup + built-in plain-language)", len(byName))
 	}
 	want := filepath.Join(root1, ".agents", "skills", "dup", "SKILL.md")
-	if skills[0].Path != want {
-		t.Errorf("dup skill path = %q, want first root's %q", skills[0].Path, want)
+	if got := byName["dup"].Path; got != want {
+		t.Errorf("dup skill path = %q, want first root's %q", got, want)
+	}
+	// A filesystem skill named like the built-in shadows it (first-root rule).
+	root3 := t.TempDir()
+	writeSkill(t, root3, ".agents", humanize.SkillName, "# mine\n\nmy plain-language\n")
+	skills = FindSkillsIn([]string{root3})
+	if len(skills) != 1 {
+		t.Fatalf("FindSkillsIn with shadowing skill = %d skills, want 1", len(skills))
+	}
+	if got := skills[0].Path; got == humanize.BuiltinPrefix+humanize.SkillName {
+		t.Errorf("built-in shadowed the filesystem skill; path = %q", got)
+	}
+}
+
+func TestFindSkillsIncludesBuiltin(t *testing.T) {
+	// With no skills anywhere, the binary's built-in plain-language skill is
+	// still discovered: the server is a single binary with no SKILL.md files,
+	// so it is hard-coded and served from memory (sentinel path).
+	skills := FindSkillsIn(nil)
+	if len(skills) != 1 {
+		t.Fatalf("FindSkillsIn(nil) = %d skills, want 1 (built-in plain-language)", len(skills))
+	}
+	s := skills[0]
+	if s.Name != humanize.SkillName {
+		t.Errorf("built-in skill name = %q, want %q", s.Name, humanize.SkillName)
+	}
+	if s.Path != humanize.BuiltinPrefix+humanize.SkillName {
+		t.Errorf("built-in skill path = %q, want sentinel %q", s.Path, humanize.BuiltinPrefix+humanize.SkillName)
+	}
+	if s.Description == "" {
+		t.Error("built-in skill description is empty")
 	}
 }

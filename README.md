@@ -50,6 +50,13 @@ A tree of turns. Each turn has a single parent and can fork into many children.
   **load_skill** tool whose description lists every skill; calling it returns
   the full SKILL.md body. A multi-repo sandbox searches every sandboxed repo
   (each worktree is a repo root), so each repo's committed skills load.
+- Built-in skills are compiled into the binary instead of shipped as
+  SKILL.md files (the server is a single binary with no skill files in its
+  build). They are appended after the filesystem scan and deduplicated by
+  name, so a filesystem skill always shadows a built-in of the same name.
+  `load_skill` serves their bodies from memory. The plain-language prompt
+  behind Humanized variants is one (`internal/humanize` exposes it via
+  `Prompt()`); editing the prompt edits the skill, so the two cannot drift.
 - CLI tools the provider declares available ride along the environment: a
   curated manifest at `~/.porter/clis.json` (`{"clis": {"gt": "Graphite stack
   management (submit, split, restack, up/down)"}}`) lists what the model can
@@ -203,9 +210,11 @@ previous good version.
 
 The prompt is hard-coded in `internal/humanize` (distilled from the
 plain-language skill — no web fetches, no commentary, markdown preserved,
-facts and code untouched) and stamped on every pass as `prompt_version`, so
-old tabs still explain themselves when you tweak the prompt. The auto-trigger
-thresholds (`MinWords`, `MinSentences`, code-block detection) and the prompt
+facts and code untouched), stamped on every pass as `prompt_version`, and
+exposed as a built-in skill: `humanize.Prompt()` is the body of the
+`plain-language` skill that `load_skill` serves from memory, so the
+background pass and the loadable skill share one source of truth. The
+auto-trigger thresholds (`MinWords`, `MinSentences`, code-block detection)
 live there too. The backend surface is
 `POST /api/sessions/{id}/messages/{seq}/humanize`.
 

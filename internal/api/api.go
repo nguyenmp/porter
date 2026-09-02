@@ -423,7 +423,10 @@ type SessionsResponse struct {
 // Skill is the metadata for one discovered skill, as reported by an execution
 // provider. Name and Description are what the model sees in the load_skill
 // tool; Path is where the provider reads the full SKILL.md body from when the
-// model asks to load it. It is never shown to the model.
+// model asks to load it — except for built-in skills (Path prefixed with
+// humanize.BuiltinPrefix, e.g. the plain-language prompt), whose body is
+// compiled into the binary and served from memory, because the server build
+// has no skill files. Path is never shown to the model.
 type Skill struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
