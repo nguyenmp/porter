@@ -763,3 +763,16 @@ func TestNoSessionRecoveryForOtherErrors(t *testing.T) {
 		t.Errorf("initialize count = %d, want 1 (no recovery for unrelated errors)", m.inits)
 	}
 }
+
+func TestRPCErrorData(t *testing.T) {
+	e := &rpcError{Code: -32602, Message: "Input validation error", Data: json.RawMessage(`[{"code":"invalid_type","path":[]}]`)}
+	want := `MCP error -32602: Input validation error (data: [{"code":"invalid_type","path":[]}])`
+	if got := e.Error(); got != want {
+		t.Errorf("Error() = %q, want %q", got, want)
+	}
+	// A server that sends no data keeps the terse form.
+	plain := &rpcError{Code: -32000, Message: "boom"}
+	if got, want := plain.Error(), "MCP error -32000: boom"; got != want {
+		t.Errorf("plain Error() = %q, want %q", got, want)
+	}
+}

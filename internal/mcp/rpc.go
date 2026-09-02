@@ -29,13 +29,20 @@ type rpcResponse struct {
 	Error   *rpcError       `json:"error,omitempty"`
 }
 
-// rpcError is a JSON-RPC 2.0 error object.
+// rpcError is a JSON-RPC 2.0 error object. Data carries the server's
+// structured detail (when it sends any): JSON Schema validation servers, for
+// example, put the offending fields here. Keeping it readable for the model
+// turns opaque -32602 "invalid params" failures into the concrete problem.
 type rpcError struct {
-	Code    int    `json:"code"`
-	Message string `json:"message"`
+	Code    int             `json:"code"`
+	Message string          `json:"message"`
+	Data    json.RawMessage `json:"data,omitempty"`
 }
 
 func (e *rpcError) Error() string {
+	if len(e.Data) > 0 {
+		return fmt.Sprintf("MCP error %d: %s (data: %s)", e.Code, e.Message, string(e.Data))
+	}
 	return fmt.Sprintf("MCP error %d: %s", e.Code, e.Message)
 }
 
