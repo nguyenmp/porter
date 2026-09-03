@@ -181,7 +181,7 @@ func TestReleaseSessionNoSandbox(t *testing.T) {
 func TestReleaseSessionHostGone(t *testing.T) {
 	st := newTestStore(t)
 	ch := make(chan api.HostRequest, 8)
-	st.RegisterHost(ch, "mac", "macbook", "host")
+	conn := st.RegisterHost(ch, "mac", "macbook", "host")
 	go func() {
 		req := <-ch
 		st.ProvisionRegistered("session_1", req.ProviderID)
@@ -192,14 +192,14 @@ func TestReleaseSessionHostGone(t *testing.T) {
 
 	// The host disconnects (which also drops its sandbox records); releasing
 	// afterwards must not block, panic, or send.
-	st.UnregisterHost("mac")
+	st.UnregisterHost(conn)
 	st.ReleaseSession("session_1")
 }
 
 func TestUnregisterHostFailsPending(t *testing.T) {
 	st := newTestStore(t)
 	ch := make(chan api.HostRequest, 8)
-	st.RegisterHost(ch, "mac", "macbook", "host")
+	conn := st.RegisterHost(ch, "mac", "macbook", "host")
 
 	// The host drops while a provision is in flight: the goroutine consumes
 	// the request the main thread's Provision sends, then disconnects the
@@ -207,7 +207,7 @@ func TestUnregisterHostFailsPending(t *testing.T) {
 	unregistered := make(chan struct{})
 	go func() {
 		<-ch
-		st.UnregisterHost("mac")
+		st.UnregisterHost(conn)
 		close(unregistered)
 	}()
 
@@ -220,5 +220,29 @@ func TestUnregisterHostFailsPending(t *testing.T) {
 	// The host is gone; a second provision fails immediately.
 	if err := st.Provision(context.Background(), "session_1", "mac", api.HostRequest{}); err == nil {
 		t.Fatal("Provision after host removed should fail")
+	}
+}
+
+// TestUnregisterHostSupersededConnection proves UnregisterHost only removes
+// the registration owned by the given connection token: a late disconnect
+// from a connection that was replaced by a newer registration for the same
+// host id must not unregister the newer host.
+func TestUnregisterHostSupersededConnection(t *testing.T) {
+	st := newTestStore(t)
+	ch := make(chan api.HostRequest, 8)
+	old := st.RegisterHost(ch, "mac", "macbook", "host")
+	// A reconnect replaces the old registration for the same host id.
+	newConn := st.RegisterHost(ch, "mac", "macbook", "host")
+
+	// The superseded connection's disconnect must be a no-op.
+	st.UnregisterHost(old)
+	hosts := st.Hosts()
+	if len(hosts) != 1 || hosts[0].ID != "mac" || !hosts[0].Connected {
+		t.Fatalf("hosts after superseded disconnect = %+v, want mac still connected", hosts)
+	}
+	// The owning connection's disconnect removes it.
+	st.UnregisterHost(newConn)
+	if hosts := st.Hosts(); len(hosts) != 0 {
+		t.Fatalf("hosts after owner disconnect = %+v, want none", hosts)
 	}
 }

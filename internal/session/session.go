@@ -103,6 +103,7 @@ type Store struct {
 	pendingHostCtx map[string]*api.ExecContext
 	pending        map[string]*pendingProvision
 	hostSeq        int
+	connSeq        int
 	// sandboxes tracks, per session, the worktree sandbox a host provisioned
 	// for it (recorded when the provider registers), so archiving the session
 	// can release the sandbox.

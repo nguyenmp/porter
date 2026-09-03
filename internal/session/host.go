@@ -35,6 +35,11 @@ type host struct {
 	ch        chan api.HostRequest
 	ctx       *api.ExecContext
 	connected bool
+	// conn is the token of the connection that owns this registration (set by
+	// RegisterHost, matched by UnregisterHost). A superseded connection — one
+	// replaced by a newer registration for the same host id — carries a
+	// different token, so its disconnect cannot unregister the newer host.
+	conn string
 }
 
 // pendingProvision tracks one session's request for a provider on a host,
@@ -66,9 +71,12 @@ type sandbox struct {
 
 // RegisterHost adds a connected execution host to the registry. A connecting
 // host is upserted by id (re-registering after a reconnect updates it in
-// place); an id-less host (legacy or tests) gets a generated one, returned to
-// the caller so its deferred UnregisterHost can name the same host. A base
-// context posted before the connection (pendingHostCtx) attaches here.
+// place); an id-less host (legacy or tests) gets a generated one. It returns
+// a per-connection token that must be passed to UnregisterHost: only the
+// connection that owns the current registration can remove it, so a
+// superseded connection (replaced by a newer registration for the same host
+// id) cannot unregister the newer host. A base context posted before the
+// connection (pendingHostCtx) attaches here.
 func (st *Store) RegisterHost(ch chan api.HostRequest, id, name, kind string) string {
 	st.mu.Lock()
 	defer st.mu.Unlock()
@@ -88,39 +96,48 @@ func (st *Store) RegisterHost(ch chan api.HostRequest, id, name, kind string) st
 	}
 	h.ch = ch
 	h.connected = true
+	st.connSeq++
+	h.conn = fmt.Sprintf("conn-%d", st.connSeq)
 	if ctx, ok := st.pendingHostCtx[id]; ok {
 		h.ctx = ctx
 		delete(st.pendingHostCtx, id)
 	}
-	return id
+	return h.conn
 }
 
-// UnregisterHost removes a connected execution host from the registry and
-// fails its in-flight provisions, so a session waiting on a host that dropped
-// is told promptly instead of hanging until the timeout. The host's
-// per-session providers are not touched: they hold their own exec
-// connections and reconnect independently.
-func (st *Store) UnregisterHost(id string) {
+// UnregisterHost removes the host registration owned by the given connection
+// token (returned by RegisterHost) and fails its in-flight provisions, so a
+// session waiting on a host that dropped is told promptly instead of hanging
+// until the timeout. A token from a superseded connection is a no-op: the
+// newer registration for that host id stays. The host's per-session providers
+// are not touched: they hold their own exec connections and reconnect
+// independently.
+func (st *Store) UnregisterHost(conn string) {
 	st.mu.Lock()
-	_, ok := st.hosts[id]
-	if !ok {
-		st.mu.Unlock()
+	defer st.mu.Unlock()
+	var victim *host
+	for _, h := range st.hosts {
+		if h.conn == conn {
+			victim = h
+			break
+		}
+	}
+	if victim == nil {
 		return
 	}
-	delete(st.hosts, id)
+	delete(st.hosts, victim.id)
 	for pid, p := range st.pending {
-		if p.hostID == id {
+		if p.hostID == victim.id {
 			delete(st.pending, pid)
 			p.err = errors.New("execution host disconnected")
 			close(p.done)
 		}
 	}
 	for sid, sb := range st.sandboxes {
-		if sb.hostID == id {
+		if sb.hostID == victim.id {
 			delete(st.sandboxes, sid)
 		}
 	}
-	st.mu.Unlock()
 }
 
 // SetHostContext stores the base environment context a connected execution

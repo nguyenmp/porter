@@ -25,8 +25,8 @@ func (s *Server) handleHosts(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleHostExec(w http.ResponseWriter, r *http.Request) {
 	ch := make(chan api.HostRequest, 8)
 	q := r.URL.Query()
-	id := s.store.RegisterHost(ch, chi.URLParam(r, "host_id"), q.Get("name"), q.Get("kind"))
-	defer s.store.UnregisterHost(id)
+	conn := s.store.RegisterHost(ch, chi.URLParam(r, "host_id"), q.Get("name"), q.Get("kind"))
+	defer s.store.UnregisterHost(conn)
 
 	w.Header().Set("Content-Type", "application/x-ndjson")
 	w.WriteHeader(http.StatusOK)
