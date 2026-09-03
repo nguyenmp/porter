@@ -374,3 +374,28 @@ func TestSleepGap(t *testing.T) {
 		})
 	}
 }
+
+// TestHostLockAt proves the flock guard: a second lock on the same path
+// while the first is held fails with a message naming the lock file, and the
+// lock can be re-acquired after release. It locks a temp file directly
+// (lockHostAt), since taking the real ~/.porter lock would collide with any
+// running host agent on this machine.
+func TestHostLockAt(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pid.lock")
+
+	unlock, err := lockHostAt(path)
+	if err != nil {
+		t.Fatalf("first lock: %v", err)
+	}
+	// A second host on the same machine fails loudly.
+	if _, err := lockHostAt(path); err == nil {
+		t.Fatal("second lock succeeded, want failure")
+	} else if !strings.Contains(err.Error(), path) {
+		t.Errorf("second lock error = %q, want it to name %s", err, path)
+	}
+	// Releasing frees the lock for the next host.
+	unlock()
+	if _, err := lockHostAt(path); err != nil {
+		t.Fatalf("lock after release: %v", err)
+	}
+}

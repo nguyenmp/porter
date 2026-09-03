@@ -20,6 +20,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"porter/internal/api"
@@ -49,6 +50,21 @@ func Run(ctx context.Context, cfg config.ClientConfig) error {
 		} else {
 			hostID = "porter-host"
 		}
+		// Only one host agent may use the default host id (the hostname) per
+		// machine: guard it with a flock on ~/.porter/pid.lock, so a second
+		// `make host` fails here with a clear message instead of silently
+		// shadowing the running host on the server (the server also rejects a
+		// second registration with the same host id, but failing locally is
+		// faster and clearer). flock releases automatically when the process
+		// exits — even a SIGKILL — so the lock never goes stale. Setting
+		// PORTER_HOST_ID skips the lock entirely: distinct host ids never
+		// collide, which is how local multi-host testing (and the test
+		// suite) runs several hosts on one machine.
+		unlock, err := lockHost()
+		if err != nil {
+			return err
+		}
+		defer unlock()
 	}
 	// The host's default working directory is the directory the host process
 	// runs from (there is no PORTER_HOST_CWD); a chat can still request a
@@ -433,4 +449,38 @@ func randSuffix() string {
 		return ""
 	}
 	return fmt.Sprintf("%x", b)
+}
+
+// lockHost acquires the machine-wide default-host lock and returns a function
+// that releases it. The lock is a flock on ~/.porter/pid.lock (the directory
+// is created if needed), held for the process lifetime; flock releases
+// automatically on process exit, even a hard kill, so no stale-lock cleanup
+// is ever needed.
+func lockHost() (func(), error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, fmt.Errorf("host lock: find home directory: %w", err)
+	}
+	return lockHostAt(filepath.Join(home, ".porter", "pid.lock"))
+}
+
+// lockHostAt is lockHost with an explicit lock path, so tests can lock a
+// temp file. It opens the path, takes a non-blocking exclusive flock, and
+// returns an unlock func that closes the file (releasing the lock). A second
+// lock on the same path while the first is held fails.
+func lockHostAt(path string) (func(), error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, fmt.Errorf("host lock: create %s: %w", filepath.Dir(path), err)
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("host lock: open %s: %w", path, err)
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		_ = f.Close()
+		return nil, fmt.Errorf("another execution host is already running on this machine (lock %s is held); stop it, or set PORTER_HOST_ID to run another host", path)
+	}
+	// Write our pid so the lock file doubles as a record of who holds it.
+	_, _ = fmt.Fprintf(f, "%d\n", os.Getpid())
+	return func() { _ = f.Close() }, nil
 }
