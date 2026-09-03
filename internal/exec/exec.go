@@ -18,6 +18,7 @@ import (
 
 	"porter/internal/api"
 	"porter/internal/humanize"
+	"porter/internal/remoteedit"
 )
 
 // maxFiles bounds the file listing included in the context so it stays a small
@@ -215,10 +216,13 @@ func FindSkillsIn(roots []string) []api.Skill {
 
 // builtinSkills returns the skills compiled into the binary. There are no
 // SKILL.md files in the server build, so each entry carries a sentinel Path
-// (humanize.BuiltinPrefix) that the dispatcher resolves from memory rather
-// than from disk.
+// (api.BuiltinPrefix) that the dispatcher resolves from memory rather than
+// from disk.
 func builtinSkills() []api.Skill {
-	return []api.Skill{humanize.BuiltinSkill()}
+	return []api.Skill{
+		humanize.BuiltinSkill(),
+		remoteedit.BuiltinSkill(),
+	}
 }
 
 // SkillRoots returns the directories to search for skills, most specific

@@ -9,6 +9,7 @@ import (
 
 	"porter/internal/api"
 	"porter/internal/humanize"
+	"porter/internal/remoteedit"
 )
 
 // writeSkill creates a skill at root/<dir>/skills/<name>/SKILL.md and returns
@@ -314,9 +315,9 @@ func TestListFilesInPerRootBudget(t *testing.T) {
 func TestFindSkillsInOrdering(t *testing.T) {
 	// Two roots (e.g. two worktrees in one sandbox) both define the same
 	// skill name: the first root wins, mirroring FindSkills' repo-over-global
-	// preference. The built-in plain-language skill is appended after the
-	// filesystem scan (no filesystem copy shadows it in this test), so the
-	// result is the deduped filesystem skill plus the built-in.
+	// preference. The built-in skills are appended after the filesystem scan
+	// (no filesystem copy shadows them in this test), so the result is the
+	// deduped filesystem skill plus both built-ins.
 	root1 := t.TempDir()
 	root2 := t.TempDir()
 	writeSkill(t, root1, ".agents", "dup", "# first\n\nfirst version\n")
@@ -327,41 +328,57 @@ func TestFindSkillsInOrdering(t *testing.T) {
 	for _, s := range skills {
 		byName[s.Name] = s
 	}
-	if len(byName) != 2 {
-		t.Fatalf("FindSkillsIn = %d unique skills, want 2 (filesystem dup + built-in plain-language)", len(byName))
+	if len(byName) != 3 {
+		t.Fatalf("FindSkillsIn = %d unique skills, want 3 (filesystem dup + both built-ins)", len(byName))
 	}
 	want := filepath.Join(root1, ".agents", "skills", "dup", "SKILL.md")
 	if got := byName["dup"].Path; got != want {
 		t.Errorf("dup skill path = %q, want first root's %q", got, want)
 	}
-	// A filesystem skill named like the built-in shadows it (first-root rule).
+	// A filesystem skill named like a built-in shadows that one (first-root
+	// rule); the other built-in is still appended.
 	root3 := t.TempDir()
 	writeSkill(t, root3, ".agents", humanize.SkillName, "# mine\n\nmy plain-language\n")
 	skills = FindSkillsIn([]string{root3})
-	if len(skills) != 1 {
-		t.Fatalf("FindSkillsIn with shadowing skill = %d skills, want 1", len(skills))
+	byName = make(map[string]api.Skill, len(skills))
+	for _, s := range skills {
+		byName[s.Name] = s
 	}
-	if got := skills[0].Path; got == humanize.BuiltinPrefix+humanize.SkillName {
+	if len(skills) != 2 {
+		t.Fatalf("FindSkillsIn with shadowing skill = %d skills, want 2 (filesystem plain-language + built-in editing-remote-files)", len(skills))
+	}
+	if got := byName[humanize.SkillName].Path; got == api.BuiltinPrefix+humanize.SkillName {
 		t.Errorf("built-in shadowed the filesystem skill; path = %q", got)
+	}
+	if _, ok := byName[remoteedit.SkillName]; !ok {
+		t.Errorf("FindSkillsIn must still include the other built-in %q; got %v", remoteedit.SkillName, skills)
 	}
 }
 
 func TestFindSkillsIncludesBuiltin(t *testing.T) {
-	// With no skills anywhere, the binary's built-in plain-language skill is
-	// still discovered: the server is a single binary with no SKILL.md files,
-	// so it is hard-coded and served from memory (sentinel path).
+	// With no skills anywhere, the binary's built-in skills (plain-language
+	// and editing-remote-files) are still discovered: the server is a single
+	// binary with no SKILL.md files, so they are hard-coded and served from
+	// memory (sentinel path).
 	skills := FindSkillsIn(nil)
-	if len(skills) != 1 {
-		t.Fatalf("FindSkillsIn(nil) = %d skills, want 1 (built-in plain-language)", len(skills))
+	if len(skills) != 2 {
+		t.Fatalf("FindSkillsIn(nil) = %d skills, want 2 (built-in plain-language + editing-remote-files)", len(skills))
 	}
-	s := skills[0]
-	if s.Name != humanize.SkillName {
-		t.Errorf("built-in skill name = %q, want %q", s.Name, humanize.SkillName)
+	byName := make(map[string]api.Skill, len(skills))
+	for _, s := range skills {
+		byName[s.Name] = s
 	}
-	if s.Path != humanize.BuiltinPrefix+humanize.SkillName {
-		t.Errorf("built-in skill path = %q, want sentinel %q", s.Path, humanize.BuiltinPrefix+humanize.SkillName)
-	}
-	if s.Description == "" {
-		t.Error("built-in skill description is empty")
+	for _, name := range []string{humanize.SkillName, remoteedit.SkillName} {
+		s, ok := byName[name]
+		if !ok {
+			t.Errorf("missing built-in skill %q in %v", name, skills)
+			continue
+		}
+		if s.Path != api.BuiltinPrefix+name {
+			t.Errorf("built-in skill %q path = %q, want sentinel %q", name, s.Path, api.BuiltinPrefix+name)
+		}
+		if s.Description == "" {
+			t.Errorf("built-in skill %q description is empty", name)
+		}
 	}
 }

@@ -420,13 +420,22 @@ type SessionsResponse struct {
 	Sessions []SessionSummary `json:"sessions"`
 }
 
+// BuiltinPrefix marks a skill whose body is compiled into the binary rather
+// than read from a SKILL.md on disk. The server ships as a single binary with
+// no skill files in its build, so built-in skills use Path = BuiltinPrefix +
+// Name and the dispatcher resolves the body from memory. It lives here — the
+// package every skill owner and consumer already imports — so a built-in skill
+// package (humanize's plain-language, remoteedit's editing-remote-files) and
+// the exec/tools plumbing share one sentinel.
+const BuiltinPrefix = "builtin:"
+
 // Skill is the metadata for one discovered skill, as reported by an execution
 // provider. Name and Description are what the model sees in the load_skill
 // tool; Path is where the provider reads the full SKILL.md body from when the
 // model asks to load it — except for built-in skills (Path prefixed with
-// humanize.BuiltinPrefix, e.g. the plain-language prompt), whose body is
-// compiled into the binary and served from memory, because the server build
-// has no skill files. Path is never shown to the model.
+// BuiltinPrefix, e.g. the plain-language prompt), whose body is compiled into
+// the binary and served from memory, because the server build has no skill
+// files. Path is never shown to the model.
 type Skill struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`

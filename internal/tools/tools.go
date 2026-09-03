@@ -19,6 +19,7 @@ import (
 	"porter/internal/api"
 	"porter/internal/humanize"
 	"porter/internal/llm"
+	"porter/internal/remoteedit"
 )
 
 // shellDef is the model-facing definition of the shell tool.
@@ -198,7 +199,8 @@ func (d *Dispatcher) RunDir(ctx context.Context, name string, args []byte, dir s
 // runLoadSkill returns a skill's body as a stream (with the conventional
 // trailing exit-status line so the agent's tool handling is uniform). A
 // filesystem skill is read from its SKILL.md; a built-in skill (sentinel Path
-// under humanize.BuiltinPrefix, e.g. the plain-language prompt) is served from
+// under api.BuiltinPrefix, e.g. the plain-language and editing-remote-files
+// prompts) is served from
 // memory, because the server is a single binary with no skill files in its
 // build. It returns an error only when the skill is unknown or unreadable.
 func (d *Dispatcher) runLoadSkill(args []byte) (io.ReadCloser, error) {
@@ -215,7 +217,7 @@ func (d *Dispatcher) runLoadSkill(args []byte) (io.ReadCloser, error) {
 		return nil, fmt.Errorf("unknown skill: %q", in.Name)
 	}
 	var body string
-	if strings.HasPrefix(skill.Path, humanize.BuiltinPrefix) {
+	if strings.HasPrefix(skill.Path, api.BuiltinPrefix) {
 		body, ok = builtinBody(skill.Name)
 		if !ok {
 			return nil, fmt.Errorf("read skill %q: no built-in body for %q", in.Name, skill.Path)
@@ -238,6 +240,8 @@ func builtinBody(name string) (string, bool) {
 	switch name {
 	case humanize.SkillName:
 		return humanize.Prompt(), true
+	case remoteedit.SkillName:
+		return remoteedit.Prompt(), true
 	}
 	return "", false
 }

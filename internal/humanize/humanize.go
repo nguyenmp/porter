@@ -30,25 +30,21 @@ import (
 const PromptVersion = "plain-language-v4"
 
 // SkillName is the name the built-in plain-language skill is exposed under,
-// both in the load_skill listing and as the sentinel path that tells the
-// dispatcher to serve its body from memory.
+// both in the load_skill listing and as the sentinel path (api.BuiltinPrefix +
+// Name) that tells the dispatcher to serve its body from memory.
 const SkillName = "plain-language"
-
-// BuiltinPrefix marks a skill whose body is compiled into the binary rather
-// than read from a SKILL.md on disk. The server ships as a single binary with
-// no skill files, so built-in skills use Path = BuiltinPrefix + Name and the
-// dispatcher resolves the body in memory via Prompt.
-const BuiltinPrefix = "builtin:"
 
 // BuiltinSkill returns the plain-language prompt as a built-in skill. Name and
 // Description are what the model sees in load_skill; the sentinel Path tells
 // the dispatcher to serve the body from memory (Prompt) instead of a file, so
-// the skill is available in every build even when no skill files exist.
+// the skill is available in every build even when no skill files exist. The
+// shared sentinel prefix lives in api (every built-in skill and its exec/tools
+// plumbing agree on it); this package only contributes its own name.
 func BuiltinSkill() api.Skill {
 	return api.Skill{
 		Name:        SkillName,
 		Description: "Rewrite or write text in plain language: simple, direct, reader-first prose (from the US government plainlanguage.gov guidelines). Load to get the full rewrite rules.",
-		Path:        BuiltinPrefix + SkillName,
+		Path:        api.BuiltinPrefix + SkillName,
 	}
 }
 

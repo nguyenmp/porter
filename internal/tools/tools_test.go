@@ -11,6 +11,7 @@ import (
 
 	"porter/internal/api"
 	"porter/internal/humanize"
+	"porter/internal/remoteedit"
 )
 
 func run(ctx context.Context, p Provider, name string, args []byte) (string, error) {
@@ -237,6 +238,32 @@ func TestLoadSkillReturnsBuiltinBody(t *testing.T) {
 		t.Errorf("built-in load_skill result mismatch:\n got %q\nwant prompt body with exit line", res)
 	}
 	if !strings.Contains(res, "Rewrite the following text in plain language") {
+		t.Errorf("built-in load_skill result missing prompt body: %q", res)
+	}
+	if !strings.Contains(res, "exit code: 0") {
+		t.Errorf("built-in load_skill result missing exit-status line: %q", res)
+	}
+}
+
+// TestLoadSkillReturnsRemoteEditBuiltinBody verifies the built-in
+// editing-remote-files skill (a second compiled-in skill, like the
+// plain-language one) is served from memory with no file on disk.
+func TestLoadSkillReturnsRemoteEditBuiltinBody(t *testing.T) {
+	d := NewDispatcherWithSkills([]api.Skill{remoteedit.BuiltinSkill()})
+
+	// The sentinel path is not a real file: resolution must come from memory.
+	if _, err := os.Stat(remoteedit.BuiltinSkill().Path); !os.IsNotExist(err) {
+		t.Fatalf("built-in sentinel path %q unexpectedly exists on disk", remoteedit.BuiltinSkill().Path)
+	}
+
+	res, err := run(context.Background(), d, "load_skill", []byte(`{"name":"`+remoteedit.SkillName+`"}`))
+	if err != nil {
+		t.Fatalf("Run load_skill (built-in): %v", err)
+	}
+	if res != remoteedit.Prompt()+"\nexit code: 0\n" {
+		t.Errorf("built-in load_skill result mismatch:\n got %q\nwant prompt body with exit line", res)
+	}
+	if !strings.Contains(res, "Editing files on a remote host") {
 		t.Errorf("built-in load_skill result missing prompt body: %q", res)
 	}
 	if !strings.Contains(res, "exit code: 0") {
