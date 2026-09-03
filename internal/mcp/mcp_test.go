@@ -522,7 +522,7 @@ func TestCompositeRouting(t *testing.T) {
 	// No servers: hub tools are not exposed (the base tool set remains) and
 	// hub calls are rejected.
 	empty := &Composite{Exec: exec, Hub: New(nil)}
-	if names := toolNames(empty.Defs()); !equalStrings(names, []string{"shell", "read_with_line_numbers", "line_replace", "string_replace"}) {
+	if names := toolNames(empty.Defs()); !equalStrings(names, []string{"shell", "read_with_line_numbers", "line_insert", "line_replace", "string_replace"}) {
 		t.Errorf("empty hub Defs = %v, want the base tool set", names)
 	}
 	if _, err := empty.Run(context.Background(), FindTool, nil); err == nil {

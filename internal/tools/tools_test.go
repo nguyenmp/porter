@@ -197,7 +197,7 @@ func TestLoadSkillReturnsSkillBody(t *testing.T) {
 	// The tool is declared to the model when skills are present: shell + the
 	// file editing tools + load_skill.
 	defs := d.Defs()
-	if len(defs) != 5 {
+	if len(defs) != 6 {
 		t.Fatalf("Defs = %d tools, want shell + file tools + load_skill", len(defs))
 	}
 	if got := defs[len(defs)-1].Function.Name; got != "load_skill" {
@@ -285,7 +285,7 @@ func TestLoadSkillUnknownSkill(t *testing.T) {
 // serve them) but not load_skill (a provider can't serve it without skills).
 func TestDispatcherWithoutSkillsExposesBaseTools(t *testing.T) {
 	defs := NewDispatcher().Defs()
-	want := []string{"shell", ReadLinesTool, LineReplaceTool, StringReplace}
+	want := []string{"shell", ReadLinesTool, LineInsertTool, LineReplaceTool, StringReplace}
 	if len(defs) != len(want) {
 		t.Fatalf("Defs without skills = %d tools %+v, want %d", len(defs), defs, len(want))
 	}

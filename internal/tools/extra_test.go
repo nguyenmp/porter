@@ -11,15 +11,18 @@ import (
 // all removed).
 func TestLineReplaceRemovedBlockShowsOnlyRemoved(t *testing.T) {
 	path := writeTemp(t, "a\nb\nc\nd\ne\nf\n", 0o644)
-	res, err := run(context.Background(), NewDispatcher(), LineReplaceTool, []byte(`{"path":`+quote(path)+`,"start":3,"end":4,"new_text":"X\n"}`))
+	res, err := run(context.Background(), NewDispatcher(), LineReplaceTool, []byte(`{"path":`+quote(path)+`,"start":3,"end":4,"new_text":"X\nY\n"}`))
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if !strings.Contains(res, "removed (old line numbers):\n     3\tc\n") {
-		t.Errorf("removed block must contain only line 3 (c):\n%s", res)
+	if !strings.Contains(res, "removed (old line numbers):\n     3\tc\n     4\td\n") {
+		t.Errorf("removed block must contain only lines 3 (c) and 4 (d):\n%s", res)
 	}
-	// Lines 2 and 4 (kept, not removed) must not appear in the removed block.
+	// Lines 2 and 5 (kept, not removed) must not appear in the removed block.
 	if strings.Contains(res, "removed (old line numbers):\n     2\t") {
+		t.Errorf("removed block leaked a kept line:\n%s", res)
+	}
+	if strings.Contains(res, "removed (old line numbers):\n     5\t") {
 		t.Errorf("removed block leaked a kept line:\n%s", res)
 	}
 }

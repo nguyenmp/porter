@@ -185,6 +185,8 @@ func (d *Dispatcher) RunDir(ctx context.Context, name string, args []byte, dir s
 		return runShellDir(ctx, args, dir)
 	case ReadLinesTool:
 		return runReadDir(args, dir)
+	case LineInsertTool:
+		return runLineInsertDir(args, dir)
 	case LineReplaceTool:
 		return runLineReplaceDir(args, dir)
 	case StringReplace:

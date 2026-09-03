@@ -3,11 +3,13 @@
 //
 //   - read_with_line_numbers reads a file (or a numbered window of it) with
 //     cat -n style line numbers, so the model can reason about where things sit
-//     and drive the other two tools by those numbers.
-//   - line_replace cuts a whole-line range out of a file and pastes text in,
-//     keyed by the numbering read_with_line_numbers reports. Because the edit
-//     is a line-range splice it never rewrites the rest of the file, so a
-//     change costs tokens proportional to the change, not the file.
+//     and drive the other tools by those numbers.
+//   - line_insert pastes whole lines in before a numbered line (or appends
+//     them at the end of a file that ends in a newline).
+//   - line_replace cuts a numbered range of whole lines out and pastes new
+//     whole lines in their place, or deletes them. Its range is inclusive:
+//     start and end name the first and last line replaced, matching how the
+//     numbered read reports lines.
 //   - string_replace finds an exact literal string (no regex) and swaps every
 //     occurrence for new text in one step. The model must state exactly how
 //     many times old_text appears (expected_count, default 1), so a mismatch
@@ -16,7 +18,7 @@
 //     output rather than by provider state (which cannot survive execution
 //     handoff).
 //
-// All three run in Go on the execution provider, next to the shell tool, so
+// All four run in Go on the execution provider, next to the shell tool, so
 // every environment that can run shell commands gets them. They share the
 // shell's working directory and see the same files, and they write atomically
 // (temp file in the target's directory, then rename over it) so a failed or
@@ -26,12 +28,17 @@
 // strings.SplitAfter(content, "\n") — every element ends in "\n" except the
 // last, and an empty file has zero lines. Blank lines count; a trailing
 // newline does not add a phantom line. Reads and edits both report whether the
-// file ends in a newline, because that is the one boundary where text can be
-// glued: inserting before/after a file that lacks a trailing newline splices
-// onto the neighboring line. The tools never add or remove newlines
-// themselves — that stays the model's call — but the success echo shows the
-// changed lines with their new numbers so a botched newline is visible and
-// fixable with another edit.
+// file ends in a newline.
+//
+// line_insert and line_replace treat their new text as whole lines: when the
+// text does not end in a newline, the tool adds one — the only byte the line
+// tools ever write beyond the model's text, and it is on contract. New text
+// therefore never glues onto the line after it; joining lines on purpose is
+// string_replace's job. Replacing a range that includes the file's final
+// unterminated line leaves the file ending in a newline, and appending to a
+// file that does not end in a newline is rejected: there is no line boundary
+// there to append to. Each tool's success echo shows the changed lines with
+// their new numbers, so the result is checkable without a separate read.
 package tools
 
 import (
@@ -52,6 +59,7 @@ import (
 // shell by every provider, so keep them short and unambiguous.
 const (
 	ReadLinesTool   = "read_with_line_numbers"
+	LineInsertTool  = "line_insert"
 	LineReplaceTool = "line_replace"
 	StringReplace   = "string_replace"
 )
@@ -69,9 +77,9 @@ func fileToolDefs() []llm.Tool {
 					"exact content — the number and tab are not part of the file). Paths are relative to the working directory, same as shell. " +
 					"Returns a header 'file has N lines (M bytes), ends with newline: yes/no, showing lines A-B' then the numbered lines. " +
 					"start (default 1) is the first line to show, 1-based inclusive; limit (default -1) is how many lines to show (-1 = through end of file). " +
-					"Read a large file in windows (small start/limit) instead of all at once, then edit by those line numbers with line_replace. " +
-					"The ends-with-newline state matters: a file that does not end with a newline has its last line glued to whatever is inserted after it, " +
-					"so check the header before inserting or appending lines. Refuses binary files (use shell + xxd/strings for those).",
+					"Read a large file in windows (small start/limit) instead of all at once, then edit by those line numbers with line_insert or line_replace. " +
+					"The ends-with-newline state matters: line_insert cannot append to a file that does not end with a newline, and only " +
+					"line_replace can remove or replace a final unterminated line. Refuses binary files (use shell + xxd/strings for those).",
 				Parameters: map[string]any{
 					"type": "object",
 					"properties": map[string]any{
@@ -95,16 +103,48 @@ func fileToolDefs() []llm.Tool {
 		{
 			Type: "function",
 			Function: llm.Function{
+				Name: LineInsertTool,
+				Description: "Insert whole lines into an existing file before a numbered line, keyed by the line numbers read_with_line_numbers " +
+					"reports (1-based). start names the line your text should appear before: it and everything after it shift down. start ranges " +
+					"from 1 (insert at the top) through one past the last line (append at the end); appending needs the file to end in a newline, " +
+					"which read_with_line_numbers reports. new_text becomes whole lines: a trailing newline is added if it is missing, so it never " +
+					"glues onto the line that follows it (joining lines on purpose is string_replace's job). Empty new_text does nothing. Cannot " +
+					"create a file — make new files with the shell tool. Applies atomically (temp file + rename) and never rewrites untouched lines. " +
+					"The success echo shows the inserted lines with their new numbers. Use this to add lines; use line_replace to change or delete " +
+					"existing lines, and string_replace for a distinctive small text change.",
+				Parameters: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"path": map[string]any{
+							"type":        "string",
+							"description": "Path of the file to edit, relative to the working directory. Must already exist.",
+						},
+						"start": map[string]any{
+							"type":        "integer",
+							"description": "Insert before this line, 1-based; one past the last line appends at the end (needs the file to end in a newline).",
+						},
+						"new_text": map[string]any{
+							"type":        "string",
+							"description": "Whole lines to insert. A missing trailing newline is added automatically.",
+						},
+					},
+					"required": []string{"path", "start", "new_text"},
+				},
+			},
+		},
+		{
+			Type: "function",
+			Function: llm.Function{
 				Name: LineReplaceTool,
-				Description: "Cut a whole-line range out of an existing file and paste text in, keyed by the line numbers " +
-					"read_with_line_numbers reports (1-based). start is the first line to replace (inclusive); end is one past the last " +
-					"line to replace (exclusive), and may be one past the last line (replace through end of file). When start == end the tool " +
-					"inserts new_text before that line number (the inserted text becomes that line). Set new_text to an empty string to delete " +
-					"lines start through end-1. To replace the whole file use start=1 and end=N+1. new_text should end with a newline to keep " +
-					"line separation except when inserting at end of file; the tool never adds or removes newlines itself. Applies atomically " +
-					"(temp file + rename) and never rewrites untouched lines. Cannot create a file — make new files with the shell tool. The " +
-					"success echo shows the changed lines with their new numbers so you can confirm separation, then re-read for current numbering. " +
-					"Use this for a big block you don't want to retype; use string_replace for a distinctive small text change.",
+				Description: "Cut whole lines out of an existing file and paste whole lines in their place, keyed by the line numbers " +
+					"read_with_line_numbers reports (1-based). start and end are the first and last line to replace, both inclusive: " +
+					"start=end=5 replaces exactly line 5, and start=12 end=15 replaces the four lines numbered 12 through 15. Replace the whole " +
+					"file with start=1 and end=<line count>. new_text becomes whole lines: a trailing newline is added if it is missing, so it " +
+					"never glues onto the line after the range. Empty new_text deletes lines start through end. Replacing a range that includes " +
+					"the file's final unterminated line leaves the file ending in a newline. Cannot create a file — make new files with the shell " +
+					"tool. Applies atomically (temp file + rename) and never rewrites untouched lines. The success echo shows the removed and new " +
+					"lines with their numbers. Use this to change or delete existing lines; use line_insert to add lines without removing any, and " +
+					"string_replace for a distinctive small text change.",
 				Parameters: map[string]any{
 					"type": "object",
 					"properties": map[string]any{
@@ -118,11 +158,11 @@ func fileToolDefs() []llm.Tool {
 						},
 						"end": map[string]any{
 							"type":        "integer",
-							"description": "One past the last line to replace (exclusive); equal to start to insert before that line, or N+1 to replace through end of file.",
+							"description": "Last line to replace, 1-based inclusive (start=end replaces a single line).",
 						},
 						"new_text": map[string]any{
 							"type":        "string",
-							"description": "Replacement text. Empty string deletes the range. Should end in a newline for line separation; no newline is added automatically.",
+							"description": "Whole lines to put in place of the range. Empty string deletes the range. A missing trailing newline is added automatically.",
 						},
 					},
 					"required": []string{"path", "start", "end", "new_text"},
@@ -136,8 +176,8 @@ func fileToolDefs() []llm.Tool {
 				Description: "Replace an exact literal string in an existing file with new_text — no regex; spaces, tabs, and newlines must match " +
 					"exactly (read the file first to get them right). old_text must not be empty. Every occurrence of old_text is replaced, so " +
 					"old_text must appear exactly expected_count times (default 1) in the whole file; if the count differs the edit is rejected and " +
-					"every match is listed with line-numbered context so you can disambiguate (lengthen old_text, or switch to line_replace). " +
-					"Applies atomically. Cannot create a file — make new files with the shell tool. Prefer line_replace for whole lines or big " +
+					"every match is listed with line-numbered context so you can disambiguate (lengthen old_text, or switch to line_insert or line_replace). " +
+					"Applies atomically. Cannot create a file — make new files with the shell tool. Prefer line_insert or line_replace for whole lines or big " +
 					"blocks. Success echoes before/after context with line numbers.",
 				Parameters: map[string]any{
 					"type": "object",
@@ -224,12 +264,86 @@ func runReadDir(args []byte, dir string) (io.ReadCloser, error) {
 	return &stringStream{strings.NewReader(b.String())}, nil
 }
 
-// runLineReplaceDir serves a line_replace call: splice new_text in over the
-// half-open line range [start, end) and write the result back atomically. The
-// tool never creates files (that is shell's job) and never touches lines
-// outside the range. The success echo shows the exact old lines removed and
-// the new file's lines that now cover the change, with current numbers, so the
-// model can confirm the newline seams came out as intended.
+// ensureWholeLines returns whole-line text for the line tools: new text that
+// does not already end in a newline gets one added. This is the only byte the
+// line tools ever write beyond the model's text, and it is on contract: the
+// tools paste whole lines, so a block that ended mid-line would glue onto the
+// line that follows it. Joining two lines on purpose is string_replace's job.
+func ensureWholeLines(s string) string {
+	if s != "" && !strings.HasSuffix(s, "\n") {
+		return s + "\n"
+	}
+	return s
+}
+
+// runLineInsertDir serves a line_insert call: paste whole lines in before a
+// numbered line (or append them at the end of the file) and write the result
+// back atomically. start ranges from 1 (the new text becomes lines 1..) to
+// n+1 (append after the last line); appending to a file whose last line lacks
+// a trailing newline is rejected, because there is no line boundary there to
+// append to. The tool never creates files (that is shell's job) and never
+// touches lines outside the range. The success echo shows the inserted lines
+// with their new numbers.
+func runLineInsertDir(args []byte, dir string) (io.ReadCloser, error) {
+	var in struct {
+		Path    string `json:"path"`
+		Start   int    `json:"start"`
+		NewText string `json:"new_text"`
+	}
+	if err := json.Unmarshal(args, &in); err != nil {
+		return nil, fmt.Errorf("parse %s arguments: %w", LineInsertTool, err)
+	}
+	path, err := resolveEditPath(dir, in.Path)
+	if err != nil {
+		return nil, err
+	}
+	content, err := readEditFile(path)
+	if err != nil {
+		return nil, err
+	}
+	lines := splitLines(content)
+	n := len(lines)
+	if in.Start < 1 {
+		return nil, fmt.Errorf("%s: start must be >= 1 (got %d)", LineInsertTool, in.Start)
+	}
+	if in.Start > n+1 {
+		return nil, fmt.Errorf("%s: %s has %s; start=%d is past one past the last line (max %d)", LineInsertTool, path, linesPhrase(n), in.Start, n+1)
+	}
+	if in.Start == n+1 && n > 0 && !strings.HasSuffix(content, "\n") {
+		return nil, fmt.Errorf("%s: cannot append to %s: it does not end in a newline, so there is no line boundary after line %d. "+
+			"Add the newline with string_replace first, or replace line %d to rewrite it", LineInsertTool, path, n, n)
+	}
+	block := ensureWholeLines(in.NewText)
+	blockLines := splitLines(block)
+	action := "changed"
+	switch {
+	case blockLines == nil:
+		action = "inserted nothing"
+	case n == 0:
+		action = fmt.Sprintf("inserted %s into the empty file", linesPhrase(len(blockLines)))
+	case in.Start == n+1:
+		action = fmt.Sprintf("appended %s at the end of the file", linesPhrase(len(blockLines)))
+	case in.Start == 1:
+		action = fmt.Sprintf("inserted %s at the top of the file", linesPhrase(len(blockLines)))
+	default:
+		action = fmt.Sprintf("inserted %s before line %d", linesPhrase(len(blockLines)), in.Start)
+	}
+	head := strings.Join(lines[:in.Start-1], "") // byte offset 0..headLen
+	headLen := len(head)
+	out := head + block + strings.Join(lines[in.Start-1:], "")
+	return finishLineEdit(LineInsertTool, path, action, content, out, lines, headLen, block, -1, -1)
+}
+
+// runLineReplaceDir serves a line_replace call: cut whole lines start..end
+// (inclusive) out and paste whole lines in their place, or delete them when
+// new_text is empty, writing the result back atomically. start and end are
+// 1-based and name the first and last line replaced, matching the numbering
+// read_with_line_numbers reports. The replacement is treated as whole lines (a
+// missing trailing newline is added), so it never glues onto the line after
+// the range; replacing a range that includes the file's final unterminated
+// line leaves the file ending in a newline. The tool never creates files (that
+// is shell's job) and never touches lines outside the range. The success echo
+// shows the lines removed and the new lines with their numbers.
 func runLineReplaceDir(args []byte, dir string) (io.ReadCloser, error) {
 	var in struct {
 		Path    string `json:"path"`
@@ -253,74 +367,74 @@ func runLineReplaceDir(args []byte, dir string) (io.ReadCloser, error) {
 	if in.Start < 1 {
 		return nil, fmt.Errorf("%s: start must be >= 1 (got %d)", LineReplaceTool, in.Start)
 	}
+	if n == 0 {
+		return nil, fmt.Errorf("%s: %s has no lines to replace (use %s to add lines)", LineReplaceTool, path, LineInsertTool)
+	}
+	if in.Start > n {
+		return nil, fmt.Errorf("%s: %s has %s; start=%d is past the last line (max %d)", LineReplaceTool, path, linesPhrase(n), in.Start, n)
+	}
 	if in.End < in.Start {
 		return nil, fmt.Errorf("%s: end (%d) must be >= start (%d)", LineReplaceTool, in.End, in.Start)
 	}
-	if in.End > n+1 {
-		return nil, fmt.Errorf("%s: %s has %s; end=%d is past one past the last line (max %d)", LineReplaceTool, path, linesPhrase(n), in.End, n+1)
+	if in.End > n {
+		return nil, fmt.Errorf("%s: %s has %s; end=%d is past the last line (max %d)", LineReplaceTool, path, linesPhrase(n), in.End, n)
+	}
+	block := ensureWholeLines(in.NewText)
+	action := "changed"
+	switch {
+	case block == "":
+		if in.Start == in.End {
+			action = fmt.Sprintf("deleted line %d", in.Start)
+		} else {
+			action = fmt.Sprintf("deleted lines %d-%d", in.Start, in.End)
+		}
+	case in.Start == in.End:
+		action = fmt.Sprintf("replaced line %d with new text", in.Start)
+	case in.Start == 1 && in.End == n:
+		action = "replaced the whole file with new text"
+	default:
+		action = fmt.Sprintf("replaced lines %d-%d with new text", in.Start, in.End)
 	}
 	head := strings.Join(lines[:in.Start-1], "") // byte offset 0..headLen
 	headLen := len(head)
-	out := head + in.NewText + strings.Join(lines[in.End-1:], "")
+	out := head + block + strings.Join(lines[in.End:], "")
+	return finishLineEdit(LineReplaceTool, path, action, content, out, lines, headLen, block, in.Start-1, in.End-1)
+}
 
-	// The header describes what was asked (pre-edit numbering), then the file's
-	// resulting state.
-	action := "changed"
-	switch {
-	case in.NewText == "" && in.Start == in.End:
-		action = "inserted nothing"
-	case in.NewText == "":
-		if in.End == in.Start+1 {
-			action = fmt.Sprintf("deleted line %d", in.Start)
-		} else {
-			action = fmt.Sprintf("deleted lines %d-%d", in.Start, in.End-1)
-		}
-	case in.Start == in.End:
-		action = fmt.Sprintf("inserted text before line %d", in.Start)
-	case in.End == n+1:
-		action = fmt.Sprintf("replaced lines %d-%d (through end of file) with new text", in.Start, n)
-	default:
-		action = fmt.Sprintf("replaced lines %d-%d with new text", in.Start, in.End-1)
-	}
-	newLines := splitLines(out)
-
+// finishLineEdit writes out atomically (when it differs from content) and
+// renders the success echo shared by line_insert and line_replace: a one-line
+// header, the old lines cut out (removedFrom..removedTo, 0-based inclusive
+// into the pre-edit lines; none when either is negative), the new lines
+// covering the splice, and a pointer to re-read. The splice occupies
+// out[blockAt : blockAt+len(block)]; when block is empty (a deletion) no bytes
+// land in the range, so the echo shows the seam where the deleted lines were.
+// A no-op edit is reported honestly and the file is left untouched.
+func finishLineEdit(tool, path, action, content, out string, oldLines []string, blockAt int, block string, removedFrom, removedTo int) (io.ReadCloser, error) {
 	if out == content {
-		// The edit was a no-op (new_text equals what it replaced): report it
-		// honestly and leave the file untouched.
 		var b strings.Builder
 		fmt.Fprintf(&b, "[%s: %s: %s produced no change; file still has %s (%d bytes), ends with newline: %s]\n",
-			LineReplaceTool, path, action, linesPhrase(n), len(out), yesNo(strings.HasSuffix(out, "\n")))
+			tool, path, action, linesPhrase(len(oldLines)), len(out), yesNo(strings.HasSuffix(out, "\n")))
 		return &stringStream{strings.NewReader(b.String())}, nil
 	}
-
 	if err := writeEditFile(path, out); err != nil {
 		return nil, err
 	}
-
-	nn := len(newLines)
+	newLines := splitLines(out)
 	var b strings.Builder
 	fmt.Fprintf(&b, "[%s: %s: %s; was %s, now %s (%d bytes), ends with newline: %s]\n",
-		LineReplaceTool, path, action, linesPhrase(n), linesPhrase(nn), len(out), yesNo(strings.HasSuffix(out, "\n")))
-
-	// Old lines removed, with pre-edit numbers. Exact geometry: old lines
-	// start..end-1. Only present when a range (not a pure insertion) was cut.
-	if in.Start < in.End {
+		tool, path, action, linesPhrase(len(oldLines)), linesPhrase(len(newLines)), len(out), yesNo(strings.HasSuffix(out, "\n")))
+	if removedFrom >= 0 {
 		b.WriteString("removed (old line numbers):\n")
-		b.WriteString(renderRange(lines, in.Start-1, in.End-2))
+		b.WriteString(renderRange(oldLines, removedFrom, removedTo))
 	}
-	// New lines covering the change, with post-edit numbers. Found by byte
-	// geometry: new_text occupies out[headLen : headLen+len(new_text)], and the
-	// lines containing its first and last bytes are the affected ones. This is
-	// ground truth on the new file, so a newline glued across a seam shows up
-	// as a merged numbered line the model can see and fix.
 	b.WriteString("now (new line numbers):\n")
-	if in.NewText == "" {
-		// Pure deletion: nothing occupies the range; show the seam between the
-		// last kept line and the first line after the deletion.
-		b.WriteString(renderBand(newLines, in.Start-1, in.Start-2))
+	if block == "" {
+		// Pure deletion: nothing occupies the cut; show the seam where the
+		// deleted lines were, centered on new line removedFrom+1.
+		b.WriteString(renderBand(newLines, removedFrom, removedFrom-1))
 	} else {
-		first := lineOfOffset(out, headLen) - 1
-		last := lineOfOffset(out, headLen+len(in.NewText)-1) - 1
+		first := lineOfOffset(out, blockAt) - 1
+		last := lineOfOffset(out, blockAt+len(block)-1) - 1
 		b.WriteString(renderBand(newLines, first, last))
 	}
 	b.WriteString("\nRe-read the file (read_with_line_numbers) for current line numbers.\n")

@@ -749,7 +749,7 @@ func TestRemoteProviderDefsAndEnvironmentFromContext(t *testing.T) {
 	// set (shell + file editing tools) and no environment.
 	id := s.RegisterExec(make(chan api.ExecRequest, 1), "", "", "")
 	p := s.provider()
-	if names := toolNames(p.Defs()); !equalStrings(names, []string{"shell", "read_with_line_numbers", "line_replace", "string_replace"}) {
+	if names := toolNames(p.Defs()); !equalStrings(names, []string{"shell", "read_with_line_numbers", "line_insert", "line_replace", "string_replace"}) {
 		t.Errorf("Defs with no context = %v, want the base tool set", names)
 	}
 	if env := p.Environment(); env != "" {
@@ -768,7 +768,7 @@ func TestRemoteProviderDefsAndEnvironmentFromContext(t *testing.T) {
 	id = s.RegisterExec(make(chan api.ExecRequest, 1), "", "", "")
 	p = s.provider()
 	defs := p.Defs()
-	if len(defs) != 5 || defs[len(defs)-1].Function.Name != "load_skill" {
+	if len(defs) != 6 || defs[len(defs)-1].Function.Name != "load_skill" {
 		t.Errorf("Defs with skills = %+v, want base tool set + load_skill", defs)
 	}
 	env := p.Environment()

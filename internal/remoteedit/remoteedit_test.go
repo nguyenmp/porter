@@ -28,7 +28,7 @@ func TestBuiltinSkillShape(t *testing.T) {
 // perl one-liners over ssh.
 func TestPromptCoversWorkflow(t *testing.T) {
 	b := Prompt()
-	for _, want := range []string{"Editing files on a remote host", "scp", "read_with_line_numbers", "line_replace", "string_replace", "git diff", "push it back"} {
+	for _, want := range []string{"Editing files on a remote host", "scp", "read_with_line_numbers", "line_insert", "line_replace", "string_replace", "git diff", "push it back"} {
 		if !strings.Contains(b, want) {
 			t.Errorf("prompt missing %q:\n%s", want, b)
 		}

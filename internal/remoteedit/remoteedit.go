@@ -57,7 +57,10 @@ less reliable than the workflow below.
 
    - read_with_line_numbers to inspect it (the header reports the line count,
      the byte count, and whether the file ends in a newline);
-   - line_replace to change a numbered range, insert lines, or delete lines;
+   - line_insert to add whole lines before a numbered line, or append them at
+     the end of the file;
+   - line_replace to cut a numbered range of whole lines and replace it (empty
+     new_text deletes the range);
    - string_replace for a distinctive exact text change;
    - the shell tool to create a brand-new file.
 

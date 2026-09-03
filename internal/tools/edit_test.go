@@ -117,7 +117,7 @@ func TestReadErrors(t *testing.T) {
 
 func TestLineReplaceRange(t *testing.T) {
 	path := writeTemp(t, "a\nb\nc\nd\n", 0o644)
-	res, err := run(context.Background(), NewDispatcher(), LineReplaceTool, []byte(`{"path":`+quote(path)+`,"start":2,"end":4,"new_text":"X\nY\n"}`))
+	res, err := run(context.Background(), NewDispatcher(), LineReplaceTool, []byte(`{"path":`+quote(path)+`,"start":2,"end":3,"new_text":"X\nY\n"}`))
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -132,72 +132,153 @@ func TestLineReplaceRange(t *testing.T) {
 	}
 }
 
-func TestLineReplaceInsertBefore(t *testing.T) {
+func TestLineReplaceSingleLine(t *testing.T) {
 	path := writeTemp(t, "a\nb\nc\n", 0o644)
-	if _, err := run(context.Background(), NewDispatcher(), LineReplaceTool, []byte(`{"path":`+quote(path)+`,"start":2,"end":2,"new_text":"X\n"}`)); err != nil {
+	res, err := run(context.Background(), NewDispatcher(), LineReplaceTool, []byte(`{"path":`+quote(path)+`,"start":2,"end":2,"new_text":"X\n"}`))
+	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if got, want := readTemp(t, path), "a\nX\nb\nc\n"; got != want {
+	if got, want := readTemp(t, path), "a\nX\nc\n"; got != want {
 		t.Errorf("content = %q, want %q", got, want)
+	}
+	if !strings.Contains(res, "replaced line 2 with new text") {
+		t.Errorf("echo missing action: %s", res)
+	}
+}
+
+func TestLineReplaceAutoTrailingNewline(t *testing.T) {
+	// Replacement text that does not end in a newline must not glue onto the
+	// following line: the tool treats new text as whole lines and adds the
+	// missing newline itself.
+	path := writeTemp(t, "a\nb\nc\nd\n", 0o644)
+	if _, err := run(context.Background(), NewDispatcher(), LineReplaceTool, []byte(`{"path":`+quote(path)+`,"start":2,"end":3,"new_text":"X\nY"}`)); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got, want := readTemp(t, path), "a\nX\nY\nd\n"; got != want {
+		t.Errorf("content = %q, want %q (trailing newline added, no glue)", got, want)
 	}
 }
 
 func TestLineReplaceDeleteRange(t *testing.T) {
 	path := writeTemp(t, "a\nb\nc\nd\n", 0o644)
-	if _, err := run(context.Background(), NewDispatcher(), LineReplaceTool, []byte(`{"path":`+quote(path)+`,"start":2,"end":4,"new_text":""}`)); err != nil {
+	res, err := run(context.Background(), NewDispatcher(), LineReplaceTool, []byte(`{"path":`+quote(path)+`,"start":2,"end":3,"new_text":""}`))
+	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	if got, want := readTemp(t, path), "a\nd\n"; got != want {
+		t.Errorf("content = %q, want %q", got, want)
+	}
+	if !strings.Contains(res, "deleted lines 2-3") {
+		t.Errorf("echo missing action: %s", res)
+	}
+}
+
+func TestLineReplaceDeleteSingleLine(t *testing.T) {
+	path := writeTemp(t, "a\nb\nc\nd\n", 0o644)
+	if _, err := run(context.Background(), NewDispatcher(), LineReplaceTool, []byte(`{"path":`+quote(path)+`,"start":2,"end":2,"new_text":""}`)); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got, want := readTemp(t, path), "a\nc\nd\n"; got != want {
 		t.Errorf("content = %q, want %q", got, want)
 	}
 }
 
 func TestLineReplaceWholeFile(t *testing.T) {
 	path := writeTemp(t, "a\nb\nc\n", 0o644)
-	if _, err := run(context.Background(), NewDispatcher(), LineReplaceTool, []byte(`{"path":`+quote(path)+`,"start":1,"end":4,"new_text":"X\nY\n"}`)); err != nil {
+	res, err := run(context.Background(), NewDispatcher(), LineReplaceTool, []byte(`{"path":`+quote(path)+`,"start":1,"end":3,"new_text":"X\nY\n"}`))
+	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	if got, want := readTemp(t, path), "X\nY\n"; got != want {
 		t.Errorf("content = %q, want %q", got, want)
 	}
+	if !strings.Contains(res, "replaced the whole file with new text") {
+		t.Errorf("echo missing action: %s", res)
+	}
 }
 
-func TestLineReplaceInsertEndOfFile(t *testing.T) {
+func TestLineReplaceFinalUnterminatedLine(t *testing.T) {
+	// Replacing a range that includes the file's final unterminated line
+	// leaves the file ending in a newline (replacement text is whole lines).
+	path := writeTemp(t, "a\nb", 0o644)
+	if _, err := run(context.Background(), NewDispatcher(), LineReplaceTool, []byte(`{"path":`+quote(path)+`,"start":2,"end":2,"new_text":"c"}`)); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got, want := readTemp(t, path), "a\nc\n"; got != want {
+		t.Errorf("content = %q, want %q", got, want)
+	}
+}
+
+func TestLineInsertBefore(t *testing.T) {
+	path := writeTemp(t, "a\nb\nc\n", 0o644)
+	res, err := run(context.Background(), NewDispatcher(), LineInsertTool, []byte(`{"path":`+quote(path)+`,"start":2,"new_text":"X\nY\n"}`))
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got, want := readTemp(t, path), "a\nX\nY\nb\nc\n"; got != want {
+		t.Errorf("content = %q, want %q", got, want)
+	}
+	if !strings.Contains(res, "inserted 2 lines before line 2") {
+		t.Errorf("echo missing action: %s", res)
+	}
+}
+
+func TestLineInsertAutoTrailingNewline(t *testing.T) {
+	// Inserted text that does not end in a newline must not glue onto the
+	// following line.
+	path := writeTemp(t, "a\nb\nc\n", 0o644)
+	if _, err := run(context.Background(), NewDispatcher(), LineInsertTool, []byte(`{"path":`+quote(path)+`,"start":2,"new_text":"X\nY"}`)); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got, want := readTemp(t, path), "a\nX\nY\nb\nc\n"; got != want {
+		t.Errorf("content = %q, want %q (trailing newline added, no glue)", got, want)
+	}
+}
+
+func TestLineInsertAtTop(t *testing.T) {
+	path := writeTemp(t, "a\nb\nc\n", 0o644)
+	if _, err := run(context.Background(), NewDispatcher(), LineInsertTool, []byte(`{"path":`+quote(path)+`,"start":1,"new_text":"X\n"}`)); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got, want := readTemp(t, path), "X\na\nb\nc\n"; got != want {
+		t.Errorf("content = %q, want %q", got, want)
+	}
+}
+
+func TestLineInsertAppend(t *testing.T) {
 	path := writeTemp(t, "a\nb\n", 0o644)
-	if _, err := run(context.Background(), NewDispatcher(), LineReplaceTool, []byte(`{"path":`+quote(path)+`,"start":3,"end":3,"new_text":"c\n"}`)); err != nil {
+	res, err := run(context.Background(), NewDispatcher(), LineInsertTool, []byte(`{"path":`+quote(path)+`,"start":3,"new_text":"c\n"}`))
+	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	if got, want := readTemp(t, path), "a\nb\nc\n"; got != want {
 		t.Errorf("content = %q, want %q", got, want)
 	}
+	if !strings.Contains(res, "appended 1 line at the end of the file") {
+		t.Errorf("echo missing action: %s", res)
+	}
 }
 
-func TestLineReplaceMissingNewlineGlue(t *testing.T) {
-	// File does not end with a newline; inserting after its last line glues
-	// the new text onto it. The tool must not "fix" this, and the echo must
-	// show the merged line so the model can see it.
+func TestLineInsertIntoEmptyFile(t *testing.T) {
+	path := writeTemp(t, "", 0o644)
+	if _, err := run(context.Background(), NewDispatcher(), LineInsertTool, []byte(`{"path":`+quote(path)+`,"start":1,"new_text":"a\n"}`)); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got, want := readTemp(t, path), "a\n"; got != want {
+		t.Errorf("content = %q, want %q", got, want)
+	}
+}
+
+func TestLineInsertAppendRejectedWithoutTrailingNewline(t *testing.T) {
+	// There is no line boundary after an unterminated last line, so appending
+	// there is rejected instead of gluing.
 	path := writeTemp(t, "a\nb", 0o644)
-	res, err := run(context.Background(), NewDispatcher(), LineReplaceTool, []byte(`{"path":`+quote(path)+`,"start":3,"end":3,"new_text":"Z\n"}`))
-	if err != nil {
-		t.Fatalf("Run: %v", err)
+	_, err := run(context.Background(), NewDispatcher(), LineInsertTool, []byte(`{"path":`+quote(path)+`,"start":3,"new_text":"c\n"}`))
+	if err == nil || !strings.Contains(err.Error(), "does not end in a newline") {
+		t.Errorf("append to unterminated file: err = %v, want a no-line-boundary error", err)
 	}
-	if got, want := readTemp(t, path), "a\nbZ\n"; got != want {
-		t.Errorf("content = %q, want %q (newline glued, per no-auto-newline policy)", got, want)
-	}
-	if !strings.Contains(res, "     2\tbZ\n") {
-		t.Errorf("echo must show the merged line bZ:\n%s", res)
-	}
-}
-
-func TestLineReplaceMidFileMissingNewline(t *testing.T) {
-	// Replacing line 2 with text that lacks a trailing newline glues it to
-	// line 3.
-	path := writeTemp(t, "a\nb\nc\n", 0o644)
-	if _, err := run(context.Background(), NewDispatcher(), LineReplaceTool, []byte(`{"path":`+quote(path)+`,"start":2,"end":3,"new_text":"X"}`)); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if got, want := readTemp(t, path), "a\nXc\n"; got != want {
-		t.Errorf("content = %q, want %q (X glued to c)", got, want)
+	if got := readTemp(t, path); got != "a\nb" {
+		t.Errorf("rejected append must not modify the file, got %q", got)
 	}
 }
 
@@ -210,7 +291,8 @@ func TestLineReplaceValidation(t *testing.T) {
 	}{
 		{"start below 1", `{"path":` + quote(path) + `,"start":0,"end":1,"new_text":"x"}`, "start must be >= 1"},
 		{"end before start", `{"path":` + quote(path) + `,"start":3,"end":2,"new_text":"x"}`, "end (2) must be >= start (3)"},
-		{"end past file", `{"path":` + quote(path) + `,"start":1,"end":5,"new_text":"x"}`, "past one past the last line"},
+		{"end past last line", `{"path":` + quote(path) + `,"start":1,"end":4,"new_text":"x"}`, "end=4 is past the last line"},
+		{"start past last line", `{"path":` + quote(path) + `,"start":4,"end":4,"new_text":"x"}`, "start=4 is past the last line"},
 	}
 	for _, c := range cases {
 		if _, err := run(context.Background(), NewDispatcher(), LineReplaceTool, []byte(c.args)); err == nil || !strings.Contains(err.Error(), c.want) {
@@ -222,9 +304,22 @@ func TestLineReplaceValidation(t *testing.T) {
 	}
 }
 
+func TestLineInsertValidation(t *testing.T) {
+	path := writeTemp(t, "a\nb\nc\n", 0o644)
+	if _, err := run(context.Background(), NewDispatcher(), LineInsertTool, []byte(`{"path":`+quote(path)+`,"start":0,"new_text":"x"}`)); err == nil || !strings.Contains(err.Error(), "start must be >= 1") {
+		t.Errorf("start below 1: err = %v", err)
+	}
+	if _, err := run(context.Background(), NewDispatcher(), LineInsertTool, []byte(`{"path":`+quote(path)+`,"start":5,"new_text":"x"}`)); err == nil || !strings.Contains(err.Error(), "past one past the last line") {
+		t.Errorf("start past n+1: err = %v", err)
+	}
+	if _, err := run(context.Background(), NewDispatcher(), LineInsertTool, []byte(`{"path":"/nonexistent/x","start":1,"new_text":"x"}`)); err == nil || !strings.Contains(err.Error(), "no such file") {
+		t.Errorf("missing file: err = %v", err)
+	}
+}
+
 func TestLineReplacePreservesModeAndLeavesNoTemp(t *testing.T) {
 	path := writeTemp(t, "a\nb\nc\n", 0o600)
-	if _, err := run(context.Background(), NewDispatcher(), LineReplaceTool, []byte(`{"path":`+quote(path)+`,"start":2,"end":3,"new_text":"X\n"}`)); err != nil {
+	if _, err := run(context.Background(), NewDispatcher(), LineReplaceTool, []byte(`{"path":`+quote(path)+`,"start":2,"end":2,"new_text":"X\n"}`)); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	info, err := os.Stat(path)
@@ -251,7 +346,7 @@ func TestLineReplaceNoopLeavesFileUntouched(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := run(context.Background(), NewDispatcher(), LineReplaceTool, []byte(`{"path":`+quote(path)+`,"start":2,"end":3,"new_text":"b\n"}`)); err != nil {
+	if _, err := run(context.Background(), NewDispatcher(), LineReplaceTool, []byte(`{"path":`+quote(path)+`,"start":2,"end":2,"new_text":"b"}`)); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	after, err := os.Stat(path)
@@ -332,7 +427,7 @@ func TestEditToolRelativeToRunDir(t *testing.T) {
 	if !strings.Contains(res, "showing lines 1-3") {
 		t.Errorf("read relative to dir = %s", res)
 	}
-	if _, err := runDir(context.Background(), d, LineReplaceTool, []byte(`{"path":"f.txt","start":2,"end":3,"new_text":"X\n"}`), sub); err != nil {
+	if _, err := runDir(context.Background(), d, LineReplaceTool, []byte(`{"path":"f.txt","start":2,"end":2,"new_text":"X\n"}`), sub); err != nil {
 		t.Fatalf("edit relative to dir: %v", err)
 	}
 	if got := readTemp(t, path); got != "a\nX\nc\n" {
