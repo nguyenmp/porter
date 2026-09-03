@@ -37,7 +37,7 @@ type ChatMessage struct {
 	// aborted. It only appears when true.
 	// ToolOutput is structured metadata about a tool result's size and model-view
 	// presentation (see ToolOutputMeta): total/shown bytes, whether the model
-	// view truncated the result, and recall details for read_output results. It
+	// view truncated the result, and recall details for recall_tool_output results. It
 	// is json:"-" so it is never serialized into the LLM request payload; the
 	// DB persists it explicitly and the UI reads it from the committed message
 	// or the bus envelope.
@@ -112,19 +112,19 @@ type ToolOutputMeta struct {
 	// TotalBytes is the full output size in bytes.
 	TotalBytes int `json:"total_bytes"`
 	// ShownBytes is how many bytes the model view showed: HeadBytes+TailBytes
-	// when Truncated, else TotalBytes. For a recall (read_output) result it is
+	// when Truncated, else TotalBytes. For a recall (recall_tool_output) result it is
 	// the window size served to the model's context.
 	ShownBytes int `json:"shown_bytes"`
-	// Recall marks a read_output result: the window bytes were served to the
+	// Recall marks a recall_tool_output result: the window bytes were served to the
 	// model's context for the current turn only, and the persisted/broadcast
 	// copy is a short placeholder rather than the window (the full output
 	// lives once, under the source tool result). The model-view projection
 	// keeps a Recall message's content intact — it is the one exception to
 	// truncation.
 	Recall bool `json:"recall,omitempty"`
-	// SourceCallID is the tool_call_id the read_output read from (Recall only).
+	// SourceCallID is the tool_call_id the recall_tool_output read from (Recall only).
 	SourceCallID string `json:"source_call_id,omitempty"`
-	// Offset is the byte offset the read_output served from (Recall only).
+	// Offset is the byte offset the recall_tool_output served from (Recall only).
 	Offset int `json:"offset,omitempty"`
 	// MaxBytes is the size of the window served to the model (Recall only).
 	MaxBytes int `json:"max_bytes,omitempty"`

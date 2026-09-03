@@ -40,7 +40,7 @@ func TestTruncateFormat(t *testing.T) {
 	got := Truncate(content, "call_1", meta)
 
 	// The header states sizes (comma-formatted) and how to load the rest.
-	expectedHeader := fmt.Sprintf("[tool output: %s of %s bytes (head); last %s shown below.  To load more: read_output(call_id=\"call_1\", offset=%d, max_bytes=%d).]",
+	expectedHeader := fmt.Sprintf("[tool output: %s of %s bytes (head); last %s shown below.  To load more: recall_tool_output(call_id=\"call_1\", offset=%d, max_bytes=%d).]",
 		comma(HeadBytes), comma(len(content)), bytesLabel(TailBytes), HeadBytes, len(content)-HeadBytes)
 	if !strings.Contains(got, expectedHeader) {
 		t.Errorf("truncation header missing/wrong:\n%s", got)
@@ -61,7 +61,7 @@ func TestTruncateFormat(t *testing.T) {
 	if !strings.HasSuffix(got, content[len(content)-TailBytes:]) {
 		t.Errorf("truncated output must end with the tail + exit line:\n%s", got)
 	}
-	// The head and a read_output at offset=head must line up exactly.
+	// The head and a recall_tool_output at offset=head must line up exactly.
 	head := content[:HeadBytes]
 	if !strings.Contains(got, head) {
 		t.Errorf("truncated output missing the head bytes")
@@ -142,7 +142,7 @@ func TestServeWindow(t *testing.T) {
 	if !strings.Contains(window, strings.Repeat("m", 1000)) {
 		t.Errorf("window missing the middle bytes")
 	}
-	if !strings.Contains(window, "[recall: read_output") {
+	if !strings.Contains(window, "[recall: recall_tool_output") {
 		t.Errorf("window missing the recall header:\n%s", window)
 	}
 	// The window is the raw bytes; the head and this window line up exactly.
@@ -188,7 +188,7 @@ func TestServeWindow(t *testing.T) {
 func TestWindowTextAndPlaceholder(t *testing.T) {
 	meta := &llm.ToolOutputMeta{Recall: true, SourceCallID: "call_1", Offset: 1024, MaxBytes: 1000, TotalBytes: 2549, ShownBytes: 1000}
 	window := WindowText(meta, "MIDDLE")
-	if !strings.HasPrefix(window, "[recall: read_output(call_id=\"call_1\", offset=1024, max_bytes=1000) -> bytes 1024-2024 of 2549 (1000 bytes) served to the model]\n") {
+	if !strings.HasPrefix(window, "[recall: recall_tool_output(call_id=\"call_1\", offset=1024, max_bytes=1000) -> bytes 1024-2024 of 2549 (1000 bytes) served to the model]\n") {
 		t.Errorf("window text = %q", window)
 	}
 	if !strings.HasSuffix(window, "MIDDLE") {
@@ -206,7 +206,7 @@ func TestWindowTextAndPlaceholder(t *testing.T) {
 
 func TestDef(t *testing.T) {
 	d := Def()
-	if d.Function.Name != "read_output" {
+	if d.Function.Name != "recall_tool_output" {
 		t.Errorf("Def name = %q", d.Function.Name)
 	}
 	params := d.Function.Parameters["properties"].(map[string]any)

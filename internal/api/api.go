@@ -322,7 +322,7 @@ type Envelope struct {
 	Result      string `json:"result,omitempty"`       // KindToolResult
 	// ToolOutput is structured metadata about a tool result's size and model-view
 	// presentation (total/shown bytes, truncation, recall). It is set on
-	// KindToolResult (normal, cancelled, and read_output) and carried on the
+	// KindToolResult (normal, cancelled, and recall_tool_output) and carried on the
 	// KindMessage commit, so the live UI renders the same badge /view renders
 	// from the persisted copy.
 	ToolOutput *llm.ToolOutputMeta `json:"tool_output,omitempty"` // KindToolResult, KindMessage

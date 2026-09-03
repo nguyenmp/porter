@@ -1,17 +1,17 @@
 // Package recall owns the model-view projection that trims oversized tool
-// results and the read_output tool that loads the trimmed bytes back.
+// results and the recall_tool_output tool that loads the trimmed bytes back.
 //
 // A tool result is stored in the database and broadcast to the UI in full;
 // only the model's view — the history sent on each LLM request — is truncated
-// to a head + tail slice, with a read_output tool the model can call to read
-// any byte window of the original output. read_output results are the one
+// to a head + tail slice, with a recall_tool_output tool the model can call to read
+// any byte window of the original output. recall_tool_output results are the one
 // exception to truncation: the window bytes are served to the model's context
 // in full (for the current turn only), while the persisted/broadcast copy is a
 // short placeholder, so the window is never duplicated in the database.
 //
 // Truncation is byte-exact: the head is [0, HeadBytes), the tail is the last
-// TailBytes, and read_output offsets address the raw output bytes, so the head
-// and a read_output(offset=HeadBytes) continue with no gap. A UTF-8 rune split
+// TailBytes, and recall_tool_output offsets address the raw output bytes, so the head
+// and a recall_tool_output(offset=HeadBytes) continue with no gap. A UTF-8 rune split
 // at a seam is tolerated (tokenizers are byte-tolerant); line-based reads are a
 // future option. HeadBytes/TailBytes are hard-coded here — deliberately not
 // configurable — and tuned with code edits when needed.
@@ -28,7 +28,7 @@ import (
 )
 
 // ReadOutputTool is the model-facing name of the recall tool.
-const ReadOutputTool = "read_output"
+const ReadOutputTool = "recall_tool_output"
 
 // HeadBytes and TailBytes are the hard-coded head and tail slice sizes of the
 // model-view truncation. They are not configurable; tune them here if the
@@ -60,7 +60,7 @@ func Meta(content string) *llm.ToolOutputMeta {
 
 // ProjectModelView returns the model's view of committed history: every
 // role-"tool" message whose content is larger than the head+tail budget is
-// replaced with its truncated form, unless it is a Recall message (a read_output
+// replaced with its truncated form, unless it is a Recall message (a recall_tool_output
 // window, which is already the bytes the model asked for). The returned slice
 // is a fresh copy and the input is never mutated, because History always holds
 // the full output — the projection is applied fresh on each request, so it can
@@ -70,7 +70,7 @@ func ProjectModelView(msgs []llm.ChatMessage) []llm.ChatMessage {
 	for i, m := range msgs {
 		if m.Role == "tool" {
 			if meta := m.ToolOutput; meta != nil && meta.Recall {
-				// read_output window: keep the full bytes in the model view.
+				// recall_tool_output window: keep the full bytes in the model view.
 			} else if !strings.HasPrefix(m.Content, truncationHeaderPrefix) {
 				if m.ToolOutput == nil {
 					// A tool message without metadata (e.g. committed before
@@ -91,7 +91,7 @@ func ProjectModelView(msgs []llm.ChatMessage) []llm.ChatMessage {
 // states the sizes and how to load the rest, the first HeadBytes bytes, an
 // omitted marker, and the last TailBytes bytes. It returns content unchanged
 // when it fits within the head+tail budget. callID is the tool_call_id the
-// read_output hint addresses (the message's ToolCallID).
+// recall_tool_output hint addresses (the message's ToolCallID).
 func Truncate(content, callID string, meta *llm.ToolOutputMeta) string {
 	if meta.TotalBytes <= HeadBytes+TailBytes {
 		return content
@@ -103,7 +103,7 @@ func Truncate(content, callID string, meta *llm.ToolOutputMeta) string {
 	tail := content[meta.TotalBytes-TailBytes:]
 	omitted := meta.TotalBytes - HeadBytes - TailBytes
 	var b strings.Builder
-	fmt.Fprintf(&b, "[tool output: %s of %s bytes (head); last %s shown below.  To load more: read_output(call_id=%q, offset=%d, max_bytes=%d).]\n",
+	fmt.Fprintf(&b, "[tool output: %s of %s bytes (head); last %s shown below.  To load more: "+ReadOutputTool+"(call_id=%q, offset=%d, max_bytes=%d).]\n",
 		comma(HeadBytes), comma(meta.TotalBytes), bytesLabel(TailBytes), callID, HeadBytes, meta.TotalBytes-HeadBytes)
 	b.WriteString(head)
 	fmt.Fprintf(&b, "\n[... %s omitted ...]\n", bytesLabel(omitted))
@@ -132,14 +132,14 @@ func comma(n int) string {
 	return b.String()
 }
 
-// readOutputArgs is the parsed read_output tool call.
+// readOutputArgs is the parsed recall_tool_output tool call.
 type readOutputArgs struct {
 	CallID   string `json:"call_id"`
 	Offset   int    `json:"offset"`
 	MaxBytes int    `json:"max_bytes"`
 }
 
-// ServeWindow handles a read_output call against the turn's committed history.
+// ServeWindow handles a recall_tool_output call against the turn's committed history.
 // It returns the window text served to the model (a short header plus the
 // window bytes), the metadata describing the recall, or an error when the
 // arguments are invalid or the call_id is unknown. The agent serves it from
@@ -149,16 +149,16 @@ type readOutputArgs struct {
 func ServeWindow(history []llm.ChatMessage, args string) (string, *llm.ToolOutputMeta, error) {
 	var in readOutputArgs
 	if err := json.Unmarshal([]byte(args), &in); err != nil {
-		return "", nil, fmt.Errorf("parse read_output arguments: %w", err)
+		return "", nil, fmt.Errorf("parse recall_tool_output arguments: %w", err)
 	}
 	if in.CallID == "" {
-		return "", nil, errors.New("read_output: call_id is required")
+		return "", nil, errors.New("recall_tool_output: call_id is required")
 	}
 	if in.Offset < 0 {
-		return "", nil, errors.New("read_output: offset must be >= 0")
+		return "", nil, errors.New("recall_tool_output: offset must be >= 0")
 	}
 	if in.MaxBytes < 0 {
-		return "", nil, errors.New("read_output: max_bytes must be >= 0")
+		return "", nil, errors.New("recall_tool_output: max_bytes must be >= 0")
 	}
 	var data []byte
 	var total int
@@ -170,7 +170,7 @@ func ServeWindow(history []llm.ChatMessage, args string) (string, *llm.ToolOutpu
 		}
 	}
 	if data == nil {
-		return "", nil, fmt.Errorf("read_output: unknown call_id %q (it must be a tool result in this conversation's history)", in.CallID)
+		return "", nil, fmt.Errorf("recall_tool_output: unknown call_id %q (it must be a tool result in this conversation's history)", in.CallID)
 	}
 	offset := in.Offset
 	if offset > total {
@@ -192,14 +192,14 @@ func ServeWindow(history []llm.ChatMessage, args string) (string, *llm.ToolOutpu
 	return WindowText(meta, window), meta, nil
 }
 
-// WindowText renders the text served to the model for a read_output window: a
+// WindowText renders the text served to the model for a recall_tool_output window: a
 // header identifying the window, then the window bytes.
 func WindowText(meta *llm.ToolOutputMeta, window string) string {
-	return fmt.Sprintf("[recall: read_output(call_id=%q, offset=%d, max_bytes=%d) -> bytes %d-%d of %d (%d bytes) served to the model]\n%s",
+	return fmt.Sprintf("[recall: "+ReadOutputTool+"(call_id=%q, offset=%d, max_bytes=%d) -> bytes %d-%d of %d (%d bytes) served to the model]\n%s",
 		meta.SourceCallID, meta.Offset, meta.MaxBytes, meta.Offset, meta.Offset+meta.MaxBytes, meta.TotalBytes, meta.MaxBytes, window)
 }
 
-// Placeholder renders the persisted/broadcast copy of a read_output result: a
+// Placeholder renders the persisted/broadcast copy of a recall_tool_output result: a
 // short notice instead of the window bytes, so the window is never duplicated
 // in the database (the full output lives once, under the source tool result).
 // The placeholder still keys the tool message to its call, so the assistant's
@@ -207,11 +207,11 @@ func WindowText(meta *llm.ToolOutputMeta, window string) string {
 // result), and it records what was served so the UI — and the model on the
 // next turn — can see the recall happened.
 func Placeholder(meta *llm.ToolOutputMeta) string {
-	return fmt.Sprintf("[recall: read_output(call_id=%q, offset=%d, max_bytes=%d) returned bytes %d-%d of %d (%d bytes) to the model context; call read_output to load a different window]",
+	return fmt.Sprintf("[recall: "+ReadOutputTool+"(call_id=%q, offset=%d, max_bytes=%d) returned bytes %d-%d of %d (%d bytes) to the model context; call "+ReadOutputTool+" to load a different window]",
 		meta.SourceCallID, meta.Offset, meta.MaxBytes, meta.Offset, meta.Offset+meta.MaxBytes, meta.TotalBytes, meta.MaxBytes)
 }
 
-// Def is the model-facing definition of the read_output tool. The agent
+// Def is the model-facing definition of the recall_tool_output tool. The agent
 // declares it on every request so a model that receives a truncated tool result
 // can load more. Omitted max_bytes reads to the end of the output, so loading a
 // large result takes a single call.
@@ -221,7 +221,7 @@ func Def() llm.Tool {
 		Function: llm.Function{
 			Name: ReadOutputTool,
 			Description: "Load more of a tool result that was truncated in your context. Tool results larger than " +
-				strconv.Itoa(HeadBytes+TailBytes) + " bytes are shown as a head and tail with a read_output hint. " +
+				strconv.Itoa(HeadBytes+TailBytes) + " bytes are shown as a head and tail with a recall_tool_output hint. " +
 				"call_id is the id of the original tool call (shown in the truncation header), offset is the byte offset " +
 				"to start at (default 0), and max_bytes limits the returned window — omit it to read the rest of the " +
 				"output in one call. Offsets address the raw output bytes.",

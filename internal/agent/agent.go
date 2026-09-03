@@ -223,14 +223,14 @@ func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage,
 		// The model's view is the committed history projected for the model:
 		// tool results larger than the head+tail budget are trimmed to a head +
 		// tail slice (the full output stays in History, the DB, and the UI), and
-		// read_output (recall) windows are kept intact. The projection is pure —
+		// recall_tool_output (recall) windows are kept intact. The projection is pure —
 		// History always holds full output, so each request re-projects fresh and
 		// never compounds.
 		msgs := recall.ProjectModelView(res.History)
 		if env := js.Environment(); env != "" {
 			msgs = append([]llm.ChatMessage{llm.SystemMessage(env)}, msgs...)
 		}
-		// read_output is served by the agent itself (from History), so it is
+		// recall_tool_output is served by the agent itself (from History), so it is
 		// declared alongside the provider's tools on every request.
 		defs := append([]llm.Tool{recall.Def()}, js.Defs()...)
 		body, err := client.Stream(ctx, msgs, defs)
@@ -358,13 +358,13 @@ func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage,
 			// after every callCtx.Err() check below, so those checks see only a
 			// user's cancellation (via the hook), never our own cleanup.
 			defer callCancel()
-			// read_output is served by the agent itself from the turn's history:
+			// recall_tool_output is served by the agent itself from the turn's history:
 			// it needs no execution provider, no cancel hook, and works for any
 			// provider (local or remote) even when no client is connected.
 			if c.Name == recall.ReadOutputTool {
 				window, meta, rerr := recall.ServeWindow(res.History, c.Arguments)
 				if rerr != nil {
-					// A bad read_output call is a tool that failed to start: emit
+					// A bad recall_tool_output call is a tool that failed to start: emit
 					// the terminal envelope and commit the error, then keep the
 					// turn going so the model sees the error and can react.
 					result := "error: " + rerr.Error()

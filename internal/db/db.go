@@ -185,7 +185,7 @@ ALTER TABLE queries DROP COLUMN input;
 	if v < 6 {
 		// v6: structured tool-output metadata on committed messages
 		// (total/shown bytes, whether the model view truncated the result, and
-		// read_output recall details), so the UI can render a size/truncation
+		// recall_tool_output recall details), so the UI can render a size/truncation
 		// badge and the model-view projection knows what to show. Stored as a
 		// JSON blob in a TEXT column (empty = no metadata, the pre-v6 default).
 		const ddl = "ALTER TABLE messages ADD COLUMN tool_output TEXT NOT NULL DEFAULT ''"

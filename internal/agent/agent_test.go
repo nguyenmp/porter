@@ -1137,9 +1137,9 @@ type stringStreamRC struct{ *strings.Reader }
 
 func (s *stringStreamRC) Close() error { return nil }
 
-// recallLLMServer serves three requests: shell (call_1), read_output (call_2)
+// recallLLMServer serves three requests: shell (call_1), recall_tool_output (call_2)
 // of call_1, then a plain reply. It captures each request's messages, tools, and
-// the declared tool names (so the test can assert read_output is exposed).
+// the declared tool names (so the test can assert recall_tool_output is exposed).
 func recallLLMServer(t *testing.T) (*httptest.Server, func() ([][]json.RawMessage, []bool, [][]string)) {
 	t.Helper()
 	var mu sync.Mutex
@@ -1178,7 +1178,7 @@ func recallLLMServer(t *testing.T) (*httptest.Server, func() ([][]json.RawMessag
 		case 1:
 			fmt.Fprintf(w, `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"shell","arguments":"{\"command\":\"cat big\"}"}}]},"finish_reason":"tool_calls"}]}`+"\n\n"+`data: [DONE]`+"\n")
 		case 2:
-			fmt.Fprintf(w, `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_2","type":"function","function":{"name":"read_output","arguments":"{\"call_id\":\"call_1\",\"offset\":%d,\"max_bytes\":1000}"}}]},"finish_reason":"tool_calls"}]}`+"\n\n"+`data: [DONE]`+"\n", recall.HeadBytes)
+			fmt.Fprintf(w, `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_2","type":"function","function":{"name":"recall_tool_output","arguments":"{\"call_id\":\"call_1\",\"offset\":%d,\"max_bytes\":1000}"}}]},"finish_reason":"tool_calls"}]}`+"\n\n"+`data: [DONE]`+"\n", recall.HeadBytes)
 		default:
 			fmt.Fprintf(w, `data: {"choices":[{"delta":{"content":"done"},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":3}}`+"\n\n"+`data: [DONE]`+"\n")
 		}
@@ -1216,7 +1216,7 @@ func toolMsg(t *testing.T, msgs []json.RawMessage, callID string) (string, bool)
 }
 
 // TestRunTurnTruncatesModelViewAndServesReadOutput is the end-to-end story:
-// the model sees the shell result truncated to head+tail, calls read_output,
+// the model sees the shell result truncated to head+tail, calls recall_tool_output,
 // the model's next request carries the full window in its context, while the
 // bus and committed history get a short placeholder (no window duplication),
 // and the metadata never leaks into the LLM payload.
@@ -1246,17 +1246,17 @@ func TestRunTurnTruncatesModelViewAndServesReadOutput(t *testing.T) {
 	}
 	for i := range hadTools {
 		if !hadTools[i] {
-			t.Errorf("request %d should declare tools (read_output is always exposed)", i)
+			t.Errorf("request %d should declare tools (recall_tool_output is always exposed)", i)
 		}
-		// read_output is always declared, alongside the provider's tools.
+		// recall_tool_output is always declared, alongside the provider's tools.
 		found := false
 		for _, name := range toolNames[i] {
-			if name == "read_output" {
+			if name == "recall_tool_output" {
 				found = true
 			}
 		}
 		if !found {
-			t.Errorf("request %d tools = %v, missing read_output", i, toolNames[i])
+			t.Errorf("request %d tools = %v, missing recall_tool_output", i, toolNames[i])
 		}
 	}
 
@@ -1275,27 +1275,30 @@ func TestRunTurnTruncatesModelViewAndServesReadOutput(t *testing.T) {
 		t.Errorf("model view must keep the tail exit line")
 	}
 
-	// The tool_output metadata must never reach the LLM payload (json:"-").
+	// The tool_output metadata must never reach the LLM payload (json:"-"). The
+	// model-facing recall_tool_output tool name legitimately contains that
+	// substring, so match the JSON field (which would only appear if the
+	// metadata were serialized) rather than the bare word.
 	for _, raw := range captured[1] {
-		if strings.Contains(string(raw), "tool_output") {
-			t.Errorf("tool_output leaked into the LLM request: %s", raw)
+		if strings.Contains(string(raw), `"tool_output":`) {
+			t.Errorf("tool_output metadata leaked into the LLM request: %s", raw)
 		}
 	}
 
-	// Request 3 is the model's view after read_output: the full window.
+	// Request 3 is the model's view after recall_tool_output: the full window.
 	windowView, ok := toolMsg(t, captured[2], "call_2")
 	if !ok {
-		t.Fatalf("request 3 missing read_output tool message")
+		t.Fatalf("request 3 missing recall_tool_output tool message")
 	}
-	if !strings.Contains(windowView, "[recall: read_output") {
-		t.Errorf("read_output view missing recall header:\n%.120s", windowView)
+	if !strings.Contains(windowView, "[recall: recall_tool_output") {
+		t.Errorf("recall_tool_output view missing recall header:\n%.120s", windowView)
 	}
 	if !strings.Contains(windowView, strings.Repeat("m", 1000)) {
 		t.Errorf("model must see the full window bytes in its context")
 	}
 
 	// The committed history (res.History) holds the full shell output AND the
-	// full read_output window (the model's next-turn source of truth).
+	// full recall_tool_output window (the model's next-turn source of truth).
 	var committedShell, committedWindow string
 	for _, m := range res.History {
 		switch m.ToolCallID {
@@ -1309,11 +1312,11 @@ func TestRunTurnTruncatesModelViewAndServesReadOutput(t *testing.T) {
 		t.Errorf("history must hold the full shell output")
 	}
 	if !strings.Contains(committedWindow, strings.Repeat("m", 1000)) {
-		t.Errorf("history must hold the full read_output window")
+		t.Errorf("history must hold the full recall_tool_output window")
 	}
 
 	// The bus gets the full shell result with truncation metadata, and the
-	// read_output result as a placeholder with recall metadata.
+	// recall_tool_output result as a placeholder with recall metadata.
 	var sawShellResult, sawRecallResult bool
 	for _, env := range got {
 		if env.Kind != api.KindToolResult {
@@ -1331,13 +1334,13 @@ func TestRunTurnTruncatesModelViewAndServesReadOutput(t *testing.T) {
 		case "call_2":
 			sawRecallResult = true
 			if strings.Contains(env.Result, strings.Repeat("m", 1000)) {
-				t.Errorf("bus read_output result must be a placeholder, not the window")
+				t.Errorf("bus recall_tool_output result must be a placeholder, not the window")
 			}
 			if !strings.Contains(env.Result, "[recall:") {
-				t.Errorf("bus read_output result missing recall notice: %q", env.Result)
+				t.Errorf("bus recall_tool_output result missing recall notice: %q", env.Result)
 			}
 			if env.ToolOutput == nil || !env.ToolOutput.Recall || env.ToolOutput.SourceCallID != "call_1" {
-				t.Errorf("bus read_output metadata = %+v, want recall of call_1", env.ToolOutput)
+				t.Errorf("bus recall_tool_output metadata = %+v, want recall of call_1", env.ToolOutput)
 			}
 		}
 	}
@@ -1345,10 +1348,10 @@ func TestRunTurnTruncatesModelViewAndServesReadOutput(t *testing.T) {
 		t.Errorf("bus missing shell tool_result")
 	}
 	if !sawRecallResult {
-		t.Errorf("bus missing read_output tool_result")
+		t.Errorf("bus missing recall_tool_output tool_result")
 	}
 
-	// The persisted/committed read_output message is the placeholder (onMessage
+	// The persisted/committed recall_tool_output message is the placeholder (onMessage
 	// got it), never the window — the no-duplication requirement.
 	var committedRecall string
 	for _, m := range committed {
@@ -1357,19 +1360,19 @@ func TestRunTurnTruncatesModelViewAndServesReadOutput(t *testing.T) {
 		}
 	}
 	if committedRecall == "" {
-		t.Fatalf("onMessage never committed the read_output result")
+		t.Fatalf("onMessage never committed the recall_tool_output result")
 	}
 	if strings.Contains(committedRecall, strings.Repeat("m", 1000)) {
-		t.Errorf("committed read_output result must be a placeholder, not the window")
+		t.Errorf("committed recall_tool_output result must be a placeholder, not the window")
 	}
 	if !strings.Contains(committedRecall, "[recall:") {
-		t.Errorf("committed read_output result missing recall notice: %q", committedRecall)
+		t.Errorf("committed recall_tool_output result missing recall notice: %q", committedRecall)
 	}
 }
 
-// TestRunTurnReadOutputUnknownCallID verifies a bad read_output call is
+// TestRunTurnReadOutputUnknownCallID verifies a bad recall_tool_output call is
 // surfaced to the model as an error and does not end the turn.
-// TestRunTurnReadOutputUnknownCallID verifies a bad read_output call is
+// TestRunTurnReadOutputUnknownCallID verifies a bad recall_tool_output call is
 // surfaced to the model as an error and does not end the turn.
 func TestRunTurnReadOutputUnknownCallID(t *testing.T) {
 	var mu sync.Mutex
@@ -1388,7 +1391,7 @@ func TestRunTurnReadOutputUnknownCallID(t *testing.T) {
 		case 1:
 			fmt.Fprintf(w, `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"shell","arguments":"{\"command\":\"echo hi\"}"}}]},"finish_reason":"tool_calls"}]}`+"\n\n"+`data: [DONE]`+"\n")
 		case 2:
-			fmt.Fprintf(w, `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_2","type":"function","function":{"name":"read_output","arguments":"{\"call_id\":\"nope\"}"}}]},"finish_reason":"tool_calls"}]}`+"\n\n"+`data: [DONE]`+"\n")
+			fmt.Fprintf(w, `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_2","type":"function","function":{"name":"recall_tool_output","arguments":"{\"call_id\":\"nope\"}"}}]},"finish_reason":"tool_calls"}]}`+"\n\n"+`data: [DONE]`+"\n")
 		default:
 			fmt.Fprintf(w, `data: {"choices":[{"delta":{"content":"done"},"finish_reason":"stop"}]}`+"\n\n"+`data: [DONE]`+"\n")
 		}
@@ -1403,9 +1406,9 @@ func TestRunTurnReadOutputUnknownCallID(t *testing.T) {
 		t.Fatalf("RunTurn: %v", err)
 	}
 	if res.Text != "done" {
-		t.Errorf("final text = %q, want done (a bad read_output must not end the turn)", res.Text)
+		t.Errorf("final text = %q, want done (a bad recall_tool_output must not end the turn)", res.Text)
 	}
-	// The read_output error is committed so the model sees it.
+	// The recall_tool_output error is committed so the model sees it.
 	var sawErr bool
 	for _, m := range res.History {
 		if m.Role == "tool" && m.ToolCallID == "call_2" {
@@ -1413,7 +1416,7 @@ func TestRunTurnReadOutputUnknownCallID(t *testing.T) {
 		}
 	}
 	if !sawErr {
-		t.Errorf("read_output error not committed to history")
+		t.Errorf("recall_tool_output error not committed to history")
 	}
 }
 
