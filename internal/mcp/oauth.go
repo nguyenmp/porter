@@ -17,6 +17,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -271,7 +272,9 @@ func discoverWellKnown(ctx context.Context, client *http.Client, server string) 
 // AS lists offline_access, offline, openid, and read, while the MCP API
 // itself requires read and write (and "write" is missing entirely from the AS
 // list). When the config specifies no scope, the resource-advertised scopes
-// are what porter should request:
+// are what porter should request. The AS's own list is still consulted for
+// one thing: whether to add offline_access (see withOfflineAccess), which
+// servers like Greptile require before they issue a refresh token.
 type oauthMetadata struct {
 	meta   *wellKnown
 	scopes []string // the RFC 9728 protected-resource scopes (nil when none published)
@@ -503,6 +506,27 @@ func refreshToken(ctx context.Context, client *http.Client, e *TokenEntry) error
 	return nil
 }
 
+// withOfflineAccess appends the "offline_access" scope to scope when the
+// authorization server advertises it as supported and the request does not
+// already carry it. Servers like Greptile only issue a refresh token when the
+// client asks for offline_access, so without it the login succeeds but the
+// stored token can never be renewed. The addition is gated on the server's
+// own metadata because requesting a scope a server does not list can fail the
+// whole authorization request (as sending no scope at all does for Greptile).
+// scope is a space-separated OAuth scope string; an empty scope is returned
+// unchanged (there is no base scope to add offline access to).
+func withOfflineAccess(scope string, supported []string) string {
+	for _, s := range strings.Fields(scope) {
+		if s == "offline_access" {
+			return scope
+		}
+	}
+	if scope == "" || !slices.Contains(supported, "offline_access") {
+		return scope
+	}
+	return scope + " offline_access"
+}
+
 // Login runs the interactive OAuth authorization-code flow against the MCP
 // server at serverURL: discover metadata, dynamically register a public
 // client, open the authorization URL in a browser with an ephemeral loopback
@@ -533,6 +557,11 @@ func login(ctx context.Context, client *http.Client, serverURL, name, scope stri
 	if scope == "" {
 		scope = strings.Join(om.scopes, " ")
 	}
+	// Servers like Greptile only issue a refresh token when the client asks
+	// for offline_access, so append it whenever the authorization server
+	// advertises it (see withOfflineAccess). It is added after the resource
+	// scopes above, and never on its own.
+	scope = withOfflineAccess(scope, meta.ScopesSupported)
 	// Ephemeral loopback redirect: bind port 0 so the OS picks a free port
 	// and the redirect URI always matches this run's registration.
 	ln, err := net.Listen("tcp", "127.0.0.1:0")

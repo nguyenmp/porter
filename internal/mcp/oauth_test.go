@@ -23,9 +23,10 @@ import (
 type mockOAuth struct {
 	mu         sync.Mutex
 	refreshes  int
-	authCode   string // code the token endpoint accepts
-	accessTok  string // token issued on code exchange
-	refreshTok string // refresh token issued
+	authCode   string   // code the token endpoint accepts
+	accessTok  string   // token issued on code exchange
+	refreshTok string   // refresh token issued
+	asScopes   []string // scopes_supported advertised in RFC 8414 metadata (defaults to mcp:read mcp:write)
 }
 
 func (m *mockOAuth) handler() http.Handler {
@@ -35,6 +36,10 @@ func (m *mockOAuth) handler() http.Handler {
 			// Endpoints point back at this test server so the flow is fully
 			// self-contained (httptest is plain http).
 			base := "http://" + r.Host
+			scopes := m.asScopes
+			if scopes == nil {
+				scopes = []string{"mcp:read", "mcp:write"}
+			}
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"issuer":                           base,
@@ -42,7 +47,7 @@ func (m *mockOAuth) handler() http.Handler {
 				"token_endpoint":                   base + "/token",
 				"registration_endpoint":            base + "/register",
 				"revocation_endpoint":              base + "/revoke",
-				"scopes_supported":                 []string{"mcp:read", "mcp:write"},
+				"scopes_supported":                 scopes,
 				"code_challenge_methods_supported": []string{"S256"},
 			})
 		case r.URL.Path == "/register":
@@ -490,5 +495,128 @@ func TestOAuthNotLoggedIn(t *testing.T) {
 	_ = out.Close()
 	if !strings.Contains(string(data), "porter mcp login") {
 		t.Fatalf("result = %q, want a login hint", data)
+	}
+}
+
+// TestWithOfflineAccess pins down when login appends the offline_access scope:
+// only when the authorization server advertises it, and never twice.
+func TestWithOfflineAccess(t *testing.T) {
+	tests := []struct {
+		name      string
+		scope     string
+		supported []string
+		want      string
+	}{
+		{
+			name:      "appends when advertised and missing",
+			scope:     "read write",
+			supported: []string{"offline_access", "offline", "openid", "read"},
+			want:      "read write offline_access",
+		},
+		{
+			name:      "already present is left alone",
+			scope:     "read write offline_access",
+			supported: []string{"offline_access"},
+			want:      "read write offline_access",
+		},
+		{
+			name:      "not advertised is not requested",
+			scope:     "read write",
+			supported: []string{"openid", "read"},
+			want:      "read write",
+		},
+		{
+			name:      "empty scope stays empty",
+			scope:     "",
+			supported: []string{"offline_access"},
+			want:      "",
+		},
+		{
+			name:      "no supported scopes leaves scope alone",
+			scope:     "mcp:read mcp:write",
+			supported: nil,
+			want:      "mcp:read mcp:write",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := withOfflineAccess(tt.scope, tt.supported); got != tt.want {
+				t.Errorf("withOfflineAccess(%q, %v) = %q, want %q", tt.scope, tt.supported, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestLoginRequestsOfflineAccessWhenAdvertised mirrors the Greptile shape end
+// to end: the authorization server advertises offline_access (and, like
+// Greptile's, omits write from its own list), the MCP resource advertises
+// read write on a different origin, and no scope is configured. porter must
+// request the resource scopes plus offline_access so the AS issues a refresh
+// token — without offline_access, Greptile returns no refresh token and the
+// stored token can never be renewed.
+func TestLoginRequestsOfflineAccessWhenAdvertised(t *testing.T) {
+	as := &mockOAuth{
+		authCode:   "code-4",
+		accessTok:  "tok-4",
+		refreshTok: "ref-4",
+		asScopes:   []string{"offline_access", "offline", "openid", "read"},
+	}
+	asSrv := httptest.NewServer(as.handler())
+	defer asSrv.Close()
+
+	var mcpSrv *httptest.Server
+	mcpSrv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/.well-known/oauth-protected-resource" ||
+			r.URL.Path == "/.well-known/oauth-protected-resource/mcp" {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"resource":                 mcpSrv.URL + "/mcp",
+				"authorization_servers":    []string{asSrv.URL},
+				"scopes_supported":         []string{"read", "write"},
+				"bearer_methods_supported": []string{"header"},
+			})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer mcpSrv.Close()
+
+	store, err := OpenTokenStoreAt(filepath.Join(t.TempDir(), "tokens.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stdout strings.Builder
+	var opened string
+	openBrowser := func(u string) error {
+		opened = u
+		au, err := url.Parse(u)
+		if err != nil {
+			return err
+		}
+		// Simulate the browser completing consent, echoing state back.
+		resp, err := http.Get(au.Query().Get("redirect_uri") + "?code=code-4&state=" + url.QueryEscape(au.Query().Get("state")))
+		if err != nil {
+			return err
+		}
+		resp.Body.Close()
+		return nil
+	}
+
+	mcpURL := mcpSrv.URL + "/mcp"
+	if err := login(context.Background(), http.DefaultClient, mcpURL, "greptile", "", &stdout, openBrowser, store); err != nil {
+		t.Fatalf("login: %v", err)
+	}
+	if !strings.Contains(opened, "scope=read+write+offline_access") {
+		t.Errorf("authorize URL missing offline_access alongside resource scopes: %s", opened)
+	}
+	e := store.Get(mcpURL)
+	if e == nil {
+		t.Fatal("no token stored after login")
+	}
+	if e.Scope != "read write offline_access" {
+		t.Errorf("stored scope = %q, want %q", e.Scope, "read write offline_access")
+	}
+	if e.RefreshToken != "ref-4" {
+		t.Errorf("refresh token = %q, want %q (the point of offline_access)", e.RefreshToken, "ref-4")
 	}
 }
