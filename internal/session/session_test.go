@@ -745,12 +745,12 @@ func TestProviderChangePublishesStatus(t *testing.T) {
 func TestRemoteProviderDefsAndEnvironmentFromContext(t *testing.T) {
 	s := newTestSession(t, "s")
 
-	// No context yet: remote provider (once registered) exposes only shell and
-	// no environment.
+	// No context yet: remote provider (once registered) exposes the base tool
+	// set (shell + file editing tools) and no environment.
 	id := s.RegisterExec(make(chan api.ExecRequest, 1), "", "", "")
 	p := s.provider()
-	if len(p.Defs()) != 1 {
-		t.Errorf("Defs with no context = %d tools, want 1 (shell)", len(p.Defs()))
+	if names := toolNames(p.Defs()); !equalStrings(names, []string{"shell", "read_with_line_numbers", "line_replace", "string_replace"}) {
+		t.Errorf("Defs with no context = %v, want the base tool set", names)
 	}
 	if env := p.Environment(); env != "" {
 		t.Errorf("Environment with no context = %q, want empty", env)
@@ -768,8 +768,8 @@ func TestRemoteProviderDefsAndEnvironmentFromContext(t *testing.T) {
 	id = s.RegisterExec(make(chan api.ExecRequest, 1), "", "", "")
 	p = s.provider()
 	defs := p.Defs()
-	if len(defs) != 2 || defs[1].Function.Name != "load_skill" {
-		t.Errorf("Defs with skills = %+v, want shell + load_skill", defs)
+	if len(defs) != 5 || defs[len(defs)-1].Function.Name != "load_skill" {
+		t.Errorf("Defs with skills = %+v, want base tool set + load_skill", defs)
 	}
 	env := p.Environment()
 	for _, want := range []string{"linux/amd64", "/work", "README.md", "my-skill: does things"} {
@@ -1610,4 +1610,26 @@ func TestHumanizeSkipsShortReplies(t *testing.T) {
 			return
 		}
 	}
+}
+
+// toolNames returns the names of tool defs, in order.
+func toolNames(defs []llm.Tool) []string {
+	out := make([]string, len(defs))
+	for i, d := range defs {
+		out[i] = d.Function.Name
+	}
+	return out
+}
+
+// equalStrings reports whether two string slices match in order.
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }

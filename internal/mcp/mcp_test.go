@@ -519,10 +519,11 @@ func TestCompositeRouting(t *testing.T) {
 		t.Error("composite unknown tool: want error")
 	}
 
-	// No servers: hub tools are not exposed and calls are rejected.
+	// No servers: hub tools are not exposed (the base tool set remains) and
+	// hub calls are rejected.
 	empty := &Composite{Exec: exec, Hub: New(nil)}
-	if len(empty.Defs()) != 1 || empty.Defs()[0].Function.Name != "shell" {
-		t.Errorf("empty hub Defs = %+v", empty.Defs())
+	if names := toolNames(empty.Defs()); !equalStrings(names, []string{"shell", "read_with_line_numbers", "line_replace", "string_replace"}) {
+		t.Errorf("empty hub Defs = %v, want the base tool set", names)
 	}
 	if _, err := empty.Run(context.Background(), FindTool, nil); err == nil {
 		t.Error("empty hub FindMCP: want error")
@@ -935,4 +936,26 @@ func TestCallDefRequiresArgs(t *testing.T) {
 	if !strings.Contains(desc, "Always pass this") {
 		t.Errorf("args description should make the requirement explicit: %q", desc)
 	}
+}
+
+// toolNames returns the names of tool defs, in order.
+func toolNames(defs []llm.Tool) []string {
+	out := make([]string, len(defs))
+	for i, d := range defs {
+		out[i] = d.Function.Name
+	}
+	return out
+}
+
+// equalStrings reports whether two string slices match in order.
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }

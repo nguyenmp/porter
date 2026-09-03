@@ -77,9 +77,13 @@ func Defs() []llm.Tool {
 }
 
 // DefsForSkills returns the tool schemas for a provider that can load the
-// given skills: shell, plus load_skill when at least one skill is known.
+// given skills: the base set (shell + the file editing tools), plus load_skill
+// when at least one skill is known.
 func DefsForSkills(skills []api.Skill) []llm.Tool {
+	// shell plus the file editing tools are the base set every execution
+	// environment can serve; load_skill joins them when skills are known.
 	out := []llm.Tool{shellDef()}
+	out = append(out, fileToolDefs()...)
 	if len(skills) > 0 {
 		out = append(out, loadSkillDef(skills))
 	}
@@ -178,6 +182,12 @@ func (d *Dispatcher) RunDir(ctx context.Context, name string, args []byte, dir s
 	switch name {
 	case "shell":
 		return runShellDir(ctx, args, dir)
+	case ReadLinesTool:
+		return runReadDir(args, dir)
+	case LineReplaceTool:
+		return runLineReplaceDir(args, dir)
+	case StringReplace:
+		return runStringReplaceDir(args, dir)
 	case "load_skill":
 		return d.runLoadSkill(args)
 	default:

@@ -193,16 +193,17 @@ func TestLoadSkillReturnsSkillBody(t *testing.T) {
 	}
 	d := NewDispatcherWithSkills([]api.Skill{{Name: "my-skill", Description: "desc", Path: path}})
 
-	// The tool is declared to the model when skills are present.
+	// The tool is declared to the model when skills are present: shell + the
+	// file editing tools + load_skill.
 	defs := d.Defs()
-	if len(defs) != 2 {
-		t.Fatalf("Defs = %d tools, want shell + load_skill", len(defs))
+	if len(defs) != 5 {
+		t.Fatalf("Defs = %d tools, want shell + file tools + load_skill", len(defs))
 	}
-	if defs[1].Function.Name != "load_skill" {
-		t.Errorf("second tool = %q, want load_skill", defs[1].Function.Name)
+	if got := defs[len(defs)-1].Function.Name; got != "load_skill" {
+		t.Errorf("last tool = %q, want load_skill", got)
 	}
-	if !strings.Contains(defs[1].Function.Description, "my-skill: desc") {
-		t.Errorf("load_skill description missing skill metadata: %q", defs[1].Function.Description)
+	if !strings.Contains(defs[len(defs)-1].Function.Description, "my-skill: desc") {
+		t.Errorf("load_skill description missing skill metadata: %q", defs[len(defs)-1].Function.Description)
 	}
 
 	res, err := run(context.Background(), d, "load_skill", []byte(`{"name":"my-skill"}`))
@@ -252,12 +253,19 @@ func TestLoadSkillUnknownSkill(t *testing.T) {
 	}
 }
 
-// TestDispatcherWithoutSkillsExposesShellOnly verifies a dispatcher with no
-// skills does not declare load_skill (a provider can't serve it).
-func TestDispatcherWithoutSkillsExposesShellOnly(t *testing.T) {
+// TestDispatcherWithoutSkillsExposesBaseTools verifies a dispatcher with no
+// skills declares shell plus the file editing tools (every environment can
+// serve them) but not load_skill (a provider can't serve it without skills).
+func TestDispatcherWithoutSkillsExposesBaseTools(t *testing.T) {
 	defs := NewDispatcher().Defs()
-	if len(defs) != 1 || defs[0].Function.Name != "shell" {
-		t.Errorf("Defs without skills = %+v, want just shell", defs)
+	want := []string{"shell", ReadLinesTool, LineReplaceTool, StringReplace}
+	if len(defs) != len(want) {
+		t.Fatalf("Defs without skills = %d tools %+v, want %d", len(defs), defs, len(want))
+	}
+	for i, w := range want {
+		if defs[i].Function.Name != w {
+			t.Errorf("tool %d = %q, want %q", i, defs[i].Function.Name, w)
+		}
 	}
 }
 
