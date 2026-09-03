@@ -499,6 +499,15 @@ type ExecContext struct {
 	// FindMCP and route CallMCP down this provider's exec channel. Empty when
 	// the provider hosts none.
 	MCPServers []MCPServer `json:"mcp_servers,omitempty"`
+	// Instance identifies the process that reported this context: the host
+	// agent's per-process id, so the server can tell a reconnect (same
+	// instance) from a second process claiming the same host id (different
+	// instance, rejected). Empty for clients that don't identify themselves
+	// (legacy binaries, tests).
+	Instance string `json:"instance,omitempty"`
+	// PID is the reporting process's OS process id, surfaced in host-conflict
+	// errors so the user knows which process to stop.
+	PID int `json:"pid,omitempty"`
 }
 
 // ExecClient describes one execution provider a session can run tools with:

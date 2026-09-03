@@ -26,6 +26,17 @@ import (
 // buffer. The caller must refetch history and resubscribe with the new seq.
 var ErrResync = errors.New("resync required: refetch history and resubscribe")
 
+// DuplicateHostError reports that the server rejected this host's
+// registration because another host agent is already connected with the same
+// host id (the server answers 409 Conflict with a message naming the other
+// process). The host agent surfaces the server's message and exits instead
+// of retrying forever, so a second `make host` fails loudly.
+type DuplicateHostError struct {
+	Message string
+}
+
+func (e *DuplicateHostError) Error() string { return e.Message }
+
 // BasicAuth carries the credentials a client sends to a password-protected
 // porter server (see the server's PORTER_AUTH_USERNAME/PORTER_AUTH_PASSWORD).
 // When Username is empty the client sends no Authorization header.
@@ -360,7 +371,11 @@ func (c *Client) path(spec, id string, callID ...string) string {
 func (c *Client) statusError(resp *http.Response) error {
 	buf := new(bytes.Buffer)
 	_, _ = buf.ReadFrom(http.MaxBytesReader(nil, resp.Body, 4096))
-	return fmt.Errorf("server %s: %s", resp.Status, strings.TrimSpace(buf.String()))
+	msg := fmt.Sprintf("server %s: %s", resp.Status, strings.TrimSpace(buf.String()))
+	if resp.StatusCode == http.StatusConflict {
+		return &DuplicateHostError{Message: msg}
+	}
+	return fmt.Errorf("%s", msg)
 }
 
 // PostExecContext registers the caller's environment context with the session,
@@ -424,8 +439,11 @@ func (c *Client) PostHostProviderError(ctx context.Context, hostID, providerID, 
 // retry to re-register. onConnect, when non-nil, is called exactly once once
 // the exec connection is established (the server accepted the registration),
 // before any provision request is read, so callers can log readiness.
-func (c *Client) ServeHost(ctx context.Context, hostID string, provision func(api.HostRequest) error, onConnect func()) error {
+func (c *Client) ServeHost(ctx context.Context, hostID, instance string, provision func(api.HostRequest) error, onConnect func()) error {
 	u := strings.Replace(api.HostExecPath, "{host_id}", url.PathEscape(hostID), 1)
+	if instance != "" {
+		u += "?instance=" + url.QueryEscape(instance)
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+u, nil)
 	if err != nil {
 		return fmt.Errorf("build host exec: %w", err)

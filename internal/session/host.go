@@ -40,6 +40,11 @@ type host struct {
 	// replaced by a newer registration for the same host id — carries a
 	// different token, so its disconnect cannot unregister the newer host.
 	conn string
+	// instance identifies the host agent process that owns this registration
+	// (sent by the agent on connect). A second process claiming the same host
+	// id while this host is connected is rejected, so two agents can never
+	// silently shadow each other.
+	instance string
 }
 
 // pendingProvision tracks one session's request for a provider on a host,
@@ -71,18 +76,25 @@ type sandbox struct {
 
 // RegisterHost adds a connected execution host to the registry. A connecting
 // host is upserted by id (re-registering after a reconnect updates it in
-// place); an id-less host (legacy or tests) gets a generated one. It returns
-// a per-connection token that must be passed to UnregisterHost: only the
-// connection that owns the current registration can remove it, so a
-// superseded connection (replaced by a newer registration for the same host
-// id) cannot unregister the newer host. A base context posted before the
-// connection (pendingHostCtx) attaches here.
-func (st *Store) RegisterHost(ch chan api.HostRequest, id, name, kind string) string {
+// place); an id-less host (legacy or tests) gets a generated one. instance
+// identifies the host agent process: a reconnect from the same process (same
+// instance) upserts in place, while a second process claiming the same host
+// id while the first is still connected is rejected with an error, so two
+// agents can never silently shadow each other. It returns a per-connection
+// token that must be passed to UnregisterHost: only the connection that owns
+// the current registration can remove it, so a superseded connection
+// (replaced by a newer registration for the same host id) cannot unregister
+// the newer host. A base context posted before the connection
+// (pendingHostCtx) attaches here when its instance matches.
+func (st *Store) RegisterHost(ch chan api.HostRequest, id, name, kind, instance string) (string, error) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	if id == "" {
 		st.hostSeq++
 		id = fmt.Sprintf("host-%d", st.hostSeq)
+	}
+	if h, ok := st.hosts[id]; ok && h.connected && h.instance != instance {
+		return "", duplicateHostError(h)
 	}
 	h, ok := st.hosts[id]
 	if !ok {
@@ -94,15 +106,28 @@ func (st *Store) RegisterHost(ch chan api.HostRequest, id, name, kind string) st
 	if h.kind == "" {
 		h.kind = "host"
 	}
+	h.instance = instance
 	h.ch = ch
 	h.connected = true
 	st.connSeq++
 	h.conn = fmt.Sprintf("conn-%d", st.connSeq)
-	if ctx, ok := st.pendingHostCtx[id]; ok {
+	if ctx, ok := st.pendingHostCtx[id]; ok && ctx.Instance == instance {
 		h.ctx = ctx
 		delete(st.pendingHostCtx, id)
 	}
-	return h.conn
+	return h.conn, nil
+}
+
+// duplicateHostError builds the message rejecting a second host agent that
+// claims an already-connected host id: it names the connected host, the
+// process id of the agent that owns it (when one was reported), and the fix.
+func duplicateHostError(h *host) error {
+	msg := fmt.Sprintf("another execution host is already connected as %q", h.id)
+	if h.ctx != nil && h.ctx.PID > 0 {
+		msg += fmt.Sprintf(" (PID %d)", h.ctx.PID)
+	}
+	msg += "; stop it or set PORTER_HOST_ID"
+	return errors.New(msg)
 }
 
 // UnregisterHost removes the host registration owned by the given connection
@@ -144,14 +169,20 @@ func (st *Store) UnregisterHost(conn string) {
 // host reported (system, default working directory, files, skills). Like a
 // client's exec context, it is keyed by the host's id and attaches when the
 // host registers (or updates a registered host in place); it is what the "new
-// chat on" picker shows.
-func (st *Store) SetHostContext(ctx api.ExecContext) {
+// chat on" picker shows. A context from a process other than the one that
+// owns the host registration (different instance) is rejected: it must not
+// clobber the connected host's reported environment, or a second agent could
+// overwrite the first's context even though its exec connection was refused.
+func (st *Store) SetHostContext(ctx api.ExecContext) error {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	id := ctx.ID
 	if h, ok := st.hosts[id]; ok {
+		if h.instance != ctx.Instance {
+			return duplicateHostError(h)
+		}
 		h.ctx = &ctx
-		return
+		return nil
 	}
 	// The context can arrive before the host connection registers (the agent
 	// posts it before opening the connection, like the REPL); hold it for the
@@ -160,6 +191,7 @@ func (st *Store) SetHostContext(ctx api.ExecContext) {
 		st.pendingHostCtx = map[string]*api.ExecContext{}
 	}
 	st.pendingHostCtx[id] = &ctx
+	return nil
 }
 
 // Hosts returns a summary of every registered execution host, for the web

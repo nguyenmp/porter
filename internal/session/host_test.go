@@ -17,8 +17,8 @@ func newTestStore(t *testing.T) *Store {
 
 func TestRegisterHostAndHosts(t *testing.T) {
 	st := newTestStore(t)
-	st.RegisterHost(make(chan api.HostRequest, 8), "mac", "macbook", "host")
-	st.RegisterHost(make(chan api.HostRequest, 8), "vps", "vps", "")
+	st.RegisterHost(make(chan api.HostRequest, 8), "mac", "macbook", "host", "mac-inst")
+	st.RegisterHost(make(chan api.HostRequest, 8), "vps", "vps", "", "vps-inst")
 
 	hosts := st.Hosts()
 	if len(hosts) != 2 {
@@ -39,9 +39,11 @@ func TestRegisterHostAndHosts(t *testing.T) {
 func TestSetHostContextBeforeRegister(t *testing.T) {
 	st := newTestStore(t)
 	// The agent posts its context before opening the host connection; it must
-	// attach when the host registers.
-	st.SetHostContext(api.ExecContext{ID: "mac", Name: "macbook", System: "test", CWD: "/tmp"})
-	st.RegisterHost(make(chan api.HostRequest, 8), "mac", "", "host")
+	// attach when the host registers. The context carries the agent's
+	// instance so a different process's context can never attach to this
+	// registration.
+	_ = st.SetHostContext(api.ExecContext{ID: "mac", Name: "macbook", System: "test", CWD: "/tmp", Instance: "mac-inst"})
+	st.RegisterHost(make(chan api.HostRequest, 8), "mac", "", "host", "mac-inst")
 
 	hosts := st.Hosts()
 	if len(hosts) != 1 || hosts[0].Context == nil || hosts[0].Context.CWD != "/tmp" {
@@ -52,7 +54,7 @@ func TestSetHostContextBeforeRegister(t *testing.T) {
 func TestProvisionHappyPath(t *testing.T) {
 	st := newTestStore(t)
 	ch := make(chan api.HostRequest, 8)
-	st.RegisterHost(ch, "mac", "macbook", "host")
+	st.RegisterHost(ch, "mac", "macbook", "host", "mac-inst")
 
 	got := make(chan api.HostRequest, 1)
 	go func() {
@@ -89,7 +91,7 @@ func TestProvisionHostNotConnected(t *testing.T) {
 
 func TestProvisionTimeout(t *testing.T) {
 	st := newTestStore(t)
-	st.RegisterHost(make(chan api.HostRequest, 8), "mac", "macbook", "host")
+	st.RegisterHost(make(chan api.HostRequest, 8), "mac", "macbook", "host", "mac-inst")
 	old := provisionTimeout
 	provisionTimeout = 50 * time.Millisecond
 	defer func() { provisionTimeout = old }()
@@ -107,7 +109,7 @@ func TestProvisionTimeout(t *testing.T) {
 func TestHostProviderError(t *testing.T) {
 	st := newTestStore(t)
 	ch := make(chan api.HostRequest, 8)
-	st.RegisterHost(ch, "mac", "macbook", "host")
+	st.RegisterHost(ch, "mac", "macbook", "host", "mac-inst")
 
 	done := make(chan error, 1)
 	go func() {
@@ -127,7 +129,7 @@ func TestHostProviderError(t *testing.T) {
 func TestReleaseSessionSendsRelease(t *testing.T) {
 	st := newTestStore(t)
 	ch := make(chan api.HostRequest, 8)
-	st.RegisterHost(ch, "mac", "macbook", "host")
+	st.RegisterHost(ch, "mac", "macbook", "host", "mac-inst")
 
 	// A sandboxed provision (repo named) is recorded when the provider
 	// registers, so archiving the session can release the worktree.
@@ -158,7 +160,7 @@ func TestReleaseSessionSendsRelease(t *testing.T) {
 func TestReleaseSessionNoSandbox(t *testing.T) {
 	st := newTestStore(t)
 	ch := make(chan api.HostRequest, 8)
-	st.RegisterHost(ch, "mac", "macbook", "host")
+	st.RegisterHost(ch, "mac", "macbook", "host", "mac-inst")
 
 	// A plain-dir provision (no repo) has no sandbox to release: archiving
 	// the session must not send anything to the host.
@@ -181,7 +183,7 @@ func TestReleaseSessionNoSandbox(t *testing.T) {
 func TestReleaseSessionHostGone(t *testing.T) {
 	st := newTestStore(t)
 	ch := make(chan api.HostRequest, 8)
-	conn := st.RegisterHost(ch, "mac", "macbook", "host")
+	conn, _ := st.RegisterHost(ch, "mac", "macbook", "host", "mac-inst")
 	go func() {
 		req := <-ch
 		st.ProvisionRegistered("session_1", req.ProviderID)
@@ -199,7 +201,7 @@ func TestReleaseSessionHostGone(t *testing.T) {
 func TestUnregisterHostFailsPending(t *testing.T) {
 	st := newTestStore(t)
 	ch := make(chan api.HostRequest, 8)
-	conn := st.RegisterHost(ch, "mac", "macbook", "host")
+	conn, _ := st.RegisterHost(ch, "mac", "macbook", "host", "mac-inst")
 
 	// The host drops while a provision is in flight: the goroutine consumes
 	// the request the main thread's Provision sends, then disconnects the
@@ -230,9 +232,9 @@ func TestUnregisterHostFailsPending(t *testing.T) {
 func TestUnregisterHostSupersededConnection(t *testing.T) {
 	st := newTestStore(t)
 	ch := make(chan api.HostRequest, 8)
-	old := st.RegisterHost(ch, "mac", "macbook", "host")
+	old, _ := st.RegisterHost(ch, "mac", "macbook", "host", "mac-inst")
 	// A reconnect replaces the old registration for the same host id.
-	newConn := st.RegisterHost(ch, "mac", "macbook", "host")
+	newConn, _ := st.RegisterHost(ch, "mac", "macbook", "host", "mac-inst")
 
 	// The superseded connection's disconnect must be a no-op.
 	st.UnregisterHost(old)
@@ -244,5 +246,67 @@ func TestUnregisterHostSupersededConnection(t *testing.T) {
 	st.UnregisterHost(newConn)
 	if hosts := st.Hosts(); len(hosts) != 0 {
 		t.Fatalf("hosts after owner disconnect = %+v, want none", hosts)
+	}
+}
+
+// TestRegisterHostRejectsSecondProcess proves a second host agent claiming
+// the same host id while the first is connected is rejected with an error
+// naming the owner, while a reconnect from the same process (same instance)
+// is allowed.
+func TestRegisterHostRejectsSecondProcess(t *testing.T) {
+	st := newTestStore(t)
+	first, err := st.RegisterHost(make(chan api.HostRequest, 8), "mac", "macbook", "host", "inst-1")
+	if err != nil {
+		t.Fatalf("first RegisterHost: %v", err)
+	}
+	// A second process (different instance) is rejected.
+	if _, err := st.RegisterHost(make(chan api.HostRequest, 8), "mac", "macbook", "host", "inst-2"); err == nil {
+		t.Fatal("second process RegisterHost succeeded, want rejection")
+	}
+	// A reconnect from the same process (same instance) upserts in place.
+	if _, err := st.RegisterHost(make(chan api.HostRequest, 8), "mac", "macbook", "host", "inst-1"); err != nil {
+		t.Fatalf("same-instance reconnect rejected: %v", err)
+	}
+	st.UnregisterHost(first)
+}
+
+// TestSetHostContextRejectsSecondProcess proves a second process's context
+// POST is rejected when the host id is owned by another instance, so a
+// rejected agent cannot clobber the connected host's reported environment.
+func TestSetHostContextRejectsSecondProcess(t *testing.T) {
+	st := newTestStore(t)
+	if _, err := st.RegisterHost(make(chan api.HostRequest, 8), "mac", "macbook", "host", "inst-1"); err != nil {
+		t.Fatalf("RegisterHost: %v", err)
+	}
+	// The owner's context updates the host in place.
+	if err := st.SetHostContext(api.ExecContext{ID: "mac", Instance: "inst-1", CWD: "/owner"}); err != nil {
+		t.Fatalf("owner SetHostContext: %v", err)
+	}
+	// A different process's context is rejected.
+	err := st.SetHostContext(api.ExecContext{ID: "mac", Instance: "inst-2", CWD: "/intruder"})
+	if err == nil || !strings.Contains(err.Error(), "another execution host") {
+		t.Fatalf("second process SetHostContext = %v, want 'another execution host' error", err)
+	}
+	// The owner's context is untouched.
+	hosts := st.Hosts()
+	if hosts[0].Context == nil || hosts[0].Context.CWD != "/owner" {
+		t.Fatalf("owner context clobbered: %+v", hosts[0].Context)
+	}
+}
+
+// TestDuplicateHostErrorNamesOwnerPID proves the rejection message includes
+// the connected host agent's process id when it reported one, so the user
+// knows which process to stop.
+func TestDuplicateHostErrorNamesOwnerPID(t *testing.T) {
+	st := newTestStore(t)
+	if _, err := st.RegisterHost(make(chan api.HostRequest, 8), "mac", "macbook", "host", "inst-1"); err != nil {
+		t.Fatalf("RegisterHost: %v", err)
+	}
+	if err := st.SetHostContext(api.ExecContext{ID: "mac", Instance: "inst-1", PID: 4242}); err != nil {
+		t.Fatalf("SetHostContext: %v", err)
+	}
+	_, err := st.RegisterHost(make(chan api.HostRequest, 8), "mac", "macbook", "host", "inst-2")
+	if err == nil || !strings.Contains(err.Error(), "PID 4242") {
+		t.Fatalf("rejection = %v, want it to name PID 4242", err)
 	}
 }

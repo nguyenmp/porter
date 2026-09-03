@@ -11,6 +11,8 @@ package hostagent
 
 import (
 	"context"
+	"crypto/rand"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -69,6 +71,14 @@ func Run(ctx context.Context, cfg config.ClientConfig) error {
 	env.ID = hostID
 	env.Name = hostID
 	env.Repos = discoverRepos("")
+	// The instance id identifies this process to the server, so a reconnect
+	// (same instance) updates the host registration while a second process
+	// claiming the same host id is rejected (the server answers 409 with a
+	// message naming this process's pid — see Store.RegisterHost). It is
+	// unique per process: host id + pid + a random suffix, so two agents on
+	// the same machine (or two machines sharing a hostname) never collide.
+	env.Instance = fmt.Sprintf("%s-%d-%x", hostID, os.Getpid(), randSuffix())
+	env.PID = os.Getpid()
 
 	// Load the host's own MCP servers — e.g. a laptop-only server behind a
 	// corporate VPN — from ~/.porter/porter.mcp.json. The host serves these
@@ -101,6 +111,12 @@ func Run(ctx context.Context, cfg config.ClientConfig) error {
 		}
 		log.Printf("execution host %s: connecting to %s", hostID, cfg.ServerURL)
 		if err := c.PostHostContext(ctx, hostID, env); err != nil && ctx.Err() == nil {
+			var dup *client.DuplicateHostError
+			if errors.As(err, &dup) {
+				// Another host agent owns this host id: fail loudly instead
+				// of retrying forever and shadowing it (or being shadowed).
+				return fmt.Errorf("execution host: %s", dup.Message)
+			}
 			log.Printf("execution host: context register failed: %v", err)
 		}
 		// The exec connection lives until the server drops it, ctx is
@@ -110,7 +126,7 @@ func Run(ctx context.Context, cfg config.ClientConfig) error {
 		// connection it interrupted.
 		connCtx, cancelConn := context.WithCancel(ctx)
 		watcher.set(cancelConn)
-		err := c.ServeHost(connCtx, hostID, prov.provision, func() {
+		err := c.ServeHost(connCtx, hostID, env.Instance, prov.provision, func() {
 			log.Printf("execution host %s: connected", hostID)
 		})
 		cancelConn()
@@ -118,6 +134,12 @@ func Run(ctx context.Context, cfg config.ClientConfig) error {
 		if err != nil {
 			if ctx.Err() != nil {
 				return nil
+			}
+			var dup *client.DuplicateHostError
+			if errors.As(err, &dup) {
+				// Another host agent owns this host id: fail loudly instead
+				// of retrying forever and shadowing it (or being shadowed).
+				return fmt.Errorf("execution host: %s", dup.Message)
 			}
 			log.Printf("execution host: connection dropped: %v", err)
 		}
@@ -400,4 +422,15 @@ func hubSummary(h *mcp.Hub, hostID string) []api.MCPServer {
 		out[i].Host = hostID
 	}
 	return out
+}
+
+// randSuffix returns 4 bytes of crypto randomness as hex, for the per-process
+// host instance id. A failure is vanishingly unlikely; an empty suffix still
+// leaves host id + pid unique among live processes.
+func randSuffix() string {
+	var b [4]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return ""
+	}
+	return fmt.Sprintf("%x", b)
 }

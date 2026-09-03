@@ -25,7 +25,13 @@ func (s *Server) handleHosts(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleHostExec(w http.ResponseWriter, r *http.Request) {
 	ch := make(chan api.HostRequest, 8)
 	q := r.URL.Query()
-	conn := s.store.RegisterHost(ch, chi.URLParam(r, "host_id"), q.Get("name"), q.Get("kind"))
+	conn, err := s.store.RegisterHost(ch, chi.URLParam(r, "host_id"), q.Get("name"), q.Get("kind"), q.Get("instance"))
+	if err != nil {
+		// Another host agent owns this host id: tell the caller loudly
+		// instead of letting a second agent silently shadow the first.
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
 	defer s.store.UnregisterHost(conn)
 
 	w.Header().Set("Content-Type", "application/x-ndjson")
@@ -60,7 +66,10 @@ func (s *Server) handleHostContext(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid host context: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	s.store.SetHostContext(ctx)
+	if err := s.store.SetHostContext(ctx); err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
 	w.WriteHeader(http.StatusOK)
 }
 
