@@ -329,12 +329,19 @@ type Envelope struct {
 	// Variant is one humanize pass on a committed assistant message: set on
 	// KindVariantStarted (with no content yet) and KindVariant (with the
 	// rewrite or the error).
-	Variant    *Variant `json:"variant,omitempty"`     // KindVariantStarted, KindVariant
-	Delta      string   `json:"delta,omitempty"`       // KindToolResultDelta
-	StartedAt  int64    `json:"started_at,omitempty"`  // KindToolStarted, KindToolResult
-	FinishedAt int64    `json:"finished_at,omitempty"` // KindToolResult
-	TurnID     int64    `json:"turn_id,omitempty"`     // KindTurnDone
-	TurnSeq    uint64   `json:"turn_seq,omitempty"`    // KindTurnDone (the user message seq that started the turn)
+	Variant *Variant `json:"variant,omitempty"` // KindVariantStarted, KindVariant
+	Delta   string   `json:"delta,omitempty"`   // KindToolResultDelta
+	// StartedAt/FinishedAt are the server-clock epoch-ms bounds of an element,
+	// carried so the live UI can render local-time chips without ever sending
+	// them to the model: a tool run's start/finish (KindToolStarted,
+	// KindToolResult, KindToolCancelled) or a committed message's
+	// send/generation bounds, copied from the message by commitEnv
+	// (KindMessage — the clocks are json:"-" on ChatMessage, so the envelope
+	// is how they reach live subscribers). Omitted when 0.
+	StartedAt  int64  `json:"started_at,omitempty"`  // KindToolStarted, KindToolResult, KindToolCancelled, KindMessage
+	FinishedAt int64  `json:"finished_at,omitempty"` // KindToolResult, KindToolCancelled, KindMessage
+	TurnID     int64  `json:"turn_id,omitempty"`     // KindTurnDone
+	TurnSeq    uint64 `json:"turn_seq,omitempty"`    // KindTurnDone (the user message seq that started the turn)
 	// CachedInput/UncachedInput are the turn's prompt-token split (cache hits
 	// vs misses); Output is its completion tokens. Total input is their sum,
 	// derived where display needs it. KindTurnDone.

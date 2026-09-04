@@ -233,6 +233,13 @@ func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage,
 		// recall_tool_output is served by the agent itself (from History), so it is
 		// declared alongside the provider's tools on every request.
 		defs := append([]llm.Tool{recall.Def()}, js.Defs()...)
+		// Wall-clock bounds of this model request: started just before the
+		// stream opens, finished once it closes. They are stamped on the
+		// assistant message(s) this request commits so the UI can show when
+		// generation began and how long it took (and, later, derive a
+		// tokens/second rate). The clocks stay private — json:"-" on
+		// ChatMessage — so they never leak into the model's context.
+		genStart := time.Now().UnixMilli()
 		body, err := client.Stream(ctx, msgs, defs)
 		if err != nil {
 			// The request failed to start. If the user stopped the turn, this is
@@ -281,6 +288,7 @@ func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage,
 		// so this is a no-op when [DONE] already finalized the decoder.
 		dec.Final()
 		body.Close()
+		genEnd := time.Now().UnixMilli()
 
 		res.Usage.CachedInput += usage.CachedInput
 		res.Usage.UncachedInput += usage.UncachedInput
@@ -302,7 +310,10 @@ func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage,
 				} else {
 					text = interruptedMarker
 				}
-				if err := commit(llm.AssistantMessage(text, reasoning, nil)); err != nil {
+				assistant := llm.AssistantMessage(text, reasoning, nil)
+				assistant.StartedAt = genStart
+				assistant.FinishedAt = genEnd
+				if err := commit(assistant); err != nil {
 					return res, err
 				}
 				res.Text = text
@@ -323,13 +334,19 @@ func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage,
 
 		if len(calls) == 0 {
 			res.Text = reply.String()
-			if err := commit(llm.AssistantMessage(res.Text, reasoning, nil)); err != nil {
+			assistant := llm.AssistantMessage(res.Text, reasoning, nil)
+			assistant.StartedAt = genStart
+			assistant.FinishedAt = genEnd
+			if err := commit(assistant); err != nil {
 				return res, err
 			}
 			return res, nil
 		}
 
-		if err := commit(llm.AssistantMessage(reply.String(), reasoning, toLLMCalls(calls))); err != nil {
+		assistant := llm.AssistantMessage(reply.String(), reasoning, toLLMCalls(calls))
+		assistant.StartedAt = genStart
+		assistant.FinishedAt = genEnd
+		if err := commit(assistant); err != nil {
 			return res, err
 		}
 		for _, c := range calls {

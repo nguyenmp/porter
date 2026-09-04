@@ -379,7 +379,10 @@ type Session struct {
 	// the whole loop. Nil when the session is idle.
 	turnCancel context.CancelFunc
 
-	queue chan string
+	// queue carries user-submitted turns awaiting the scheduler. Each entry
+	// remembers when it was enqueued so the committed user message can show the
+	// actual send time even when the turn waited behind earlier ones.
+	queue chan queuedMessage
 
 	// notices carries execution-provider status changes awaiting commit
 	// (connected/disconnected/selected). The HTTP handlers that observe the
@@ -417,6 +420,14 @@ type toolRun struct {
 	cancel    func()
 }
 
+// queuedMessage is one user-submitted turn waiting in the scheduler's queue:
+// its text plus the epoch-ms it was enqueued, so the committed user message can
+// timestamp the actual send (not the moment a backlogged turn finally runs).
+type queuedMessage struct {
+	content string
+	at      int64
+}
+
 func newSession(id string, client *llm.Client, js tools.Provider, persist Persister, dbID int64, createdAt int64, archivedAt int64, name string, hub *mcp.Hub) *Session {
 	// A nil js means no local provider was injected (the server's own
 	// process); it is built lazily on first use from the discovered local
@@ -434,7 +445,7 @@ func newSession(id string, client *llm.Client, js tools.Provider, persist Persis
 		hub:         hub,
 		execClients: map[string]*execClient{},
 		activeExec:  "local",
-		queue:       make(chan string, 16),
+		queue:       make(chan queuedMessage, 16),
 		notices:     make(chan string, 32),
 		variantIdx:  map[uint64]int{},
 	}
@@ -513,11 +524,11 @@ func (s *Session) loop(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
-		case content := <-s.queue:
+		case q := <-s.queue:
 			// Flush any notices queued before this turn so the provider
 			// narrative lands at the boundary, not inside the turn.
 			s.flushNotices()
-			s.runTurn(ctx, content)
+			s.runTurn(ctx, q.content, q.at)
 		case n := <-s.notices:
 			// A provider change arrived (possibly mid-turn; it waits in the
 			// channel until the turn ends, then commits at the boundary). The
@@ -528,7 +539,7 @@ func (s *Session) loop(ctx context.Context) {
 	}
 }
 
-func (s *Session) runTurn(ctx context.Context, content string) {
+func (s *Session) runTurn(ctx context.Context, content string, receivedAt int64) {
 	turnID := s.nextTurn()
 	// The turn runs under its own cancellable context so the user can stop the
 	// whole loop (the Stop button): cancelling it aborts the model stream
@@ -548,8 +559,11 @@ func (s *Session) runTurn(ctx context.Context, content string) {
 	// Committing the user message marks the start of this turn. Carry the
 	// remaining queue depth so subscribers can show how many turns are still
 	// waiting behind this one (the loop already pulled this message out of the
-	// queue, so QueueDepth is exactly the backlog).
+	// queue, so QueueDepth is exactly the backlog). The start clock is when the
+	// message was actually sent (receivedAt from the queue), not when a
+	// backlogged turn finally ran.
 	msg := llm.UserMessage(content)
+	msg.StartedAt = receivedAt
 	env := api.Envelope{Kind: api.KindMessage, Message: &msg, Queue: s.QueueDepth()}
 	turnSeq, err := s.commitEnv(env)
 	if err != nil {
@@ -596,7 +610,7 @@ func (s *Session) runTurn(ctx context.Context, content string) {
 // Enqueue adds a user message for the scheduler to process. It never blocks a
 // single message; the scheduler paces turns serially.
 func (s *Session) Enqueue(content string) {
-	s.queue <- content
+	s.queue <- queuedMessage{content: content, at: time.Now().UnixMilli()}
 }
 
 // ID returns the session's id.
@@ -828,6 +842,22 @@ func (s *Session) commitEnv(env api.Envelope) (uint64, error) {
 	next := s.logSeq
 	env.Seq = next
 	s.mu.Unlock()
+
+	// Wall-clock stamping for the UI. User/system messages carry no timing of
+	// their own (tools are stamped where they run, assistant messages by the
+	// agent around each model request), so stamp them here at commit time —
+	// the closest the server has to "when this happened" for notices, and a
+	// fallback for any user message that bypassed the queue. ChatMessage hides
+	// the clocks from the model (json:"-"), so they are copied onto the
+	// envelope for live subscribers; /view reads them straight from the DB on
+	// reload.
+	if m := env.Message; m != nil {
+		if m.StartedAt == 0 && (m.Role == "user" || m.Role == "system") {
+			m.StartedAt = time.Now().UnixMilli()
+		}
+		env.StartedAt = m.StartedAt
+		env.FinishedAt = m.FinishedAt
+	}
 
 	if err := s.persist.AppendMessage(s.dbID, db.Message{Seq: next, ChatMessage: *env.Message}); err != nil {
 		return 0, fmt.Errorf("persist message: %w", err)

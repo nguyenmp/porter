@@ -21,11 +21,14 @@ type ChatMessage struct {
 	Reasoning  string     `json:"reasoning,omitempty"`
 	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string     `json:"tool_call_id,omitempty"`
-	// StartedAt/FinishedAt are server-clock epoch milliseconds for a tool run,
-	// stamped by the agent when the tool runs. They are excluded from every
-	// JSON encoding (json:"-") so timing never leaks into the LLM request or
-	// the history API; the /view endpoint reads them directly from the
-	// in-memory history to render reload timing.
+	// StartedAt/FinishedAt are server-clock epoch milliseconds marking when an
+	// element "happened": a tool run's start/finish (stamped by the agent when
+	// the tool runs), an assistant message's generation start/finish (stamped
+	// around each model request), or a user/system message's send/commit time
+	// (stamped by the session). They are excluded from every JSON encoding
+	// (json:"-") so timing never leaks into the LLM request or the history
+	// API; the /view endpoint reads them directly from the in-memory history,
+	// and commitEnv copies them onto the bus envelope, to render timing.
 	StartedAt  int64 `json:"-"`
 	FinishedAt int64 `json:"-"`
 	// Cancelled reports that a tool run was aborted by the user before it

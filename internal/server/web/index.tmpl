@@ -908,6 +908,9 @@
     // form submit can never yank the user back down.
     chat.addEventListener('htmx:afterSwap', function() {
       initReasoningBlocks(chat);
+      // Time chips are client-built from the server's raw epoch-ms, so every
+      // /view swap (which replaced the whole chat DOM) re-hydrates them.
+      hydrateTimes(chat);
       // Restore humanize variant tabs that a /view swap may have wiped: every
       // envelope applied this page load is re-applied against the fresh DOM.
       // Idempotent — tabs already rendered by /view are updated in place.
@@ -943,6 +946,24 @@
     // One delegated listener covers both /view-rendered tabs (reload) and
     // live-built tabs (variant envelopes), so no per-tab binding is needed.
     chat.addEventListener('click', function(e) {
+      // Time chips expand the detail panel (duration / end / UTC) under the
+      // message or tool result. A chip inside a tool summary must not also
+      // toggle the <details>, hence preventDefault.
+      const timeChip = e.target.closest('.msg-time');
+      if (timeChip) {
+        e.preventDefault();
+        e.stopPropagation();
+        const host = timeChip.closest('.msg[data-started]') || timeChip.closest('.tool-result[data-started]');
+        if (host) {
+          const meta = host.querySelector('.msg-meta');
+          if (meta) {
+            const show = meta.hidden;
+            meta.hidden = !show;
+            timeChip.setAttribute('aria-expanded', show ? 'true' : 'false');
+          }
+        }
+        return;
+      }
       const tab = e.target.closest('.variant-tab');
       if (tab) {
         const bar = tab.closest('.variant-tabs');
@@ -1138,6 +1159,115 @@
       initReasoning(el, el.dataset.reasoning);
       el.removeAttribute('data-reasoning');
     });
+  }
+  // --- Message & tool timestamps ---
+  // Every committed element (user/assistant/system message, tool result)
+  // carries a small always-visible local-time chip; clicking it expands a
+  // detail panel (duration, end/cancel time, UTC). The server never formats
+  // times for the client — /view and the SSE stream emit raw server epoch-ms
+  // in data-started/data-finished — so they render in the viewer's own
+  // timezone (the "start on laptop, keep going on my phone" sessions need the
+  // phone's clock to win), seconds are always shown, and the date appears when
+  // a message is not from today. 12/24-hour follows the viewer's locale.
+  function fmtTime(ms) {
+    return new Date(ms).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', second: '2-digit' });
+  }
+  function fmtChipTime(ms) {
+    const d = new Date(ms);
+    const notToday = d.toDateString() !== new Date().toDateString();
+    return (notToday ? d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' · ' : '') + fmtTime(ms);
+  }
+  function utcStamp(ms) {
+    const d = new Date(ms);
+    const time = d.toLocaleTimeString([], { timeZone: 'UTC', hour: 'numeric', minute: '2-digit', second: '2-digit' });
+    // Show the UTC date when its calendar day differs from the local one
+    // (e.g. late local evening is already tomorrow in UTC).
+    const sameDay = d.toLocaleDateString([], { month: 'short', day: 'numeric' }) ===
+                    d.toLocaleDateString([], { timeZone: 'UTC', month: 'short', day: 'numeric' });
+    return (sameDay ? '' : d.toLocaleDateString([], { timeZone: 'UTC', month: 'short', day: 'numeric' }) + ' ') + time + ' UTC';
+  }
+  // updateTime builds (once) and refreshes an element's time chip + detail
+  // panel from its data-started/data-finished clocks. Idempotent and cheap, so
+  // it can run again whenever a run completes and gains an end clock.
+  function updateTime(host) {
+    if (!host) return;
+    const started = Number(host.dataset.started || 0);
+    if (!started) return;
+    const finished = Number(host.dataset.finished || 0) || 0;
+    const isTool = host.classList.contains('tool-result');
+    const isUser = host.classList.contains('msg-user');
+    const isSystem = host.classList.contains('msg-system');
+    const cancelled = host.dataset.cancelled === '1';
+
+    let chip = host.querySelector('.msg-time');
+    if (!chip) {
+      chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = 'msg-time';
+      chip.title = 'Time details';
+      chip.setAttribute('aria-expanded', 'false');
+      if (isTool) {
+        // Tool chips live at the far right of the summary row (flex pushes it
+        // there); inside <summary>, so clicking it must not toggle the details.
+        const summary = host.querySelector('summary');
+        (summary || host).appendChild(chip);
+      } else {
+        // Message chips sit in the top-right corner of the padded .msg block,
+        // on the label row the content never reaches.
+        host.appendChild(chip);
+      }
+    }
+    chip.textContent = fmtChipTime(started);
+
+    let meta = host.querySelector('.msg-meta');
+    if (!meta) {
+      meta = document.createElement('div');
+      meta.className = 'msg-meta';
+      meta.hidden = true;
+      if (isTool) {
+        host.insertAdjacentElement('afterend', meta);
+      } else {
+        // Panel drops under the role/chip line, above the content.
+        const role = host.querySelector(':scope > .msg-role');
+        if (role && role.nextSibling) role.parentNode.insertBefore(meta, role.nextSibling);
+        else host.insertBefore(meta, host.firstChild);
+      }
+    }
+    const rows = [];
+    if (isUser || isSystem) {
+      rows.push('UTC ' + utcStamp(started));
+    } else {
+      if (finished > started) rows.push('took ' + fmtDur(finished - started));
+      if (finished > 0) {
+        rows.push((isTool && cancelled ? 'cancelled at ' : 'ended ') + fmtChipTime(finished));
+        rows.push('UTC ' + utcStamp(started) + ' → ' + utcStamp(finished));
+      }
+    }
+    meta.textContent = rows.join('\n');
+  }
+  // hydrateTimes builds chips for every element that carries a start clock but
+  // not yet a chip. Called after /view swaps (which replace the whole chat
+  // DOM) and whenever a freshly stamped element is created.
+  function hydrateTimes(root) {
+    (root || document).querySelectorAll('.msg[data-started], .tool-result[data-started]').forEach(updateTime);
+  }
+  // stampCommitted sets a committed message element's clocks from its envelope
+  // (ChatMessage hides them json:"-", so they arrive on the envelope, not the
+  // message) and renders the chip. Cancelled applies to tool results.
+  function stampCommitted(el, started, finished, cancelled) {
+    if (!el) return;
+    if (started) el.dataset.started = String(started); else delete el.dataset.started;
+    if (finished) el.dataset.finished = String(finished); else delete el.dataset.finished;
+    if (cancelled) el.dataset.cancelled = '1'; else delete el.dataset.cancelled;
+    updateTime(el);
+  }
+  // stampToolRun mirrors a tool run's authoritative state onto its result
+  // block's data clocks and renders the chip. Called whenever a run's clocks
+  // change (start, terminal result/cancel, reconnect reconciliation).
+  function stampToolRun(run) {
+    const el = run && run.resultEl;
+    if (!el) return;
+    stampCommitted(el, run.startedAt, run.finishedAt, run.status === 'cancelled');
   }
   function appendMessage(role, html) {
     const div = document.createElement('div');
@@ -1548,6 +1678,7 @@
           run.status = 'running';
           ensureResult(run);
           renderResult(run);
+          stampToolRun(run);
           startToolTimer();
         }
       });
@@ -1655,7 +1786,7 @@
     return pane;
   }
 
-  function finalizeAssistant(m, html, seq) {
+  function finalizeAssistant(m, html, seq, started, finished) {
     // Replace the live text with the committed version (server-rendered
     // markdown when supplied) and ensure tool calls are present. html is
     // carried on the message_committed envelope so the committed copy matches
@@ -1700,6 +1831,9 @@
     // envelopes (variant_started / variant_ready) can find the right message
     // and attach their tabs.
     if (seq) div.dataset.msgSeq = seq;
+    // Stamp the generation clock (server epoch-ms via the envelope) and build
+    // the always-visible local-time chip.
+    stampCommitted(div, started, finished, false);
     if (m.reasoning && !hadLiveReasoning) {
       const r = document.createElement('div');
       r.className = 'reasoning';
@@ -1841,23 +1975,25 @@
         if (m.role === 'user') {
           currentAssistant = null;
           currentReasoning = null;
-          appendMessage('user', escapeHTML(m.content).replace(/\n/g, '<br>'));
+          const uDiv = appendMessage('user', escapeHTML(m.content).replace(/\n/g, '<br>'));
+          stampCommitted(uDiv, env.started_at, env.finished_at, false);
           // A user commit marks the start of its turn; the server reports how
           // many turns are still queued behind this one.
           turnRunning = true;
           queueDepth = env.queue || 0;
           updateStatus();
-		} else if (m.role === 'system') {
-		  // A committed system message (e.g. an execution-provider change
-		  // notice) renders as a dim status block, matching /view.
-		  currentAssistant = null;
-		  currentReasoning = null;
-		  const sysDiv = document.createElement('div');
-		  sysDiv.className = 'msg msg-system';
-		  sysDiv.innerHTML = '<span class="msg-role">exec</span><div class="msg-content">' + escapeHTML(m.content).replace(/\n/g, '<br>') + '</div>';
-		  chat.appendChild(sysDiv);
-		} else if (m.role === 'assistant') {
-          finalizeAssistant(m, env.message_html, env.seq);
+			} else if (m.role === 'system') {
+			  // A committed system message (e.g. an execution-provider change
+			  // notice) renders as a dim status block, matching /view.
+			  currentAssistant = null;
+			  currentReasoning = null;
+			  const sysDiv = document.createElement('div');
+			  sysDiv.className = 'msg msg-system';
+			  sysDiv.innerHTML = '<span class="msg-role">exec</span><div class="msg-content">' + escapeHTML(m.content).replace(/\n/g, '<br>') + '</div>';
+			  chat.appendChild(sysDiv);
+			  stampCommitted(sysDiv, env.started_at, env.finished_at, false);
+			} else if (m.role === 'assistant') {
+			  finalizeAssistant(m, env.message_html, env.seq, env.started_at, env.finished_at);
         } else if (m.role === 'tool') {
           currentAssistant = null;
           currentReasoning = null;
@@ -1871,6 +2007,8 @@
           run.status = m.cancelled ? 'cancelled' : 'done';
           run.result = m.content;
           run.toolOutput = env.tool_output;
+          run.startedAt = env.started_at || 0;
+          run.finishedAt = env.finished_at || 0;
           run.resultEl = document.createElement('details');
           run.resultEl.className = 'tool-result';
           const code = exitCodeLabel(m.content);
@@ -1880,6 +2018,7 @@
           // message, matching /view's history layout (live placement already
           // does this via insertToolResult).
           insertToolResult(run.resultEl);
+          stampToolRun(run);
         }
         break;
       case 'variant_started':
@@ -1927,6 +2066,7 @@
         tsRun.status = 'running';
         ensureResult(tsRun);
         renderResult(tsRun);
+        stampToolRun(tsRun);
         startToolTimer();
         break;
       case 'tool_result':
@@ -1948,6 +2088,7 @@
         trRun.finishedAt = env.finished_at || 0;
         ensureResult(trRun);
         renderResult(trRun);
+        stampToolRun(trRun);
         break;
       case 'tool_cancelled':
         // The user cancelled this run: reconcile the block to the server's
@@ -1966,6 +2107,7 @@
         tcRun.cancelling = false;
         ensureResult(tcRun);
         renderResult(tcRun);
+        stampToolRun(tcRun);
         break;
       case 'tool_result_delta':
         // One live chunk of a running tool's output: append to the run so

@@ -2,7 +2,7 @@
 	{{if .Message}}
 		{{$m := .Message}}
 		{{if eq $m.Role "user"}}
-			<div class="msg msg-user">
+			<div class="msg msg-user"{{if $m.StartedAt}} data-started="{{$m.StartedAt}}"{{end}}>
 				<span class="msg-role">user</span>
 				<div class="msg-content">{{nl2br $m.Content}}</div>
 			</div>
@@ -10,7 +10,7 @@
 			{{if $m.Reasoning}}
 				<div class="reasoning" data-reasoning="{{$m.Reasoning}}"></div>
 			{{end}}
-			<div class="msg msg-assistant"{{if .Seq}} data-msg-seq="{{.Seq}}"{{end}}>
+			<div class="msg msg-assistant"{{if .Seq}} data-msg-seq="{{.Seq}}"{{end}}{{if $m.StartedAt}} data-started="{{$m.StartedAt}}"{{end}}{{if $m.FinishedAt}} data-finished="{{$m.FinishedAt}}"{{end}}>
 				<span class="msg-role">assistant</span>
 				{{/* Humanize variant tabs: every reply with content shows the tab
 				     bar (Original + "+"), so even a short reply can be humanized
@@ -44,14 +44,14 @@
 				{{end}}
 			</div>
 		{{else if eq $m.Role "system"}}
-			<div class="msg msg-system">
+			<div class="msg msg-system"{{if $m.StartedAt}} data-started="{{$m.StartedAt}}"{{end}}>
 				<span class="msg-role">exec</span>
 				<div class="msg-content">{{nl2br $m.Content}}</div>
 			</div>
 		{{else if eq $m.Role "tool"}}
 			{{$t := index $.Tools $m.ToolCallID}}
 			{{$code := toolExitCode $m.Content}}
-			<details class="tool-result">
+			<details class="tool-result"{{if $m.StartedAt}} data-started="{{$m.StartedAt}}"{{end}}{{if $m.FinishedAt}} data-finished="{{$m.FinishedAt}}"{{end}}{{if $m.Cancelled}} data-cancelled="1"{{end}}>
 				<summary title="{{if $t.Name}}{{clock $m.StartedAt}} – {{clock $m.FinishedAt}}{{end}}">tool result: {{$t.Name}}{{if $t.Arguments}} {{argsSnippet $t.Arguments}}{{end}}{{if $m.Cancelled}} · cancelled{{if $m.StartedAt}} · {{dur $m.StartedAt $m.FinishedAt}}{{end}}{{else}}{{if $code}} · {{$code}}{{end}}{{if $m.StartedAt}} · {{dur $m.StartedAt $m.FinishedAt}}{{end}}{{end}}{{if $m.ToolOutput}}{{if $m.ToolOutput.Recall}}<span class="tool-output-badge" title="read_output window served to the model; the full output stays under the source tool result">recall {{fmtBytes $m.ToolOutput.ShownBytes}}</span>{{else if $m.ToolOutput.Truncated}}<span class="tool-output-badge" title="This tool result was truncated in the model's context; the full output is shown here. Load the middle with read_output.">{{fmtBytes $m.ToolOutput.TotalBytes}} · model saw {{fmtBytes $m.ToolOutput.ShownBytes}}</span>{{end}}{{end}}</summary>
 				<pre><code>{{nl2br $m.Content}}</code></pre>
 			</details>
