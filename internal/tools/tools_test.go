@@ -263,7 +263,7 @@ func TestLoadSkillReturnsRemoteEditBuiltinBody(t *testing.T) {
 	if res != remoteedit.Prompt()+"\nexit code: 0\n" {
 		t.Errorf("built-in load_skill result mismatch:\n got %q\nwant prompt body with exit line", res)
 	}
-	if !strings.Contains(res, "Editing files on a remote host") {
+	if !strings.Contains(res, "How to edit files on a remote host") {
 		t.Errorf("built-in load_skill result missing prompt body: %q", res)
 	}
 	if !strings.Contains(res, "exit code: 0") {

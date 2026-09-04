@@ -37,50 +37,53 @@ func Prompt() string { return prompt }
 // that never ships as a file. When a filesystem skill of the same name exists,
 // it shadows this built-in (exec's discovery gives filesystem skills
 // priority), which lets a user override the guidance with their own copy.
-const prompt = `# Editing files on a remote host
+const prompt = `# How to edit files on a remote host
 
-When you need to change a file that lives on another machine (reachable over
-ssh), edit a local copy and push it back. Do not edit it in place by piping
-sed, perl, python, or shell one-liners over ssh: every layer you add — your
-shell's quoting, the remote shell's parsing, the tool's own escaping — is a
-place the edit can fail or silently corrupt the file. It is slower and far
-less reliable than the workflow below.
+To change a file on another machine (one you reach over ssh), pull it into
+the working directory, edit the local copy, and push it back.
+
+Don't edit a remote file in place by piping sed, perl, python, or shell
+one-liners over ssh. Every layer you add can break the edit or silently
+corrupt the file: your shell's quoting, the remote shell's parsing, the
+tool's own escaping. This way is slower and far less reliable than the
+steps below.
 
 1. Pull the file into the working directory:
 
    scp user@host:/path/to/file.txt ./file.txt
 
-   For a whole directory use rsync (-av). For a whole repo, git clone or check
-   out the branch when you can, so the pull is a known-good state.
+   For a whole directory, use rsync -av. For a whole repo, use git clone or
+   check out the branch when you can, so you start from a known-good state.
 
-2. Edit the local copy with the normal editing tools:
+2. Edit the local copy with the normal editing tools.
 
-   - read_with_line_numbers to inspect it (the header reports the line count,
-     the byte count, and whether the file ends in a newline);
-   - line_insert to add whole lines before a numbered line, or append them at
-     the end of the file;
-   - line_replace to cut a numbered range of whole lines and replace it (empty
-     new_text deletes the range);
-   - string_replace for a distinctive exact text change;
-   - the shell tool to create a brand-new file.
+   The editing tools and the shell work in the same directory and see the
+   same files. You edit the local copy just like any other local file: no
+   quoting passes through remote layers, and the exact-match and
+   numbered-edit rules behave predictably. Use:
 
-   These tools and the shell share one working directory and see the same
-   files, so a local copy edits exactly like any other local file — no quoting
-   through remote layers, and the exact-match and numbered-edit rules behave
-   predictably.
+   - read_with_line_numbers reads the file with line numbers. Its header
+     shows the line count, byte count, and whether the file ends in a
+     newline.
+   - line_insert adds whole lines before a numbered line, or at the end of
+     the file.
+   - line_replace replaces a numbered range of whole lines. An empty
+     new_text deletes the range.
+   - string_replace replaces a distinctive, exact string with new text.
+   - the shell tool creates a new file.
 
-3. Review the change before sending it back: the editing tools echo what
-   changed with line numbers, or run git diff when the directory is a checkout.
+3. Review the change before you send it back. The editing tools show what
+   changed, with line numbers. If the directory is a git checkout, run
+   git diff to see the change.
 
 4. Push the edited file back:
 
    scp ./file.txt user@host:/path/to/file.txt
 
-When the working directory is a git checkout this doubles as a safety net: git
-already holds the pre-edit state, so pulling, editing, and pushing is
-rollback-friendly.
+In a git checkout, this workflow is a safety net too: git keeps the
+pre-edit state, so you can undo a bad pull, edit, or push.
 
-Reserve remote one-liners for operations that must run on the remote machine
-itself — restarting a service, moving files that only exist there. For editing
-file content, prefer the local-copy workflow.
+Use remote one-liners only for tasks that must run on the remote machine
+itself — restarting a service, moving files that only exist there. For
+editing file content, use the local-copy workflow.
 `
