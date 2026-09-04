@@ -1562,3 +1562,129 @@ func TestRunTurnBlocksRepeatedIdenticalFailure(t *testing.T) {
 		t.Errorf("fourth result should be the block, not another run of the tool: %q", toolResults[3])
 	}
 }
+
+// repliedHeaderServer serves one plain reply whose content opens with a
+// hallucinated "[replied ...]" header, streamed across several deltas (so the
+// header is split at delta boundaries, like a real stream). The optional
+// second chunk lets a test interleave real content after the header.
+func repliedHeaderServer(t *testing.T, chunks ...string) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		for i, c := range chunks {
+			finish := ""
+			if i == len(chunks)-1 {
+				finish = `,"finish_reason":"stop"`
+			} else {
+				finish = `,"finish_reason":null`
+			}
+			fmt.Fprintf(w, `data: {"choices":[{"delta":{"content":%s}%s}]}`+"\n\n", jsonStr(c), finish)
+		}
+		fmt.Fprint(w, `data: [DONE]`+"\n")
+	}))
+	return srv
+}
+
+// jsonStr renders s as a JSON string literal for embedding in the SSE fixture.
+func jsonStr(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
+}
+
+// TestRunTurnScrubsRepliedHeader covers the imitation bug end to end: the
+// model streams a "[replied ...]" header (split across deltas, followed by a
+// blank line and the real reply). The header must not reach the committed
+// history, the final text, or any live event; the real reply must survive
+// intact. Because the note porter prepends to assistant history is never
+// stored, a stored header is always a model copy — the scrub is safe.
+func TestRunTurnScrubsRepliedHeader(t *testing.T) {
+	chunks := []string{
+		"[replied 2026-09-04 19:06:23 ",
+		"UTC, took 2.2s]",
+		"\n\nSure, here's the answer.",
+	}
+	srv := repliedHeaderServer(t, chunks...)
+	defer srv.Close()
+
+	cfg := config.Config{BaseURL: srv.URL + "/v1", Model: "test", APIKey: "k"}
+	client := llm.NewClient(cfg, nil)
+	var live bytes.Buffer
+	emit := func(env api.Envelope) {
+		if env.Kind == api.KindLLM && env.Event != nil {
+			Render(&live, false)(*env.Event)
+		}
+	}
+	res, err := RunTurn(context.Background(), client, []llm.ChatMessage{llm.UserMessage("hi")}, tools.NewDispatcher(), emit, nil)
+	if err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+
+	want := "Sure, here's the answer."
+	if res.Text != want {
+		t.Errorf("final text = %q, want %q", res.Text, want)
+	}
+	last := res.History[len(res.History)-1]
+	if last.Role != "assistant" || last.Content != want {
+		t.Errorf("committed assistant content = %q, want %q", last.Content, want)
+	}
+	if strings.Contains(live.String(), "[replied") {
+		t.Errorf("live stream showed the header: %q", live.String())
+	}
+	if live.String() != want {
+		t.Errorf("live stream text = %q, want %q (header must not flash)", live.String(), want)
+	}
+}
+
+// TestRunTurnKeepsProseThatStartsLikeTheNote: only porter's exact note shape is
+// stripped. A reply that opens with "[replied to ...]" (real prose that merely
+// shares the first word) must pass through untouched, stored and live.
+func TestRunTurnKeepsProseThatStartsLikeTheNote(t *testing.T) {
+	prose := "[replied to your earlier message] Yes, done."
+	srv := repliedHeaderServer(t, prose)
+	defer srv.Close()
+
+	cfg := config.Config{BaseURL: srv.URL + "/v1", Model: "test", APIKey: "k"}
+	client := llm.NewClient(cfg, nil)
+	var live bytes.Buffer
+	emit := func(env api.Envelope) {
+		if env.Kind == api.KindLLM && env.Event != nil {
+			Render(&live, false)(*env.Event)
+		}
+	}
+	res, err := RunTurn(context.Background(), client, []llm.ChatMessage{llm.UserMessage("hi")}, tools.NewDispatcher(), emit, nil)
+	if err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+	if res.Text != prose {
+		t.Errorf("final text = %q, want %q unchanged", res.Text, prose)
+	}
+	last := res.History[len(res.History)-1]
+	if last.Content != prose {
+		t.Errorf("committed content = %q, want %q", last.Content, prose)
+	}
+	if live.String() != prose {
+		t.Errorf("live text = %q, want %q", live.String(), prose)
+	}
+}
+
+// TestRunTurnScrubsHeaderOnlyReply: a reply that is nothing but the
+// hallucinated header commits as empty content rather than storing the junk.
+func TestRunTurnScrubsHeaderOnlyReply(t *testing.T) {
+	srv := repliedHeaderServer(t, "[replied 2026-09-04 19:06:23 UTC, took 2.2s]")
+	defer srv.Close()
+
+	cfg := config.Config{BaseURL: srv.URL + "/v1", Model: "test", APIKey: "k"}
+	client := llm.NewClient(cfg, nil)
+	res, err := RunTurn(context.Background(), client, []llm.ChatMessage{llm.UserMessage("hi")}, tools.NewDispatcher(), nil, nil)
+	if err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+	if res.Text != "" {
+		t.Errorf("final text = %q, want empty (header-only reply scrubbed)", res.Text)
+	}
+	for _, m := range res.History {
+		if strings.Contains(m.Content, "[replied") {
+			t.Errorf("history stored a header: %q", m.Content)
+		}
+	}
+}

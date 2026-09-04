@@ -183,11 +183,39 @@ func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage,
 		var usage Usage
 
 		dec := codec.NewDecoder(nil)
+		// repliedScrub strips a hallucinated "[replied ...]" header from the
+		// model's own output: the model-view projection prepends that exact
+		// note to assistant messages in the history sent on each request, and
+		// a model sometimes imitates it and opens its reply with the same
+		// line. The note is never part of stored content (the projection adds
+		// it fresh), so a header here is always a copy, never intent. The
+		// scrubber handles streamed deltas (so the header never flashes in the
+		// live view); the decoder's assembled TypeMessage below is scrubbed
+		// wholesale, because it is the authoritative text that lands in the
+		// committed message. See recall's replied.go for the exact grammar.
+		repliedScrub := recall.NewRepliedScrubber()
 		dec.OnEvent = func(ev codec.Event) {
 			switch ev.Type {
 			case codec.TypeMessageDelta:
-				reply.WriteString(ev.Delta)
+				// Route the delta through the scrubber: while the opening is
+				// held or swallowed nothing is forwarded (the live view sees
+				// no header), and the scrubbed remainder is what both the
+				// reply buffer and the live stream accumulate.
+				if out := repliedScrub.Feed(ev.Delta); out != "" {
+					reply.WriteString(out)
+					if emit != nil {
+						ev.Delta = out
+						emit(api.Envelope{Kind: api.KindLLM, Event: &ev})
+					}
+				}
+				return
 			case codec.TypeMessage:
+				// The assembled full content (the decoder replays everything it
+				// streamed). Scrub it wholesale: the scrubber may still be
+				// holding a header split at a delta boundary, and its held
+				// bytes are a prefix of this content, so this single scrub is
+				// what guarantees the committed message is clean.
+				ev.Content = recall.StripRepliedPrefix(ev.Content)
 				reply.Reset()
 				reply.WriteString(ev.Content)
 				reasoning = ev.Reasoning
