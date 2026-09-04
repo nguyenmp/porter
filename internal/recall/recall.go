@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"porter/internal/llm"
 )
@@ -65,6 +66,17 @@ func Meta(content string) *llm.ToolOutputMeta {
 // is a fresh copy and the input is never mutated, because History always holds
 // the full output — the projection is applied fresh on each request, so it can
 // never compound.
+//
+// The projection also annotates each message with a compact timing header
+// (e.g. "[sent 2025-09-04 15:42:11 UTC]" on a user message, "[ran 3m 12s,
+// finished ...]" on a tool result) so the model can see when things happened
+// and how long its tools ran. The clocks are json:"-" on ChatMessage — they
+// never serialize as fields — so this bracketed text (in the content, the same
+// way truncation and recall hints are presented) is the only route by which
+// timing reaches the model, and it exists solely on this outgoing copy:
+// history, the database, and the UI are never annotated. Annotation is
+// deterministic (derived from committed clocks), so it never busts the
+// provider's prefix cache.
 func ProjectModelView(msgs []llm.ChatMessage) []llm.ChatMessage {
 	out := make([]llm.ChatMessage, len(msgs))
 	for i, m := range msgs {
@@ -82,9 +94,93 @@ func ProjectModelView(msgs []llm.ChatMessage) []llm.ChatMessage {
 				m.Content = Truncate(m.Content, m.ToolCallID, m.ToolOutput)
 			}
 		}
+		// Timing annotation comes last so it always sits in front of any
+		// truncation/recall header, and the stored content is never touched.
+		if m.Content != "" {
+			if note := timingNote(m); note != "" {
+				m.Content = note + "\n" + m.Content
+			}
+		}
 		out[i] = m
 	}
 	return out
+}
+
+// timingNote returns the bracketed timing annotation for a committed message,
+// or "" when it has no timing worth showing. UTC everywhere (the model must not
+// guess a timezone), seconds-precise, and deliberately terse to keep the token
+// cost down. Assistant messages that only carry tool calls (no prose) get no
+// note — there is no text to hang it on, and the tool result that follows
+// carries its own duration.
+func timingNote(m llm.ChatMessage) string {
+	switch m.Role {
+	case "user":
+		if m.StartedAt > 0 {
+			return fmt.Sprintf("[sent %s]", utcStamp(m.StartedAt))
+		}
+	case "assistant":
+		// The note places the reply on the timeline by when it completed; the
+		// span is the request's generation time (thinking + writing).
+		if m.Content == "" {
+			return ""
+		}
+		if m.StartedAt > 0 && m.FinishedAt >= m.StartedAt {
+			return fmt.Sprintf("[replied %s, took %s]", utcStamp(m.FinishedAt), durText(m.FinishedAt-m.StartedAt))
+		}
+		if m.StartedAt > 0 {
+			return fmt.Sprintf("[replied %s]", utcStamp(m.StartedAt))
+		}
+	case "tool":
+		if m.StartedAt > 0 && m.FinishedAt >= m.StartedAt {
+			if m.Cancelled {
+				return fmt.Sprintf("[cancelled after %s at %s]", durText(m.FinishedAt-m.StartedAt), utcStamp(m.FinishedAt))
+			}
+			return fmt.Sprintf("[ran %s, finished %s]", durText(m.FinishedAt-m.StartedAt), utcStamp(m.FinishedAt))
+		}
+	case "system":
+		if m.StartedAt > 0 {
+			return fmt.Sprintf("[at %s]", utcStamp(m.StartedAt))
+		}
+	}
+	return ""
+}
+
+// utcStamp renders an epoch-ms clock as the UTC wall-clock time the model view
+// uses ("2025-09-04 15:42:11 UTC").
+func utcStamp(ms int64) string {
+	if ms <= 0 {
+		return ""
+	}
+	return time.UnixMilli(ms).UTC().Format("2006-01-02 15:04:05 UTC")
+}
+
+// durText renders a duration for the model view in compact prose: one decimal
+// under 10s, whole seconds up to a minute, then "Nm Ns" up to an hour, then
+// "Nh Nm". Terse to minimize tokens.
+func durText(ms int64) string {
+	if ms <= 0 {
+		return ""
+	}
+	if ms < 10000 {
+		return fmt.Sprintf("%.1fs", float64(ms)/1000)
+	}
+	total := (ms + 500) / 1000 // rounded whole seconds
+	if total < 60 {
+		return fmt.Sprintf("%ds", total)
+	}
+	m := total / 60
+	if m < 60 {
+		if s := total % 60; s > 0 {
+			return fmt.Sprintf("%dm %ds", m, s)
+		}
+		return fmt.Sprintf("%dm", m)
+	}
+	h := m / 60
+	m %= 60
+	if m > 0 {
+		return fmt.Sprintf("%dh %dm", h, m)
+	}
+	return fmt.Sprintf("%dh", h)
 }
 
 // Truncate renders content in the model view's truncated form: a header that

@@ -26,17 +26,20 @@ type ChatMessage struct {
 	// the tool runs), an assistant message's generation start/finish (stamped
 	// around each model request), or a user/system message's send/commit time
 	// (stamped by the session). They are excluded from every JSON encoding
-	// (json:"-") so timing never leaks into the LLM request or the history
-	// API; the /view endpoint reads them directly from the in-memory history,
-	// and commitEnv copies them onto the bus envelope, to render timing.
+	// (json:"-"), so they never serialize as fields into the raw LLM request
+	// payload or the history API (some providers reject unknown fields, and it
+	// keeps token counts down); instead the model-view projection (recall)
+	// surfaces them as compact bracketed text on the outgoing copy of history,
+	// /view reads them directly from the in-memory history, and commitEnv
+	// copies them onto the bus envelope, to render timing.
 	StartedAt  int64 `json:"-"`
 	FinishedAt int64 `json:"-"`
 	// Output is the completion-token count of the model request that produced
 	// this message, set by the agent only on assistant messages (each of which
 	// closes one request). Together with FinishedAt-StartedAt it lets the UI
-	// show a per-reply tokens/second figure. json:"-" for the same reason as
-	// the clocks: token counts on a message never go to the model or the
-	// history API; the bus envelope and the persisted message carry them.
+	// show a per-reply tokens/second figure. json:"-" and never projected to
+	// the model view: token counts stay UI-only. The bus envelope and the
+	// persisted message carry them for the UI.
 	Output int `json:"-"`
 	// Cancelled reports that a tool run was aborted by the user before it
 	// completed. It is set on the committed role-"tool" message so history (and

@@ -236,9 +236,12 @@ func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage,
 		// Wall-clock bounds of this model request: started just before the
 		// stream opens, finished once it closes. They are stamped on the
 		// assistant message(s) this request commits so the UI can show when
-		// generation began and how long it took (and, later, derive a
-		// tokens/second rate). The clocks stay private — json:"-" on
-		// ChatMessage — so they never leak into the model's context.
+		// generation began and how long it took (and derive a tokens/second
+		// rate). The clocks are json:"-" on ChatMessage — they never serialize
+		// as fields into the request or the model's context — but the model-view
+		// projection (recall) surfaces them to the model as compact bracketed
+		// text on the outgoing copy of history, so the model sees when things
+		// happened too.
 		genStart := time.Now().UnixMilli()
 		body, err := client.Stream(ctx, msgs, defs)
 		if err != nil {

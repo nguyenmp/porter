@@ -3842,3 +3842,71 @@ func TestMessageOutputReachesEnvelopeAndView(t *testing.T) {
 		t.Errorf("/view missing data-output for the assistant reply:\n%s", html)
 	}
 }
+
+// TestTimingAnnotationReachesModelNotStorage drives a tool turn against a
+// provider that captures every request body, and asserts two things: the
+// outgoing model requests carry the compact timing annotations ([sent ...],
+// [ran ... finished ...]) in the content, and the stored history does NOT —
+// the annotation exists only on the outgoing copy of the model-view
+// projection, never in the database.
+func TestTimingAnnotationReachesModelNotStorage(t *testing.T) {
+	var mu sync.Mutex
+	var bodies []string
+	llmHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		bodies = append(bodies, string(b))
+		call := len(bodies)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/event-stream")
+		if call == 1 {
+			// First request: tell the model to run the shell tool.
+			fmt.Fprint(w,
+				`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","type":"function","function":{"name":"shell","arguments":"{\"command\":\"echo hi\"}"}}]},"finish_reason":"tool_calls"}]}`+"\n\n"+
+					`data: [DONE]`+"\n")
+			return
+		}
+		// Second request: answer in prose.
+		fmt.Fprint(w,
+			`data: {"choices":[{"delta":{"content":"done"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`+"\n\n"+
+				`data: [DONE]`+"\n")
+	})
+	_, ts := startServerDB(t, filepath.Join(t.TempDir(), "porter.db"), llmHandler)
+	_, h := runOneTurn(t, ts.URL, "run it")
+
+	// The stored history must be raw: no annotation anywhere, content intact.
+	for _, m := range h.History {
+		if strings.Contains(m.Content, "[sent ") || strings.Contains(m.Content, "[ran ") {
+			t.Errorf("stored history is annotated (role=%s): %q", m.Role, m.Content)
+		}
+	}
+
+	mu.Lock()
+	if len(bodies) < 2 {
+		mu.Unlock()
+		t.Fatalf("provider saw %d requests, want 2", len(bodies))
+	}
+	b1, b2 := bodies[0], bodies[1]
+	mu.Unlock()
+
+	// The user message is annotated on the first request too.
+	if !strings.Contains(b1, "[sent ") {
+		t.Errorf("request 1 lacks a [sent ...] annotation:\n%.400s", b1)
+	}
+	// The second request carries the committed user message AND the tool result
+	// (the model's own intermediate tool-call frame has no content to annotate).
+	for _, want := range []string{"[sent ", "[ran ", "finished "} {
+		if !strings.Contains(b2, want) {
+			t.Errorf("request 2 missing %q:\n%.800s", want, b2)
+		}
+	}
+	// The small tool result is under the recall budget, so no truncation header.
+	if strings.Contains(b2, "[tool output:") {
+		t.Errorf("small tool result should not carry a truncation header in the request:\n%.800s", b2)
+	}
+	// Sanity: the final reply is still the model's own prose in storage.
+	last := h.History[len(h.History)-1]
+	if last.Role != "assistant" || strings.TrimSpace(last.Content) != "done" {
+		t.Errorf("final stored assistant = role %q content %q, want prose 'done' (unannotated)", last.Role, last.Content)
+	}
+}

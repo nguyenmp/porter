@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"porter/internal/llm"
 )
@@ -226,5 +227,124 @@ func TestDef(t *testing.T) {
 	// The schema must round-trip through JSON (the LLM sees it).
 	if _, err := json.Marshal(d); err != nil {
 		t.Errorf("Def does not marshal: %v", err)
+	}
+}
+
+// TestTimingNote pins the exact bracketed wording the model view uses, so a
+// format change is a deliberate, reviewed edit (the model may rely on it).
+func TestTimingNote(t *testing.T) {
+	at := time.Date(2025, 9, 4, 15, 42, 11, 0, time.UTC).UnixMilli()
+	end := at + 8200 // 8.2s later (sub-10s keeps the one-decimal form)
+
+	cases := []struct {
+		name string
+		msg  llm.ChatMessage
+		want string
+	}{
+		{"user", func() llm.ChatMessage { m := llm.UserMessage("hi"); m.StartedAt = at; return m }(), "[sent 2025-09-04 15:42:11 UTC]"},
+		{"user no clock", llm.UserMessage("hi"), ""},
+		{"assistant reply", func() llm.ChatMessage {
+			m := llm.AssistantMessage("hello", "", nil)
+			m.StartedAt = at
+			m.FinishedAt = end
+			return m
+		}(), "[replied 2025-09-04 15:42:19 UTC, took 8.2s]"},
+		{"assistant tool-call frame (no prose)", func() llm.ChatMessage {
+			m := llm.AssistantMessage("", "", []llm.ToolCall{{ID: "c1"}})
+			m.StartedAt = at
+			m.FinishedAt = end
+			return m
+		}(), ""},
+		{"assistant started only", func() llm.ChatMessage { m := llm.AssistantMessage("hi", "", nil); m.StartedAt = at; return m }(), "[replied 2025-09-04 15:42:11 UTC]"},
+		{"tool", func() llm.ChatMessage {
+			m := llm.ToolResult("c", "out")
+			m.StartedAt = at
+			m.FinishedAt = end
+			return m
+		}(), "[ran 8.2s, finished 2025-09-04 15:42:19 UTC]"},
+		{"tool cancelled", func() llm.ChatMessage {
+			m := llm.ToolResult("c", "partial")
+			m.StartedAt = at
+			m.FinishedAt = end
+			m.Cancelled = true
+			return m
+		}(), "[cancelled after 8.2s at 2025-09-04 15:42:19 UTC]"},
+		{"tool no clock", llm.ToolResult("c", "out"), ""},
+		{"system", func() llm.ChatMessage { m := llm.SystemMessage("notice"); m.StartedAt = at; return m }(), "[at 2025-09-04 15:42:11 UTC]"},
+		{"system no clock", llm.SystemMessage("notice"), ""},
+	}
+	for _, c := range cases {
+		if got := timingNote(c.msg); got != c.want {
+			t.Errorf("%s: timingNote = %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
+// TestDurText covers the compact model-view duration forms.
+func TestDurText(t *testing.T) {
+	cases := []struct {
+		ms   int64
+		want string
+	}{
+		{0, ""},
+		{800, "0.8s"},
+		{2500, "2.5s"},
+		{9500, "9.5s"},
+		{12000, "12s"},
+		{45000, "45s"},
+		{192000, "3m 12s"},
+		{180000, "3m"},
+		{3900000, "1h 5m"},
+		{7200000, "2h"},
+	}
+	for _, c := range cases {
+		if got := durText(c.ms); got != c.want {
+			t.Errorf("durText(%d) = %q, want %q", c.ms, got, c.want)
+		}
+	}
+}
+
+// TestProjectModelViewTiming verifies the projection annotates timed messages
+// with the bracket header, leaves clock-less messages alone, never mutates its
+// input, and puts the timing note in front of a truncation header when both
+// apply.
+func TestProjectModelViewTiming(t *testing.T) {
+	at := time.Date(2025, 9, 4, 15, 42, 11, 0, time.UTC).UnixMilli()
+	full := buildContent(1000)
+	big := llm.ToolResult("call_big", full)
+	big.StartedAt = at
+	big.FinishedAt = at + 192000 // 3m 12s
+	big.ToolOutput = Meta(full)
+
+	user := llm.UserMessage("hi")
+	user.StartedAt = at
+
+	plain := llm.ToolResult("call_plain", "tiny") // no clocks
+
+	history := []llm.ChatMessage{user, big, plain}
+	out := ProjectModelView(history)
+
+	// Input is never mutated (history still holds untimed, full content).
+	if history[0].Content != "hi" || history[1].Content != full {
+		t.Errorf("ProjectModelView mutated its input")
+	}
+	// A timed user message is annotated.
+	if want := "[sent 2025-09-04 15:42:11 UTC]\nhi"; out[0].Content != want {
+		t.Errorf("user view = %q, want %q", out[0].Content, want)
+	}
+	// A big timed tool result is truncated AND annotated, timing note first.
+	if !strings.HasPrefix(out[1].Content, "[ran 3m 12s, finished 2025-09-04 15:45:23 UTC]\n[tool output:") {
+		t.Errorf("big tool view = %.120s..., want timing note before truncation header", out[1].Content)
+	}
+	// A clock-less tool message is untouched (no fabricated note).
+	if out[2].Content != "tiny" {
+		t.Errorf("clock-less tool message changed: %q", out[2].Content)
+	}
+	// Re-projecting the OUTPUT would double-annotate, so the caller must always
+	// project from stored history (which the agent does fresh each request).
+	// Guard that the output of a single pass is deterministic.
+	again := ProjectModelView(history)
+	if again[0].Content != out[0].Content {
+		t.Errorf("projection not deterministic across passes")
 	}
 }
