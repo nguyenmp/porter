@@ -22,7 +22,7 @@ var ErrNotFound = errors.New("db: session not found")
 
 // schemaVersion is the current schema revision, tracked in PRAGMA user_version.
 // Bump it and extend migrate when the schema changes.
-const schemaVersion = 9
+const schemaVersion = 10
 
 // DB wraps the SQLite database handle. It deliberately uses a single
 // connection: pragmas like foreign_keys are per-connection, and a single
@@ -254,12 +254,30 @@ CREATE INDEX IF NOT EXISTS idx_variants_message ON variants(session_id, message_
 			return fmt.Errorf("set user_version: %w", err)
 		}
 	}
+	if v < 10 {
+		// v10: `output_tokens` on messages — the completion-token count of the
+		// model request that produced the message, set only on assistant
+		// messages (each closes one request). It lets the UI show a per-reply
+		// tokens/second figure (output ÷ the message's FinishedAt-StartedAt
+		// generation span) straight from a message row, on reload, without
+		// joining to the per-turn queries table. 0 = none (the pre-v10 default,
+		// and user/system/tool messages never carry it). It is json:"-" on
+		// ChatMessage like the clocks, so it never reaches the model.
+		const ddl = "ALTER TABLE messages ADD COLUMN output_tokens INTEGER NOT NULL DEFAULT 0"
+		if _, err := d.db.Exec(ddl); err != nil {
+			return fmt.Errorf("apply schema v10: %w", err)
+		}
+		if _, err := d.db.Exec("PRAGMA user_version=10"); err != nil {
+			return fmt.Errorf("set user_version: %w", err)
+		}
+	}
 	return nil
 }
 
 // Message is one committed message as stored: its bus position (seq) plus the
 // message payload. tool_calls is stored as JSON and round-tripped back into the
-// embedded llm.ChatMessage on load.
+// embedded llm.ChatMessage on load. Output (an assistant message's own
+// completion tokens) lives in the output_tokens column.
 type Message struct {
 	Seq uint64
 	llm.ChatMessage
@@ -376,9 +394,9 @@ func (d *DB) AppendMessage(sessionID int64, m Message) error {
 		return err
 	}
 	_, err = d.db.Exec(
-		`INSERT INTO messages (session_id, seq, role, content, reasoning, tool_call_id, tool_calls, started_at, finished_at, cancelled, tool_output)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		sessionID, m.Seq, m.Role, m.Content, m.Reasoning, m.ToolCallID, string(calls), m.StartedAt, m.FinishedAt, boolInt(m.Cancelled), toolOutput,
+		`INSERT INTO messages (session_id, seq, role, content, reasoning, tool_call_id, tool_calls, started_at, finished_at, cancelled, tool_output, output_tokens)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		sessionID, m.Seq, m.Role, m.Content, m.Reasoning, m.ToolCallID, string(calls), m.StartedAt, m.FinishedAt, boolInt(m.Cancelled), toolOutput, m.Output,
 	)
 	if err != nil {
 		return fmt.Errorf("insert message: %w", err)
@@ -444,7 +462,7 @@ func (d *DB) LoadSession(id int64) (Session, error) {
 		return Session{}, fmt.Errorf("load session %d: %w", id, err)
 	}
 	rows, err := d.db.Query(
-		`SELECT seq, role, content, reasoning, tool_call_id, tool_calls, started_at, finished_at, cancelled, tool_output
+		`SELECT seq, role, content, reasoning, tool_call_id, tool_calls, started_at, finished_at, cancelled, tool_output, output_tokens
 		 FROM messages WHERE session_id = ? ORDER BY seq ASC`, id)
 	if err != nil {
 		return Session{}, fmt.Errorf("load messages for %d: %w", id, err)
@@ -454,7 +472,7 @@ func (d *DB) LoadSession(id int64) (Session, error) {
 		var calls string
 		var cancelled int
 		var toolOutput string
-		if err := rows.Scan(&m.Seq, &m.Role, &m.Content, &m.Reasoning, &m.ToolCallID, &calls, &m.StartedAt, &m.FinishedAt, &cancelled, &toolOutput); err != nil {
+		if err := rows.Scan(&m.Seq, &m.Role, &m.Content, &m.Reasoning, &m.ToolCallID, &calls, &m.StartedAt, &m.FinishedAt, &cancelled, &toolOutput, &m.Output); err != nil {
 			rows.Close()
 			return Session{}, fmt.Errorf("scan message: %w", err)
 		}

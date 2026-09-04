@@ -31,6 +31,13 @@ type ChatMessage struct {
 	// and commitEnv copies them onto the bus envelope, to render timing.
 	StartedAt  int64 `json:"-"`
 	FinishedAt int64 `json:"-"`
+	// Output is the completion-token count of the model request that produced
+	// this message, set by the agent only on assistant messages (each of which
+	// closes one request). Together with FinishedAt-StartedAt it lets the UI
+	// show a per-reply tokens/second figure. json:"-" for the same reason as
+	// the clocks: token counts on a message never go to the model or the
+	// history API; the bus envelope and the persisted message carry them.
+	Output int `json:"-"`
 	// Cancelled reports that a tool run was aborted by the user before it
 	// completed. It is set on the committed role-"tool" message so history (and
 	// /view) can render the result as cancelled rather than a normal exit.

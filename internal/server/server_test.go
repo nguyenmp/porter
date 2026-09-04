@@ -3752,3 +3752,93 @@ func TestViewAlwaysShowsTabBar(t *testing.T) {
 		t.Errorf("view shows a humanized tab for a short reply that never qualified: %s", s)
 	}
 }
+
+// TestGenMetaFormatting pins the tokens-per-second fragments to their exact
+// strings so the Go server and its live JS mirror stay in lockstep (and never
+// accidentally diverge on reload).
+func TestGenMetaFormatting(t *testing.T) {
+	cases := []struct {
+		ms  int64
+		out int
+		got string
+	}{
+		{2000, 24, " · 2.0s · 12 tok/s"},
+		{12000, 1000, " · 12s · 83 tok/s"},
+		{0, 10, ""},
+		{1000, 0, ""},
+		{0, 0, ""},
+	}
+	for _, c := range cases {
+		if got := genMeta(c.ms, c.out); got != c.got {
+			t.Errorf("genMeta(%d, %d) = %q, want %q", c.ms, c.out, got, c.got)
+		}
+	}
+	if got := fmtRate(5, 1000); got != "5.0 tok/s" {
+		t.Errorf("fmtRate(5,1000) = %q, want sub-10 one-decimal", got)
+	}
+	if got := fmtRate(100, 1000); got != "100 tok/s" {
+		t.Errorf("fmtRate(100,1000) = %q, want whole at/above 10", got)
+	}
+	if got := fmtMs(12500); got != "13s" {
+		t.Errorf("fmtMs(12500) = %q, want 13s", got)
+	}
+}
+
+// TestMessageOutputReachesEnvelopeAndView checks the per-reply output-token
+// pipeline: the committed assistant envelope carries the request's output
+// tokens (ChatMessage hides them json:"-"), the turn_completed marker carries a
+// generation_ms, and the reload /view fragment renders data-output for the
+// click-to-expand tokens/second panel.
+func TestMessageOutputReachesEnvelopeAndView(t *testing.T) {
+	srv := newTestServer(t, plainLLM()) // serves completion_tokens: 2
+	got, _ := runOneTurn(t, srv.URL, "hi")
+
+	var sawAssistant, sawTurnDone bool
+	for _, env := range got {
+		if env.Kind == api.KindMessage && env.Message.Role == "assistant" {
+			sawAssistant = true
+			if env.Output != 2 {
+				t.Errorf("assistant commit output = %d, want 2 (from usage)", env.Output)
+			}
+			if env.StartedAt == 0 || env.FinishedAt == 0 {
+				t.Errorf("assistant commit missing clocks: %d..%d", env.StartedAt, env.FinishedAt)
+			}
+		}
+		if env.Kind == api.KindTurnDone {
+			sawTurnDone = true
+			if env.Output != 2 || env.GenerationMs < 0 {
+				t.Errorf("turn_completed output=%d generation_ms=%d, want 2 and >=0", env.Output, env.GenerationMs)
+			}
+		}
+	}
+	if !sawAssistant || !sawTurnDone {
+		t.Fatalf("missing envelopes: assistant=%v turn_done=%v", sawAssistant, sawTurnDone)
+	}
+
+	resp, err := http.Get(srv.URL + "/api/sessions")
+	if err != nil {
+		t.Fatalf("list sessions: %v", err)
+	}
+	var list struct {
+		Sessions []struct {
+			ID string `json:"id"`
+		} `json:"sessions"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
+		t.Fatalf("decode sessions: %v", err)
+	}
+	resp.Body.Close()
+	if len(list.Sessions) == 0 {
+		t.Fatal("no sessions listed")
+	}
+	vr, err := http.Get(srv.URL + "/api/sessions/" + list.Sessions[0].ID + "/view")
+	if err != nil {
+		t.Fatalf("GET view: %v", err)
+	}
+	body, _ := io.ReadAll(vr.Body)
+	vr.Body.Close()
+	html := string(body)
+	if !strings.Contains(html, `data-output="2"`) {
+		t.Errorf("/view missing data-output for the assistant reply:\n%s", html)
+	}
+}

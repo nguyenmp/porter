@@ -600,10 +600,17 @@ func (s *Session) runTurn(ctx context.Context, content string, receivedAt int64)
 	}
 	// Usage rides on every completion path (a stopped turn carries its partial
 	// usage), so the live marker matches what the persisted footer derives on
-	// reload.
+	// reload. GenerationMs is the turn's model "busy" time — the sum over its
+	// assistant messages of FinishedAt-StartedAt — so a live footer can show
+	// tokens/second exactly as /view derives it from the persisted history.
 	done.CachedInput = res.Usage.CachedInput
 	done.UncachedInput = res.Usage.UncachedInput
 	done.Output = res.Usage.Output
+	for _, m := range res.History {
+		if m.Role == "assistant" && m.StartedAt > 0 && m.FinishedAt >= m.StartedAt {
+			done.GenerationMs += m.FinishedAt - m.StartedAt
+		}
+	}
 	s.endTurn(done)
 }
 
@@ -736,7 +743,12 @@ type Turn struct {
 	CachedInput   int    // prompt tokens served from cache, summed across the turn's queries
 	UncachedInput int    // prompt tokens read fresh (cache misses), summed across the turn's queries
 	Output        int    // completion tokens, summed across the turn's queries
-	Error         string
+	// GenMs is the turn's total model "busy" time in milliseconds — the sum
+	// over the turn's assistant messages of FinishedAt-StartedAt. It excludes
+	// queue wait and tool execution, so paired with Output it yields the
+	// turn's tokens/second.
+	GenMs int64
+	Error string
 	// Stopped reports that the user aborted the turn (the Stop button): any of
 	// its queries is marked stopped. A stopped turn is not an error.
 	Stopped bool
@@ -776,15 +788,28 @@ func DeriveTurns(ps db.Session) []Turn {
 			t.Error = q.Error
 		}
 	}
-	var out []Turn
+	// Walk the messages in stream order: each user message opens a turn, and
+	// the turn's assistant messages (each closes one model request, stamped by
+	// the agent with its generation span) contribute to GenMs. Track the open
+	// turn by pointer so aggregation here and the ordering loop below share the
+	// same Turn values.
+	var order []*Turn
 	for _, m := range ps.Messages {
-		if m.Role != "user" {
-			continue
+		if m.Role == "user" {
+			t := byUser[m.Seq]
+			if t == nil {
+				t = &Turn{UserSeq: m.Seq}
+				byUser[m.Seq] = t
+			}
+			order = append(order, t)
+		} else if m.Role == "assistant" && len(order) > 0 {
+			if m.StartedAt > 0 && m.FinishedAt >= m.StartedAt {
+				order[len(order)-1].GenMs += m.FinishedAt - m.StartedAt
+			}
 		}
-		t := byUser[m.Seq]
-		if t == nil {
-			t = &Turn{UserSeq: m.Seq}
-		}
+	}
+	out := make([]Turn, 0, len(order))
+	for _, t := range order {
 		out = append(out, *t)
 	}
 	return out
@@ -850,13 +875,15 @@ func (s *Session) commitEnv(env api.Envelope) (uint64, error) {
 	// fallback for any user message that bypassed the queue. ChatMessage hides
 	// the clocks from the model (json:"-"), so they are copied onto the
 	// envelope for live subscribers; /view reads them straight from the DB on
-	// reload.
+	// reload. An assistant message's own output tokens ride the same way
+	// (env.Output), so the live client can show per-reply tokens/second.
 	if m := env.Message; m != nil {
 		if m.StartedAt == 0 && (m.Role == "user" || m.Role == "system") {
 			m.StartedAt = time.Now().UnixMilli()
 		}
 		env.StartedAt = m.StartedAt
 		env.FinishedAt = m.FinishedAt
+		env.Output = m.Output
 	}
 
 	if err := s.persist.AppendMessage(s.dbID, db.Message{Seq: next, ChatMessage: *env.Message}); err != nil {
@@ -1105,8 +1132,11 @@ func (s *Session) rebuildFromPersisted(ps db.Session) {
 			env.MessageHTML = render.Markdown(m.Content)
 		}
 		// The tool-output metadata rides on the replayed commit too, so a
-		// reconnecting client renders the badge exactly as /view does.
+		// reconnecting client renders the badge exactly as /view does. Same for
+		// the message's own output tokens (per-reply tokens/second after a
+		// server restart, when the live bus is rebuilt from the DB).
 		env.ToolOutput = m.ToolOutput
+		env.Output = m.Output
 		s.bufferLocked(env)
 	}
 	// No turns are in flight at startup, so every persisted query belongs to a

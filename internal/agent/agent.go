@@ -313,6 +313,7 @@ func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage,
 				assistant := llm.AssistantMessage(text, reasoning, nil)
 				assistant.StartedAt = genStart
 				assistant.FinishedAt = genEnd
+				assistant.Output = usage.Output
 				if err := commit(assistant); err != nil {
 					return res, err
 				}
@@ -337,6 +338,7 @@ func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage,
 			assistant := llm.AssistantMessage(res.Text, reasoning, nil)
 			assistant.StartedAt = genStart
 			assistant.FinishedAt = genEnd
+			assistant.Output = usage.Output
 			if err := commit(assistant); err != nil {
 				return res, err
 			}
@@ -346,6 +348,7 @@ func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage,
 		assistant := llm.AssistantMessage(reply.String(), reasoning, toLLMCalls(calls))
 		assistant.StartedAt = genStart
 		assistant.FinishedAt = genEnd
+		assistant.Output = usage.Output
 		if err := commit(assistant); err != nil {
 			return res, err
 		}

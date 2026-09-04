@@ -1633,3 +1633,37 @@ func equalStrings(a, b []string) bool {
 	}
 	return true
 }
+
+// TestDeriveTurnsSumsGenMs verifies a turn's model "busy" time is derived from
+// its assistant messages' generation spans (FinishedAt-StartedAt), independent
+// of its token totals (which come from the queries table).
+func TestDeriveTurnsSumsGenMs(t *testing.T) {
+	ps := db.Session{
+		Messages: []db.Message{
+			{Seq: 1, ChatMessage: llm.ChatMessage{Role: "user"}},
+			{Seq: 2, ChatMessage: llm.ChatMessage{Role: "assistant", StartedAt: 1000, FinishedAt: 3000, Output: 40}},
+			// A tool result between requests carries no generation span.
+			{Seq: 3, ChatMessage: llm.ChatMessage{Role: "tool"}},
+			{Seq: 4, ChatMessage: llm.ChatMessage{Role: "assistant", StartedAt: 5000, FinishedAt: 8000, Output: 90}},
+			{Seq: 5, ChatMessage: llm.ChatMessage{Role: "user"}},
+			// An assistant message with no clocks (e.g. a pre-v10 reload) adds
+			// nothing, so old data renders without a fabricated rate.
+			{Seq: 6, ChatMessage: llm.ChatMessage{Role: "assistant", Output: 8}},
+		},
+		Queries: []db.Query{
+			{TurnSeq: 1, Idx: 0, Output: 40},
+			{TurnSeq: 1, Idx: 1, Output: 90},
+			{TurnSeq: 5, Idx: 0, Output: 8},
+		},
+	}
+	turns := DeriveTurns(ps)
+	if len(turns) != 2 {
+		t.Fatalf("turns = %d, want 2", len(turns))
+	}
+	if turns[0].UserSeq != 1 || turns[0].GenMs != 5000 || turns[0].Output != 130 {
+		t.Errorf("turn 1 = %+v, want user 1, gen 5000ms, 130 out", turns[0])
+	}
+	if turns[1].UserSeq != 5 || turns[1].GenMs != 0 || turns[1].Output != 8 {
+		t.Errorf("turn 2 = %+v, want user 5, gen 0ms (no clocks), 8 out", turns[1])
+	}
+}

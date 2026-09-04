@@ -344,10 +344,18 @@ type Envelope struct {
 	TurnSeq    uint64 `json:"turn_seq,omitempty"`    // KindTurnDone (the user message seq that started the turn)
 	// CachedInput/UncachedInput are the turn's prompt-token split (cache hits
 	// vs misses); Output is its completion tokens. Total input is their sum,
-	// derived where display needs it. KindTurnDone.
+	// derived where display needs it. KindTurnDone. On a KindMessage commit
+	// Output is instead that one committed assistant message's own completion
+	// tokens (copied from the message, which hides them json:"-"), so the live
+	// client can show a per-reply tokens/second figure. Other kinds never set it.
 	CachedInput   int `json:"cached_input,omitempty"`
 	UncachedInput int `json:"uncached_input,omitempty"`
-	Output        int `json:"output,omitempty"` // KindTurnDone
+	Output        int `json:"output,omitempty"` // KindTurnDone, KindMessage (assistant)
+	// GenerationMs is the turn's total model "busy" time in milliseconds — the
+	// sum over its requests of FinishedAt-StartedAt on the assistant messages
+	// they closed, excluding queue wait and tool execution. Paired with Output
+	// it yields the turn's tokens/second. KindTurnDone.
+	GenerationMs int64 `json:"generation_ms,omitempty"` // KindTurnDone
 	// TotalCachedInput/TotalUncachedInput/TotalOutput are the session's running
 	// token totals — the sum over every completed turn, not just this one — so
 	// a client can show a session total below the input box without re-deriving

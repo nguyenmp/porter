@@ -1041,6 +1041,22 @@
     return '(' + uncached + ' in, ' + output + ' out tokens)';
   }
 
+  // fmtRate renders tokens/second from an output-token count and a generation
+  // duration in ms ("" when no rate is meaningful). Whole numbers at/above 10,
+  // one decimal below — mirrors server fmtRate so live and reload match.
+  function fmtRate(out, ms) {
+    if (!ms || ms <= 0 || !out || out <= 0) return '';
+    const tps = out / (ms / 1000);
+    return tps >= 10 ? Math.round(tps) + ' tok/s' : tps.toFixed(1) + ' tok/s';
+  }
+  // genMeta is the " · 14.2s · 12 tok/s" fragment appended to a turn/reply
+  // once its generation span and output tokens are known; "" when either is
+  // missing. Mirrors server genMeta so live and reload render identically.
+  function genMeta(ms, out) {
+    if (!ms || ms <= 0 || !out || out <= 0) return '';
+    return ' · ' + fmtDur(ms) + ' · ' + fmtRate(out, ms);
+  }
+
   // fmtBytes mirrors the server's reload rendering of a byte count as a short
   // human size ("1.0 MB", "1.5 KB", "512 B").
   function fmtBytes(n) {
@@ -1237,10 +1253,23 @@
     if (isUser || isSystem) {
       rows.push('UTC ' + utcStamp(started));
     } else {
-      if (finished > started) rows.push('took ' + fmtDur(finished - started));
-      if (finished > 0) {
-        rows.push((isTool && cancelled ? 'cancelled at ' : 'ended ') + fmtChipTime(finished));
-        rows.push('UTC ' + utcStamp(started) + ' → ' + utcStamp(finished));
+      // An assistant reply also reports its own output tokens and the
+      // tokens/second it was produced at (host.dataset.output is set from the
+      // message's stored completion tokens; the span is FinishedAt-StartedAt).
+      const out = Number(host.dataset.output || 0);
+      if (isTool) {
+        if (finished > started) rows.push('took ' + fmtDur(finished - started));
+        if (finished > 0) {
+          rows.push((cancelled ? 'cancelled at ' : 'ended ') + fmtChipTime(finished));
+          rows.push('UTC ' + utcStamp(started) + ' → ' + utcStamp(finished));
+        }
+      } else {
+        if (finished > started && out > 0) rows.push('took ' + fmtDur(finished - started) + ' · ' + out + ' out tokens · ' + fmtRate(out, finished - started));
+        else if (finished > started) rows.push('took ' + fmtDur(finished - started));
+        if (finished > 0) {
+          rows.push('ended ' + fmtChipTime(finished));
+          rows.push('UTC ' + utcStamp(started) + ' → ' + utcStamp(finished));
+        }
       }
     }
     meta.textContent = rows.join('\n');
@@ -1253,12 +1282,14 @@
   }
   // stampCommitted sets a committed message element's clocks from its envelope
   // (ChatMessage hides them json:"-", so they arrive on the envelope, not the
-  // message) and renders the chip. Cancelled applies to tool results.
-  function stampCommitted(el, started, finished, cancelled) {
+  // message) and renders the chip. Cancelled applies to tool results; output
+  // (an assistant message's own completion tokens) to assistant messages.
+  function stampCommitted(el, started, finished, cancelled, output) {
     if (!el) return;
     if (started) el.dataset.started = String(started); else delete el.dataset.started;
     if (finished) el.dataset.finished = String(finished); else delete el.dataset.finished;
     if (cancelled) el.dataset.cancelled = '1'; else delete el.dataset.cancelled;
+    if (output) el.dataset.output = String(output); else delete el.dataset.output;
     updateTime(el);
   }
   // stampToolRun mirrors a tool run's authoritative state onto its result
@@ -1267,7 +1298,7 @@
   function stampToolRun(run) {
     const el = run && run.resultEl;
     if (!el) return;
-    stampCommitted(el, run.startedAt, run.finishedAt, run.status === 'cancelled');
+    stampCommitted(el, run.startedAt, run.finishedAt, run.status === 'cancelled', 0);
   }
   function appendMessage(role, html) {
     const div = document.createElement('div');
@@ -1786,7 +1817,7 @@
     return pane;
   }
 
-  function finalizeAssistant(m, html, seq, started, finished) {
+  function finalizeAssistant(m, html, seq, started, finished, output) {
     // Replace the live text with the committed version (server-rendered
     // markdown when supplied) and ensure tool calls are present. html is
     // carried on the message_committed envelope so the committed copy matches
@@ -1833,7 +1864,7 @@
     if (seq) div.dataset.msgSeq = seq;
     // Stamp the generation clock (server epoch-ms via the envelope) and build
     // the always-visible local-time chip.
-    stampCommitted(div, started, finished, false);
+    stampCommitted(div, started, finished, false, output);
     if (m.reasoning && !hadLiveReasoning) {
       const r = document.createElement('div');
       r.className = 'reasoning';
@@ -1993,7 +2024,7 @@
 			  chat.appendChild(sysDiv);
 			  stampCommitted(sysDiv, env.started_at, env.finished_at, false);
 			} else if (m.role === 'assistant') {
-			  finalizeAssistant(m, env.message_html, env.seq, env.started_at, env.finished_at);
+			  finalizeAssistant(m, env.message_html, env.seq, env.started_at, env.finished_at, env.output);
         } else if (m.role === 'tool') {
           currentAssistant = null;
           currentReasoning = null;
@@ -2180,6 +2211,7 @@
           let label = 'stopped';
           if (env.cached_input > 0 || env.uncached_input > 0 || env.output > 0) {
             label += ' · ' + tokenLine(env.cached_input || 0, env.uncached_input || 0, env.output || 0);
+            label += genMeta(env.generation_ms, env.output || 0);
           }
           stopDiv.textContent = label;
           chat.appendChild(stopDiv);
@@ -2196,7 +2228,8 @@
           const tokDiv = document.createElement('div');
           tokDiv.className = 'token-line';
           if (tseq) tokDiv.dataset.turnSeq = tseq;
-          tokDiv.textContent = tokenLine(env.cached_input || 0, env.uncached_input || 0, env.output || 0);
+          tokDiv.textContent = tokenLine(env.cached_input || 0, env.uncached_input || 0, env.output || 0) +
+            genMeta(env.generation_ms, env.output || 0);
           chat.appendChild(tokDiv);
         }
         // The session total below the input box is authoritative on the

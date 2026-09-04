@@ -62,18 +62,49 @@ func renderMarkdown(s string) template.HTML {
 	return template.HTML(mdr.Markdown(s))
 }
 
-// templates are parsed once at startup from the embedded web directory.
-// fmtDur renders a tool-run duration for the view: tenths of a second below
-// 10s, whole seconds at/above 10s (matching the live client's granularity).
-func fmtDur(start, end int64) string {
-	if end <= start || start == 0 {
+// fmtMs renders a duration in milliseconds: tenths of a second below 10s,
+// whole seconds at/above 10s (matching the live client's fmtDur granularity).
+func fmtMs(ms int64) string {
+	if ms <= 0 {
 		return "0s"
 	}
-	ms := end - start
 	if s := float64(ms) / 1000; s < 10 {
 		return fmt.Sprintf("%.1fs", s)
 	}
 	return fmt.Sprintf("%ds", (ms+500)/1000)
+}
+
+// fmtDur renders a tool-run duration for the view (start..end epoch-ms).
+func fmtDur(start, end int64) string {
+	if end <= start || start == 0 {
+		return "0s"
+	}
+	return fmtMs(end - start)
+}
+
+// fmtRate renders a tokens/second figure from a token count and a generation
+// duration, or "" when no rate is meaningful (no output or no duration). Whole
+// numbers at/above 10 tok/s, one decimal below, matching the live client.
+func fmtRate(out int, ms int64) string {
+	if ms <= 0 || out <= 0 {
+		return ""
+	}
+	tps := float64(out) / (float64(ms) / 1000)
+	if tps >= 10 {
+		return fmt.Sprintf("%d tok/s", int(tps+0.5))
+	}
+	return fmt.Sprintf("%.1f tok/s", tps)
+}
+
+// genMeta is the turn/reply metadata fragment appended to a token line once a
+// generation span and its output tokens are known: " · 14.2s · 12 tok/s". It
+// is "" when either is missing, so token lines on old or partial data render
+// unchanged. Mirrored by genMeta in the web client for live parity.
+func genMeta(ms int64, out int) string {
+	if ms <= 0 || out <= 0 {
+		return ""
+	}
+	return " · " + fmtMs(ms) + " · " + fmtRate(out, ms)
 }
 
 // fmtClock renders a server epoch-ms timestamp as local wall-clock time for the
@@ -152,6 +183,7 @@ var templates = template.Must(template.New("").Funcs(template.FuncMap{
 	"argsSnippet":    argsSnippet,
 	"tokenLine":      tokenLine,
 	"fmtBytes":       fmtBytes,
+	"genMeta":        genMeta,
 	"add1":           func(n int) int { return n + 1 },
 }).ParseFS(webFS, "web/*.tmpl"))
 
@@ -204,8 +236,12 @@ type viewFooter struct {
 	CachedInput   int
 	UncachedInput int
 	Output        int
-	Error         string
-	Stopped       bool
+	// GenMs is the turn's total model "busy" time (sum over its assistant
+	// messages of FinishedAt-StartedAt); with Output it renders the turn's
+	// tokens/second meta on the footer.
+	GenMs   int64
+	Error   string
+	Stopped bool
 }
 
 // viewItem is one element of the rendered history: either a committed message
@@ -885,6 +921,7 @@ func (s *Server) handleView(w http.ResponseWriter, r *http.Request) {
 					CachedInput:   t.CachedInput,
 					UncachedInput: t.UncachedInput,
 					Output:        t.Output,
+					GenMs:         t.GenMs,
 					Error:         t.Error,
 					Stopped:       t.Stopped,
 				}})
