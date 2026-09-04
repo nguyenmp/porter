@@ -187,24 +187,31 @@ func FindSkills(cwd string) []api.Skill {
 // FindSkillsIn discovers skills across the given roots, in order, deduplicated
 // by name so an earlier root's copy wins. Multi-repo sandboxes pass every
 // worktree first, so each repo's own skills load and a name clash resolves to
-// the first repo listed. After the filesystem scan, the binary's built-in
-// skills are appended (still deduplicated, so a filesystem skill with the same
-// name wins): the server is a single binary with no skill files in its build,
-// so built-in skills are hard-coded in Go and served from memory.
+// the first repo listed. The binary's built-in skills always win: their names
+// are reserved before the filesystem scan, so a filesystem skill that collides
+// with a built-in is skipped and the built-in is appended instead — a user
+// cannot shadow the shipped guidance with their own copy. The server is a
+// single binary with no skill files in its build, so built-in skills are
+// hard-coded in Go and served from memory.
 func FindSkillsIn(roots []string) []api.Skill {
+	builtins := builtinSkills()
+	reserved := make(map[string]bool, len(builtins))
+	for _, s := range builtins {
+		reserved[s.Name] = true
+	}
 	seen := make(map[string]bool)
 	var out []api.Skill
 	for _, root := range roots {
 		for _, path := range skillPaths(root) {
 			s, ok := parseSkill(path)
-			if !ok || seen[s.Name] {
+			if !ok || seen[s.Name] || reserved[s.Name] {
 				continue
 			}
 			seen[s.Name] = true
 			out = append(out, s)
 		}
 	}
-	for _, s := range builtinSkills() {
+	for _, s := range builtins {
 		if seen[s.Name] {
 			continue
 		}
@@ -217,7 +224,8 @@ func FindSkillsIn(roots []string) []api.Skill {
 // builtinSkills returns the skills compiled into the binary. There are no
 // SKILL.md files in the server build, so each entry carries a sentinel Path
 // (api.BuiltinPrefix) that the dispatcher resolves from memory rather than
-// from disk.
+// from disk. Their names are reserved by FindSkillsIn: a filesystem skill can
+// never shadow a built-in.
 func builtinSkills() []api.Skill {
 	return []api.Skill{
 		humanize.BuiltinSkill(),

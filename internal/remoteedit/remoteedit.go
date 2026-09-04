@@ -34,9 +34,9 @@ func BuiltinSkill() api.Skill {
 func Prompt() string { return prompt }
 
 // prompt is the skill body, kept as a raw string so it reads like a SKILL.md
-// that never ships as a file. When a filesystem skill of the same name exists,
-// it shadows this built-in (exec's discovery gives filesystem skills
-// priority), which lets a user override the guidance with their own copy.
+// that never ships as a file. It is the authoritative copy: exec's discovery
+// reserves built-in names, so a filesystem skill of the same name is skipped
+// and can never shadow this guidance.
 const prompt = `# How to edit files on a remote host
 
 To change a file on another machine (one you reach over ssh), pull it into

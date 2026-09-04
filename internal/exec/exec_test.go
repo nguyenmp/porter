@@ -315,8 +315,7 @@ func TestListFilesInPerRootBudget(t *testing.T) {
 func TestFindSkillsInOrdering(t *testing.T) {
 	// Two roots (e.g. two worktrees in one sandbox) both define the same
 	// skill name: the first root wins, mirroring FindSkills' repo-over-global
-	// preference. The built-in skills are appended after the filesystem scan
-	// (no filesystem copy shadows them in this test), so the result is the
+	// preference. Built-in names don't collide here, so the result is the
 	// deduped filesystem skill plus both built-ins.
 	root1 := t.TempDir()
 	root2 := t.TempDir()
@@ -335,8 +334,9 @@ func TestFindSkillsInOrdering(t *testing.T) {
 	if got := byName["dup"].Path; got != want {
 		t.Errorf("dup skill path = %q, want first root's %q", got, want)
 	}
-	// A filesystem skill named like a built-in shadows that one (first-root
-	// rule); the other built-in is still appended.
+	// A filesystem skill named like a built-in loses to it: the built-in's
+	// name is reserved before the scan, so the filesystem copy is skipped and
+	// the built-in (served from memory) is what load_skill serves.
 	root3 := t.TempDir()
 	writeSkill(t, root3, ".agents", humanize.SkillName, "# mine\n\nmy plain-language\n")
 	skills = FindSkillsIn([]string{root3})
@@ -345,10 +345,10 @@ func TestFindSkillsInOrdering(t *testing.T) {
 		byName[s.Name] = s
 	}
 	if len(skills) != 2 {
-		t.Fatalf("FindSkillsIn with shadowing skill = %d skills, want 2 (filesystem plain-language + built-in editing-remote-files)", len(skills))
+		t.Fatalf("FindSkillsIn with colliding skill = %d skills, want 2 (built-in plain-language + built-in editing-remote-files)", len(skills))
 	}
-	if got := byName[humanize.SkillName].Path; got == api.BuiltinPrefix+humanize.SkillName {
-		t.Errorf("built-in shadowed the filesystem skill; path = %q", got)
+	if got := byName[humanize.SkillName].Path; got != api.BuiltinPrefix+humanize.SkillName {
+		t.Errorf("filesystem skill shadowed the built-in; path = %q, want %q", got, api.BuiltinPrefix+humanize.SkillName)
 	}
 	if _, ok := byName[remoteedit.SkillName]; !ok {
 		t.Errorf("FindSkillsIn must still include the other built-in %q; got %v", remoteedit.SkillName, skills)

@@ -52,12 +52,13 @@ A tree of turns. Each turn has a single parent and can fork into many children.
   (each worktree is a repo root), so each repo's committed skills load.
 - Built-in skills are compiled into the binary instead of shipped as
   SKILL.md files (the server is a single binary with no skill files in its
-  build). They are appended after the filesystem scan and deduplicated by
-  name, so a filesystem skill always shadows a built-in of the same name.
-  `load_skill` serves their bodies from memory. Two ship today: the
-  plain-language prompt behind Humanized variants (`internal/humanize` exposes
-  it via `Prompt()`; editing the prompt edits the skill, so the two cannot
-  drift) and remote-file editing guidance (`internal/remoteedit`, which tells
+  build). They always win: built-in names are reserved during discovery, so a
+  filesystem skill of the same name is skipped and can never shadow the
+  shipped guidance. `load_skill` serves their bodies from memory. Two ship
+  today: the plain-language prompt behind Humanized variants
+  (`internal/humanize` exposes it via `Prompt()`; editing the prompt edits
+  the skill, so the two cannot drift) and remote-file editing guidance
+  (`internal/remoteedit`, which tells
   the model to pull a file off a remote host, edit the local copy with the
   file editing tools, and push it back instead of driving sed/perl over ssh).
 - CLI tools the provider declares available ride along the environment: a
