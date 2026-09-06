@@ -37,10 +37,13 @@ import (
 // git repositories it discovered under the user's home (for the web UI's
 // "new chat on" picker), and reconnects to the server forever, provisioning a
 // provider for every session the server asks for. Every provision is a fresh
-// sandbox under ~/.porter/sandboxes/<providerID> (not configurable): with
-// repos it holds one git worktree per requested repo, with none it is an
-// empty directory. The host never executes in its own working directory.
-// Stale sandboxes left by a previous run are cleaned up on startup.
+// sandbox under ~/.porter/<hostID>/sandboxes/<providerID> (not configurable):
+// with repos it holds one git worktree per requested repo, with none it is an
+// empty directory. Each host id owns its own sandbox root, so hosts with
+// different ids on one machine never touch each other's sandboxes, and a
+// duplicate id is stopped by a per-id file lock before it can clean or serve.
+// The host never executes in its own working directory. Stale sandboxes left
+// by a previous run are cleaned up on startup.
 func Run(ctx context.Context, cfg config.ClientConfig) error {
 	c := client.New(cfg.ServerURL, client.BasicAuth{Username: cfg.Username, Password: cfg.Password})
 
@@ -51,22 +54,21 @@ func Run(ctx context.Context, cfg config.ClientConfig) error {
 		} else {
 			hostID = "porter-host"
 		}
-		// Only one host agent may use the default host id (the hostname) per
-		// machine: guard it with a flock on ~/.porter/pid.lock, so a second
-		// `make host` fails here with a clear message instead of silently
-		// shadowing the running host on the server (the server also rejects a
-		// second registration with the same host id, but failing locally is
-		// faster and clearer). flock releases automatically when the process
-		// exits — even a SIGKILL — so the lock never goes stale. Setting
-		// PORTER_HOST_ID skips the lock entirely: distinct host ids never
-		// collide, which is how local multi-host testing (and the test
-		// suite) runs several hosts on one machine.
-		unlock, err := lockHost()
-		if err != nil {
-			return err
-		}
-		defer unlock()
 	}
+	// Each host id owns a private state directory (~/.porter/<hostID>, see
+	// hostDir) holding its lock and its sandbox root, so hosts with different
+	// ids never contend — each locks its own directory. The lock is always
+	// taken, not just for the default id, so a second agent claiming the same
+	// id fails here with a clear message instead of cleaning the running
+	// host's sandboxes or shadowing it on the server (the server also rejects
+	// a duplicate registration, but failing locally is faster and clearer).
+	// flock releases automatically when the process exits — even a SIGKILL —
+	// so the lock never goes stale.
+	unlock, err := lockHost(hostID)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	// The host's working directory is reported to the server (and shown in the
 	// web picker) so the user can see where the host process runs, but it is
 	// never an execution target: every provision is a sandbox under the root
@@ -75,7 +77,7 @@ func Run(ctx context.Context, cfg config.ClientConfig) error {
 	if err != nil {
 		return fmt.Errorf("get host working directory: %w", err)
 	}
-	root := worktreeRoot()
+	root := worktreeRoot(hostID)
 	cleanupStaleWorktrees(root)
 
 	// Report the host's base environment so the web UI's "new chat on" picker
@@ -256,7 +258,7 @@ func watchSleep(ctx context.Context, w *sleepWatcher) {
 type provisioner struct {
 	c         *client.Client
 	hostID    string
-	worktrees string // root directory for sandboxes (~/.porter/sandboxes)
+	worktrees string // this host's sandbox root (~/.porter/<hostID>/sandboxes)
 	mu        sync.Mutex
 	serves    map[string]*serveState
 	mcp       *mcp.Hub // the host's own MCP servers, served on this machine
@@ -276,14 +278,14 @@ type serveState struct {
 // sandbox the host created earlier. Kind "provision" creates the execution
 // environment a session asked for and starts serving it as that session's
 // execution provider. Every provision is a sandbox: a fresh container
-// directory under ~/.porter/sandboxes/<providerID> that becomes the session's
-// working directory. When the request names repos, the container holds one
-// git worktree per repo (each a fresh branch porter/<providerID>, -2, -3...
-// for later worktrees of the same repo, based at the repo's requested branch
-// or HEAD), so many chats can work on the same repos without trampling each
-// other and one chat can work across several at once. With no repos the
-// container is empty — an isolated scratch directory the model can write
-// into, never the host's own working tree. It returns an error only for
+// directory under ~/.porter/<hostID>/sandboxes/<providerID> that becomes the
+// session's working directory. When the request names repos, the container
+// holds one git worktree per repo (each a fresh branch porter/<providerID>,
+// -2, -3... for later worktrees of the same repo, based at the repo's
+// requested branch or HEAD), so many chats can work on the same repos without
+// trampling each other and one chat can work across several at once. With no
+// repos the container is empty — an isolated scratch directory the model can
+// write into, never the host's own working tree. It returns an error only for
 // internal failures — a bad request is reported to the server
 // (PostHostProviderError) and the host connection keeps serving.
 func (p *provisioner) provision(req api.HostRequest) error {
@@ -454,23 +456,26 @@ func randSuffix() string {
 	return fmt.Sprintf("%x", b)
 }
 
-// lockHost acquires the machine-wide default-host lock and returns a function
-// that releases it. The lock is a flock on ~/.porter/pid.lock (the directory
-// is created if needed), held for the process lifetime; flock releases
-// automatically on process exit, even a hard kill, so no stale-lock cleanup
-// is ever needed.
-func lockHost() (func(), error) {
-	home, err := os.UserHomeDir()
+// lockHost acquires the per-host lock for hostID and returns a function that
+// releases it. The lock is a flock on ~/.porter/<hostID>/pid.lock (the
+// directory is created if needed), held for the process lifetime; flock
+// releases automatically on process exit, even a hard kill, so no stale-lock
+// cleanup is ever needed. Every host locks its own id's file, so only
+// duplicates of the same id contend — which is what a second agent on one
+// machine claiming that id would be.
+func lockHost(hostID string) (func(), error) {
+	path := filepath.Join(hostDir(hostID), "pid.lock")
+	unlock, err := lockHostAt(path)
 	if err != nil {
-		return nil, fmt.Errorf("host lock: find home directory: %w", err)
+		return nil, fmt.Errorf("another execution host is already running as %q (lock %s is held); stop it, or set PORTER_HOST_ID to a different id to run another host on this machine", hostID, path)
 	}
-	return lockHostAt(filepath.Join(home, ".porter", "pid.lock"))
+	return unlock, nil
 }
 
-// lockHostAt is lockHost with an explicit lock path, so tests can lock a
-// temp file. It opens the path, takes a non-blocking exclusive flock, and
-// returns an unlock func that closes the file (releasing the lock). A second
-// lock on the same path while the first is held fails.
+// lockHostAt is the shared lock primitive with an explicit lock path, so
+// tests can lock a temp file. It opens the path, takes a non-blocking
+// exclusive flock, and returns an unlock func that closes the file (releasing
+// the lock). A second lock on the same path while the first is held fails.
 func lockHostAt(path string) (func(), error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, fmt.Errorf("host lock: create %s: %w", filepath.Dir(path), err)
@@ -481,7 +486,7 @@ func lockHostAt(path string) (func(), error) {
 	}
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		_ = f.Close()
-		return nil, fmt.Errorf("another execution host is already running on this machine (lock %s is held); stop it, or set PORTER_HOST_ID to run another host", path)
+		return nil, fmt.Errorf("host lock: another process already holds %s; stop it before starting another host", path)
 	}
 	// Write our pid so the lock file doubles as a record of who holds it.
 	_, _ = fmt.Fprintf(f, "%d\n", os.Getpid())

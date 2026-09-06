@@ -296,13 +296,17 @@ Terms used throughout this README, grouped by the part of the system they belong
   process (always available) or a connected execution client, e.g. the REPL on
   a laptop. An **execution host** (`make host`) is a persistent agent that can
   provision these per-chat: every host provision is a sandbox — a fresh
-  container directory under `~/.porter/sandboxes` that the host never reuses
-  and never runs against its own working tree. Given one or more repo paths it
-  fills the sandbox with a git worktree per repo (each its own branch) so
-  multiple chats can work on the same repos independently — and a chat can
-  work across several repos at once, or the same repo twice on different
-  branches to compare them; with no repos the sandbox is an empty, isolated
-  working directory. The host serves that sandbox as the chat's provider. A session can have several connected at once; one is **active** and
+  container directory under `~/.porter/<host id>/sandboxes` that the host
+  never reuses and never runs against its own working tree. Each host id owns
+  its own sandbox root (guarded by a per-id file lock), so two hosts with
+  different ids can run on one machine without ever touching each other's
+  sandboxes, and a second host claiming a running id is refused before it can
+  clean anything. Given one or more repo paths the host fills the sandbox with
+  a git worktree per repo (each its own branch) so multiple chats can work on
+  the same repos independently — and a chat can work across several repos at
+  once, or the same repo twice on different branches to compare them; with no
+  repos the sandbox is an empty, isolated working directory. The host serves
+  that sandbox as the chat's provider. A session can have several connected at once; one is **active** and
   receives the tool calls. The web picker switches the active provider; a
   deselected client stays connected, so it can be picked again without
   reconnecting.

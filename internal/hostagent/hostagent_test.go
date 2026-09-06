@@ -492,3 +492,68 @@ func TestHostLockAt(t *testing.T) {
 		t.Fatalf("lock after release: %v", err)
 	}
 }
+
+// TestHostLockScopesToHostID proves the host lock is per id: hosts with
+// different ids lock different files under their own state dirs and can all
+// run on one machine, while a second host claiming an id that is running is
+// refused before it can clean or serve.
+func TestHostLockScopesToHostID(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	unlockA, err := lockHost("alpha")
+	if err != nil {
+		t.Fatalf("first host lock: %v", err)
+	}
+	defer unlockA()
+	// A different id locks its own file: no contention.
+	unlockB, err := lockHost("beta")
+	if err != nil {
+		t.Fatalf("second host (different id) lock: %v", err)
+	}
+	defer unlockB()
+	// A duplicate of a running id fails, naming the id and lock file.
+	if _, err := lockHost("alpha"); err == nil {
+		t.Fatal("duplicate host id lock succeeded, want failure")
+	} else if !strings.Contains(err.Error(), "alpha") || !strings.Contains(err.Error(), "pid.lock") {
+		t.Errorf("duplicate lock error = %q, want it to name the id and lock file", err)
+	}
+	// Each id's lock lives in its own state dir under the (sanitized) id.
+	for _, id := range []string{"alpha", "beta"} {
+		if _, err := os.Stat(filepath.Join(home, ".porter", id, "pid.lock")); err != nil {
+			t.Errorf("lock file for %q missing: %v", id, err)
+		}
+	}
+}
+
+// TestHostDirScopesToHostID proves each host id owns a separate state dir and
+// sandbox root, so startup cleanup for one host can never reach another
+// host's sandboxes — and the id is sanitized so it cannot escape ~/.porter.
+func TestHostDirScopesToHostID(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	a := worktreeRoot("alpha")
+	b := worktreeRoot("beta")
+	if a == b {
+		t.Fatal("worktreeRoot for different host ids are the same directory")
+	}
+	if want := filepath.Join(home, ".porter", "alpha", "sandboxes"); a != want {
+		t.Errorf("worktreeRoot(alpha) = %q, want %q", a, want)
+	}
+	if want := filepath.Join(home, ".porter", "beta", "sandboxes"); b != want {
+		t.Errorf("worktreeRoot(beta) = %q, want %q", b, want)
+	}
+	// A hostile id is sanitized into a safe single directory component: the
+	// resulting path must stay under ~/.porter with exactly one id component,
+	// so ".." or a slash in PORTER_HOST_ID cannot escape the state dir.
+	evil := worktreeRoot("../sneaky")
+	rel, err := filepath.Rel(filepath.Join(home, ".porter"), evil)
+	if err != nil || strings.HasPrefix(rel, "..") {
+		t.Fatalf("worktreeRoot with hostile id = %q, escaped ~/.porter (rel %q, err %v)", evil, rel, err)
+	}
+	parts := strings.Split(rel, string(os.PathSeparator))
+	if len(parts) != 2 || parts[1] != "sandboxes" || parts[0] == "" || strings.Contains(parts[0], "..") {
+		t.Errorf("worktreeRoot with hostile id = %q, unexpected layout under ~/.porter: %q", evil, rel)
+	}
+}

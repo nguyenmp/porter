@@ -13,14 +13,29 @@ import (
 	"porter/internal/api"
 )
 
-// worktreeRoot returns the directory sandboxes live in. It is deliberately
-// not configurable: ~/.porter/sandboxes, next to the other porter state
-// (~/.porter for the MCP config).
-func worktreeRoot() string {
+// hostDir returns the per-host state directory for a host id:
+// ~/.porter/<hostID>. Each host id owns its state — the pid lock and the
+// sandbox root below — so two hosts with different ids on one machine never
+// touch each other's sandboxes, while duplicates of one id contend on the
+// same lock (a second agent is stopped before it can clean or serve). The id
+// is sanitized so it is always a safe, single directory name: a slash or ".."
+// in PORTER_HOST_ID cannot escape ~/.porter. Machine-level state
+// (porter.mcp.json, clis.json) stays at ~/.porter itself, shared by every
+// host on the machine.
+func hostDir(hostID string) string {
+	name := sanitizeDirName(hostID)
 	if home, err := os.UserHomeDir(); err == nil && home != "" {
-		return filepath.Join(home, ".porter", "sandboxes")
+		return filepath.Join(home, ".porter", name)
 	}
-	return filepath.Join(os.TempDir(), "porter-sandboxes")
+	return filepath.Join(os.TempDir(), "porter-"+name)
+}
+
+// worktreeRoot returns the directory this host's sandboxes live in:
+// ~/.porter/<hostID>/sandboxes. Scoping the root to the host id means startup
+// cleanup only ever removes this host's own stale sandboxes — it can never
+// delete another host's live ones. Deliberately not configurable.
+func worktreeRoot(hostID string) string {
+	return filepath.Join(hostDir(hostID), "sandboxes")
 }
 
 // discoverRepos finds the git repositories under home (defaulting to the
@@ -310,10 +325,11 @@ func pruneRepoWorktrees(repo string) {
 	_ = exec.Command("git", "-C", repo, "worktree", "prune").Run()
 }
 
-// sanitizeDirName makes a repo basename safe to use as a sandbox directory
-// name: strips leading dots (a hidden directory is invisible to the file
-// listing and easy to miss), replaces characters git or shells dislike, and
-// caps the length so a pathological basename cannot create a giant path.
+// sanitizeDirName makes a name safe to use as a single directory component
+// (a repo basename inside a sandbox, or a host id's state directory): strips
+// leading dots (a hidden directory is invisible to the file listing and easy
+// to miss), replaces characters git or shells dislike, and caps the length so
+// a pathological name cannot create a giant path.
 func sanitizeDirName(name string) string {
 	name = strings.TrimSpace(name)
 	name = strings.TrimLeft(name, ".")
