@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"porter/internal/llm"
+	"porter/internal/spool"
 )
 
 // buildContent returns a deterministic byte payload: headBytes 'h', middle m
@@ -40,8 +41,9 @@ func TestTruncateFormat(t *testing.T) {
 	meta := Meta(content)
 	got := Truncate(content, "call_1", meta)
 
-	// The header states sizes (comma-formatted) and how to load the rest.
-	expectedHeader := fmt.Sprintf("[tool output: %s of %s bytes (head); last %s shown below.  To load more: recall_tool_output(call_id=\"call_1\", offset=%d, max_bytes=%d).]",
+	// The header states sizes (comma-formatted), how to load more via
+	// recall_tool_output, and the spool_output alternative for shell work.
+	expectedHeader := fmt.Sprintf("[tool output: %s of %s bytes (head); last %s shown below.  To load more: recall_tool_output(call_id=\"call_1\", offset=%d, max_bytes=%d).  To save the full output to a file for shell instead: spool_output(call_id=\"call_1\").]",
 		comma(HeadBytes), comma(len(content)), bytesLabel(TailBytes), HeadBytes, len(content)-HeadBytes)
 	if !strings.Contains(got, expectedHeader) {
 		t.Errorf("truncation header missing/wrong:\n%s", got)
@@ -346,5 +348,68 @@ func TestProjectModelViewTiming(t *testing.T) {
 	again := ProjectModelView(history)
 	if again[0].Content != out[0].Content {
 		t.Errorf("projection not deterministic across passes")
+	}
+}
+
+// TestProjectModelViewSpoolHints verifies the spool_output nudge: a fully
+// shown tool result at or above MinHintBytes gets the footer hint when the
+// producing tool's output is data (shell), and not when the output is prose
+// or already on disk (load_skill, the file tools), is a recall window, or is
+// below the threshold. Truncated results carry the hint in their header
+// instead and get no footer.
+func TestProjectModelViewSpoolHints(t *testing.T) {
+	data := strings.Repeat("x", 2000) // fully shown (under budget), >= 1KB
+	dataCall := llm.ToolCall{ID: "call_data", Type: "function", Function: llm.ToolFunction{Name: "shell", Arguments: "{}"}}
+	skillCall := llm.ToolCall{ID: "call_skill", Type: "function", Function: llm.ToolFunction{Name: "load_skill", Arguments: "{}"}}
+	readCall := llm.ToolCall{ID: "call_read", Type: "function", Function: llm.ToolFunction{Name: "read_with_line_numbers", Arguments: "{}"}}
+	smallCall := llm.ToolCall{ID: "call_small", Type: "function", Function: llm.ToolFunction{Name: "shell", Arguments: "{}"}}
+	recallCall := llm.ToolCall{ID: "call_recall", Type: "function", Function: llm.ToolFunction{Name: "recall_tool_output", Arguments: "{}"}}
+	truncatedCall := llm.ToolCall{ID: "call_trunc", Type: "function", Function: llm.ToolFunction{Name: "shell", Arguments: "{}"}}
+
+	dataMsg := llm.ToolResult("call_data", data)
+	dataMsg.ToolOutput = Meta(data)
+	skillMsg := llm.ToolResult("call_skill", data)
+	skillMsg.ToolOutput = Meta(data)
+	readMsg := llm.ToolResult("call_read", data)
+	readMsg.ToolOutput = Meta(data)
+	smallMsg := llm.ToolResult("call_small", "tiny")
+	smallMsg.ToolOutput = Meta("tiny")
+	recallMsg := llm.ToolResult("call_recall", "window")
+	recallMsg.ToolOutput = &llm.ToolOutputMeta{Recall: true, SourceCallID: "call_data", Offset: 0, MaxBytes: 6, TotalBytes: len(data), ShownBytes: 6}
+	truncated := buildContent(1000) // over budget -> truncated
+	truncatedMsg := llm.ToolResult("call_trunc", truncated)
+	truncatedMsg.ToolOutput = Meta(truncated)
+
+	history := []llm.ChatMessage{
+		llm.AssistantMessage("", "", []llm.ToolCall{dataCall, skillCall, readCall, smallCall, recallCall, truncatedCall}),
+		dataMsg, skillMsg, readMsg, smallMsg, recallMsg, truncatedMsg,
+	}
+	out := ProjectModelView(history)
+
+	// shell output >= 1KB: nudge appended after the full content.
+	if !strings.HasSuffix(out[1].Content, spool.FooterHint("call_data")) {
+		t.Errorf("shell output >= 1KB missing spool hint:\n%.200s", out[1].Content)
+	}
+	// load_skill and read_with_line_numbers outputs: no hint (prose / on disk).
+	if out[2].Content != data {
+		t.Errorf("load_skill output got a spool hint: %.120s", out[2].Content)
+	}
+	if out[3].Content != data {
+		t.Errorf("read_with_line_numbers output got a spool hint: %.120s", out[3].Content)
+	}
+	// Under 1KB: no hint.
+	if out[4].Content != "tiny" {
+		t.Errorf("small output changed: %q", out[4].Content)
+	}
+	// A recall window is never nudged.
+	if out[5].Content != "window" {
+		t.Errorf("recall window changed: %q", out[5].Content)
+	}
+	// A truncated result gets the header hint, not the footer.
+	if strings.HasSuffix(out[6].Content, spool.FooterHint("call_trunc")) {
+		t.Errorf("truncated output got the footer hint as well as the header")
+	}
+	if !strings.Contains(out[6].Content, "spool_output(call_id=\"call_trunc\")") {
+		t.Errorf("truncated header missing the spool_output clause:\n%.200s", out[6].Content)
 	}
 }

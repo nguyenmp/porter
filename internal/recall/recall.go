@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"porter/internal/llm"
+	"porter/internal/spool"
 )
 
 // ReadOutputTool is the model-facing name of the recall tool.
@@ -78,6 +79,18 @@ func Meta(content string) *llm.ToolOutputMeta {
 // deterministic (derived from committed clocks), so it never busts the
 // provider's prefix cache.
 func ProjectModelView(msgs []llm.ChatMessage) []llm.ChatMessage {
+	// producerByCall maps each tool_call id to the tool that produced it
+	// (found on the assistant message that advertised the call), so the
+	// projection can keep spool_output hints off tools whose output is prose
+	// or already lives on disk (see spool.ShouldHint).
+	producers := make(map[string]string, len(msgs))
+	for i := range msgs {
+		for _, tc := range msgs[i].ToolCalls {
+			if _, ok := producers[tc.ID]; !ok {
+				producers[tc.ID] = tc.Function.Name
+			}
+		}
+	}
 	out := make([]llm.ChatMessage, len(msgs))
 	for i, m := range msgs {
 		if m.Role == "tool" {
@@ -92,6 +105,14 @@ func ProjectModelView(msgs []llm.ChatMessage) []llm.ChatMessage {
 					m.ToolOutput = Meta(m.Content)
 				}
 				m.Content = Truncate(m.Content, m.ToolCallID, m.ToolOutput)
+				// A fully-shown output big enough to be data earns a one-line
+				// spool_output nudge (a truncated output already carries it in
+				// the header, above the head/tail). The hint only fires for
+				// tools whose output is not prose or an existing file.
+				if !m.ToolOutput.Truncated && m.ToolOutput.TotalBytes >= spool.MinHintBytes &&
+					spool.ShouldHint(producers[m.ToolCallID]) {
+					m.Content += spool.FooterHint(m.ToolCallID)
+				}
 			}
 		}
 		// Timing annotation comes last so it always sits in front of any
@@ -199,8 +220,8 @@ func Truncate(content, callID string, meta *llm.ToolOutputMeta) string {
 	tail := content[meta.TotalBytes-TailBytes:]
 	omitted := meta.TotalBytes - HeadBytes - TailBytes
 	var b strings.Builder
-	fmt.Fprintf(&b, "[tool output: %s of %s bytes (head); last %s shown below.  To load more: "+ReadOutputTool+"(call_id=%q, offset=%d, max_bytes=%d).]\n",
-		comma(HeadBytes), comma(meta.TotalBytes), bytesLabel(TailBytes), callID, HeadBytes, meta.TotalBytes-HeadBytes)
+	fmt.Fprintf(&b, "[tool output: %s of %s bytes (head); last %s shown below.  To load more: "+ReadOutputTool+"(call_id=%q, offset=%d, max_bytes=%d).  To save the full output to a file for shell instead: "+spool.OutputTool+"(call_id=%q).]\n",
+		comma(HeadBytes), comma(meta.TotalBytes), bytesLabel(TailBytes), callID, HeadBytes, meta.TotalBytes-HeadBytes, callID)
 	b.WriteString(head)
 	fmt.Fprintf(&b, "\n[... %s omitted ...]\n", bytesLabel(omitted))
 	b.WriteString(tail)

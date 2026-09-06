@@ -24,6 +24,10 @@ import (
 	"porter/internal/remoteedit"
 )
 
+// LoadSkillTool is the provider-side name of the load_skill tool. Spooling
+// (internal/spool) names it when deciding which outputs deserve a spool hint.
+const LoadSkillTool = "load_skill"
+
 // shellDef is the model-facing definition of the shell tool.
 func shellDef() llm.Tool {
 	return llm.Tool{
@@ -193,8 +197,10 @@ func (d *Dispatcher) RunDir(ctx context.Context, name string, args []byte, dir s
 		return runLineReplaceDir(args, dir)
 	case StringReplace:
 		return runStringReplaceDir(args, dir)
-	case "load_skill":
+	case LoadSkillTool:
 		return d.runLoadSkill(args)
+	case SpoolWriteTool:
+		return runSpoolWriteDir(args, dir)
 	default:
 		return nil, fmt.Errorf("unknown tool: %q", name)
 	}

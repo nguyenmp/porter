@@ -18,6 +18,7 @@ import (
 	"porter/internal/humanize"
 	"porter/internal/llm"
 	"porter/internal/recall"
+	"porter/internal/spool"
 	"porter/internal/tools"
 )
 
@@ -267,9 +268,11 @@ func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage,
 			prefix = append(prefix, llm.SystemMessage(env))
 		}
 		msgs = append(prefix, msgs...)
-		// recall_tool_output is served by the agent itself (from History), so it is
-		// declared alongside the provider's tools on every request.
-		defs := append([]llm.Tool{recall.Def()}, js.Defs()...)
+		// recall_tool_output and spool_output are served by the agent itself
+		// (recall from History; spool from History plus a write on the active
+		// provider), so they are declared alongside the provider's tools on
+		// every request.
+		defs := append([]llm.Tool{recall.Def(), spool.Def()}, js.Defs()...)
 		// Wall-clock bounds of this model request: started just before the
 		// stream opens, finished once it closes. They are stamped on the
 		// assistant message(s) this request commits so the UI can show when
@@ -455,6 +458,116 @@ func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage,
 					if err := onMessage(placeholderMsg); err != nil {
 						return res, err
 					}
+				}
+				continue
+			}
+			// spool_output is served by the agent like recall_tool_output — it
+			// finds the named tool result in the turn's history — but the write
+			// itself runs on the active execution provider through a private
+			// provider tool, so the file lands on the same filesystem shell and
+			// the file tools edit (whatever provider is active, even when it is
+			// not the one that produced the output). The bytes are written
+			// verbatim: a raw mirror of the committed result, so the file never
+			// drifts from history.
+			if c.Name == spool.OutputTool {
+				callID, path, perr := spool.ParseArgs(c.Arguments)
+				if perr != nil {
+					// A malformed spool_output call is a tool that failed to
+					// start: emit the terminal envelope and commit the error,
+					// then keep the turn going (same as recall_tool_output).
+					result := "error: " + perr.Error()
+					if emit != nil {
+						emit(api.Envelope{Kind: api.KindToolResult, ToolCallID: c.ID, Name: c.Name, Arguments: c.Arguments, Result: result})
+					}
+					if err := commit(llm.ToolResult(c.ID, result)); err != nil {
+						return res, err
+					}
+					continue
+				}
+				content, serr := spool.Lookup(res.History, callID)
+				if serr != nil {
+					result := "error: " + serr.Error()
+					if emit != nil {
+						emit(api.Envelope{Kind: api.KindToolResult, ToolCallID: c.ID, Name: c.Name, Arguments: c.Arguments, Result: result})
+					}
+					if err := commit(llm.ToolResult(c.ID, result)); err != nil {
+						return res, err
+					}
+					continue
+				}
+				// Write through the active provider. The streamed confirmation
+				// becomes the spool_output result the model sees; it names the
+				// resolved absolute path so the model can shell or read it.
+				startedAt := time.Now().UnixMilli()
+				wstream, werr := js.Run(callCtx, tools.SpoolWriteTool, spool.WritePayload(path, content))
+				finishedAt := time.Now().UnixMilli()
+				if werr != nil {
+					// The write never started (e.g. no execution client is
+					// connected); report it like any tool that failed to start.
+					result := "error: " + werr.Error()
+					meta := recall.Meta(result)
+					if emit != nil {
+						emit(api.Envelope{Kind: api.KindToolResult, ToolCallID: c.ID, Name: c.Name, Arguments: c.Arguments, Result: result, ToolOutput: meta})
+					}
+					m := llm.ToolResult(c.ID, result)
+					m.ToolOutput = meta
+					if err := commit(m); err != nil {
+						return res, err
+					}
+					if callCtx.Err() != nil {
+						return res, ErrToolCancelled
+					}
+					continue
+				}
+				var confirm strings.Builder
+				buf := make([]byte, 32*1024)
+				for {
+					n, rerr := wstream.Read(buf)
+					if n > 0 {
+						confirm.Write(buf[:n])
+					}
+					if rerr != nil {
+						break
+					}
+				}
+				_ = wstream.Close()
+				final := confirm.String()
+				if callCtx.Err() != nil {
+					// Cancelled while the write was in flight: commit the
+					// partial (marked cancelled) and end like any cancelled
+					// tool.
+					if strings.TrimSpace(final) == "" {
+						final = "(cancelled)"
+					}
+					if emit != nil {
+						emit(api.Envelope{Kind: api.KindToolCancelled, ToolCallID: c.ID, Name: c.Name, Arguments: c.Arguments, StartedAt: startedAt, FinishedAt: finishedAt, Result: final, ToolOutput: recall.Meta(final)})
+					}
+					m := llm.ToolResult(c.ID, final)
+					m.StartedAt = startedAt
+					m.FinishedAt = finishedAt
+					m.Cancelled = true
+					m.ToolOutput = recall.Meta(final)
+					if err := commit(m); err != nil {
+						return res, err
+					}
+					if ctx.Err() != nil {
+						if qerr := h.reportQuery(Query{Idx: i + 1, Stopped: true}); qerr != nil {
+							return res, qerr
+						}
+						return res, ErrTurnStopped
+					}
+					return res, ErrToolCancelled
+				}
+				meta := recall.Meta(final)
+				if emit != nil {
+					emit(api.Envelope{Kind: api.KindToolResult, ToolCallID: c.ID, Name: c.Name, Arguments: c.Arguments, StartedAt: startedAt, FinishedAt: finishedAt, Result: final, ToolOutput: meta})
+				}
+				m := llm.ToolResult(c.ID, final)
+				m.StartedAt = startedAt
+				m.FinishedAt = finishedAt
+				m.ToolOutput = meta
+				if err := commit(m); err != nil {
+					return res, err
 				}
 				continue
 			}
