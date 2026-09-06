@@ -12,7 +12,7 @@ import (
 
 // provisionTimeout bounds how long creating a session waits for a host to
 // provision its execution provider. A connected host responds in well under a
-// second for a working-directory sandbox, and git worktree creation on a
+// second for an empty sandbox, and git worktree creation on a
 // large repo can take tens of seconds; the bound covers both while still
 // surfacing a dead host promptly (a timeout is non-fatal: the session is
 // created with a warning and the provider attaches whenever it arrives). It
@@ -53,22 +53,20 @@ type host struct {
 // done closes when the provider registers; err is set when provisioning
 // failed. The map lives on the Store (keyed by provider id) because both the
 // host channel (Store-owned) and the session's RegisterExec (server-called)
-// resolve it.
+// resolve it. Every provision is a sandbox on the host (a container directory,
+// with worktrees when repos were requested), so every registered provision is
+// recorded in st.sandboxes and released when the session ends.
 type pendingProvision struct {
 	providerID string
 	sessionID  string
 	hostID     string
 	done       chan struct{}
 	err        error
-	// sandbox reports whether the provision requested a repo sandbox (a git
-	// worktree on the host), which is recorded in st.sandboxes when the
-	// provider registers so the server can release it when the session ends.
-	sandbox bool
 }
 
-// sandbox is one session's provisioned worktree on a host, recorded once the
-// provider registers so a later ReleaseSession can tell that host to tear the
-// worktree down.
+// sandbox is one session's provisioned sandbox on a host, recorded once the
+// provider registers so a later ReleaseSession can tell that host to tear it
+// down.
 type sandbox struct {
 	hostID     string
 	providerID string
@@ -234,7 +232,7 @@ func (st *Store) Provision(ctx context.Context, sessionID, hostID string, req ap
 	req.Kind = "provision"
 	req.ProviderID = fmt.Sprintf("%s-provider-%d", hostID, st.hostSeq)
 	req.SessionID = sessionID
-	p := &pendingProvision{providerID: req.ProviderID, sessionID: sessionID, hostID: hostID, done: make(chan struct{}), sandbox: len(req.Repos) > 0}
+	p := &pendingProvision{providerID: req.ProviderID, sessionID: sessionID, hostID: hostID, done: make(chan struct{})}
 	st.pending[req.ProviderID] = p
 	ch := h.ch
 	st.mu.Unlock()
@@ -273,30 +271,27 @@ func (st *Store) dropProvision(providerID string) {
 // ProvisionRegistered resolves a pending provision whose provider just
 // registered on its session (the host opened the exec connection). It is
 // called by the server after RegisterExec, so the session-create wait returns
-// as soon as the provider is live and active.
+// as soon as the provider is live and active. Every provision is sandboxed,
+// so the registration is always recorded so archiving the session can release
+// the sandbox.
 func (st *Store) ProvisionRegistered(sessionID, providerID string) {
 	st.mu.Lock()
 	p, ok := st.pending[providerID]
 	if ok && p.sessionID == sessionID {
 		delete(st.pending, providerID)
 		close(p.done)
-		// A sandboxed provision is recorded so archiving the session can
-		// release the worktree. Plain-dir provisions are not: their serve
-		// loop lives for the host process and nothing needs releasing.
-		if p.sandbox {
-			st.sandboxes[sessionID] = &sandbox{hostID: p.hostID, providerID: providerID}
-		}
+		st.sandboxes[sessionID] = &sandbox{hostID: p.hostID, providerID: providerID}
 	}
 	st.mu.Unlock()
 }
 
 // ReleaseSession tells the execution host that provisioned a session's
-// worktree sandbox to tear it down (the server sends this when the session is
+// sandbox to tear it down (the server sends this when the session is
 // archived). It is best-effort and non-blocking: the session is already gone
 // from the user's flow, so a missed release (host disconnected, channel full)
 // only leaks the sandbox until the host restarts (startup cleanup) — never
-// blocks or fails the archive. Idempotent: a session with no sandbox (plain
-// dir, or already released) is a no-op.
+// blocks or fails the archive. Idempotent: a session with no recorded sandbox
+// (already released) is a no-op.
 func (st *Store) ReleaseSession(sessionID string) {
 	st.mu.Lock()
 	sb, ok := st.sandboxes[sessionID]

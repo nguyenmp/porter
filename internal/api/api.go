@@ -90,7 +90,7 @@ const (
 	// default working directory, files, skills): POST.
 	HostContextPath = "/api/hosts/{host_id}/context"
 	// HostProviderErrorPath reports that a host failed to provision a provider
-	// (e.g. the requested working directory does not exist): POST.
+	// (e.g. a requested repo could not be checked out): POST.
 	HostProviderErrorPath = "/api/hosts/{host_id}/providers/{provider_id}/error"
 )
 
@@ -113,10 +113,11 @@ type RepoRef struct {
 // itself as that session's execution provider — the roadmap's Execution Host:
 // provisioning creates an environment and returns an Execution Provider. Kind
 // "release" asks the host to tear down a sandbox it created earlier (sent
-// when the session that owns it is archived). CWD names a working directory
-// for the environment ("" = the host's default). Repos names the local git
-// repositories to sandbox the session in (a git worktree each); with no
-// Repos, the environment is just the working directory.
+// when the session that owns it is archived). Every provision is sandboxed:
+// the host creates a fresh container directory under its sandbox root and
+// serves it as the session's working directory. Repos names the local git
+// repositories to check out into the sandbox (a git worktree each); with no
+// Repos the sandbox is empty.
 type HostRequest struct {
 	Kind string `json:"kind"` // "provision" | "release"
 	// ProviderID is the id the host's provisioned provider registers under on
@@ -124,7 +125,6 @@ type HostRequest struct {
 	ProviderID string `json:"provider_id,omitempty"`
 	// SessionID is the session the provider will serve.
 	SessionID string    `json:"session_id,omitempty"`
-	CWD       string    `json:"cwd,omitempty"`
 	Repos     []RepoRef `json:"repos,omitempty"`
 }
 
@@ -154,11 +154,11 @@ type SessionInfo struct {
 
 // CreateRequest is the optional body of POST /api/sessions. Host names an
 // execution host to provision the new session's execution provider on ("" or
-// "local" uses the server process); CWD and Repos are passed to the host so
-// it can create the right environment (Repos = one git worktree per repo).
+// "local" uses the server process); Repos is passed to the host so it can
+// check out those repos into the session's sandbox (one git worktree per
+// repo). Hosts always sandbox: a session with no Repos gets an empty sandbox.
 type CreateRequest struct {
 	Host  string    `json:"host,omitempty"`
-	CWD   string    `json:"cwd,omitempty"`
 	Repos []RepoRef `json:"repos,omitempty"`
 }
 

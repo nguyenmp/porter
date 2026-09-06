@@ -553,6 +553,33 @@ func TestCleanupStaleWorktreesContainerLayout(t *testing.T) {
 	}
 }
 
+// TestCleanupStaleEmptySandbox proves startup cleanup removes a sandbox
+// container that holds no worktrees (a host that died while serving a session
+// with no repos): the container is still the host's, so it must go.
+func TestCleanupStaleEmptySandbox(t *testing.T) {
+	root := t.TempDir()
+	sandbox := filepath.Join(root, "mac-provider-19")
+	if err := os.MkdirAll(sandbox, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// A stray file in the root is not ours: cleanup leaves it alone, exactly
+	// like it leaves non-directories today.
+	stray := filepath.Join(root, "not-a-sandbox.txt")
+	if err := os.WriteFile(stray, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cleanupStaleWorktrees(root)
+
+	if _, err := os.Stat(sandbox); !os.IsNotExist(err) {
+		t.Errorf("stale empty sandbox container not cleaned up")
+	}
+	if _, err := os.Stat(stray); err != nil {
+		t.Errorf("cleanup removed a non-directory entry: %v", err)
+	}
+}
+
 func TestCleanupStaleWorktreesDuplicateRepo(t *testing.T) {
 	repo := initGitRepoWithBranch(t)
 	root := t.TempDir()

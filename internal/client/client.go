@@ -418,8 +418,8 @@ func (c *Client) PostHostContext(ctx context.Context, hostID string, execCtx api
 	return c.doJSON(ctx, http.MethodPost, c.base+u, body, nil)
 }
 
-// PostHostProviderError reports that provisioning a provider failed (e.g. the
-// requested working directory does not exist), so the waiting session-create
+// PostHostProviderError reports that provisioning a provider failed (e.g. a
+// requested repo could not be checked out), so the waiting session-create
 // request gets the error instead of timing out.
 func (c *Client) PostHostProviderError(ctx context.Context, hostID, providerID, msg string) error {
 	body, err := json.Marshal(api.ProviderErrorRequest{Error: msg})

@@ -74,7 +74,7 @@ func (s *Server) handleHostContext(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleHostProviderError reports that a host failed to provision a provider
-// (e.g. the requested working directory does not exist). The waiting
+// (e.g. a requested repo could not be checked out). The waiting
 // session-create request gets the error; the session itself keeps its local
 // fallback.
 func (s *Server) handleHostProviderError(w http.ResponseWriter, r *http.Request) {

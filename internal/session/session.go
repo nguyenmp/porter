@@ -104,9 +104,9 @@ type Store struct {
 	pending        map[string]*pendingProvision
 	hostSeq        int
 	connSeq        int
-	// sandboxes tracks, per session, the worktree sandbox a host provisioned
-	// for it (recorded when the provider registers), so archiving the session
-	// can release the sandbox.
+	// sandboxes tracks, per session, the sandbox a host provisioned for it
+	// (recorded when the provider registers), so archiving the session can
+	// release the sandbox.
 	sandboxes map[string]*sandbox
 }
 

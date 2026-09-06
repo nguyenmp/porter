@@ -295,11 +295,14 @@ Terms used throughout this README, grouped by the part of the system they belong
 - **Execution provider** — where a session's commands run. The local server
   process (always available) or a connected execution client, e.g. the REPL on
   a laptop. An **execution host** (`make host`) is a persistent agent that can
-  provision these per-chat: given one or more repo paths it creates a sandbox
-  container holding a git worktree per repo (each its own branch) so multiple
-  chats can work on the same repos independently — and a chat can work across
-  several repos at once, or the same repo twice on different branches to
-  compare them — and serves that sandbox as the chat's provider. A session can have several connected at once; one is **active** and
+  provision these per-chat: every host provision is a sandbox — a fresh
+  container directory under `~/.porter/sandboxes` that the host never reuses
+  and never runs against its own working tree. Given one or more repo paths it
+  fills the sandbox with a git worktree per repo (each its own branch) so
+  multiple chats can work on the same repos independently — and a chat can
+  work across several repos at once, or the same repo twice on different
+  branches to compare them; with no repos the sandbox is an empty, isolated
+  working directory. The host serves that sandbox as the chat's provider. A session can have several connected at once; one is **active** and
   receives the tool calls. The web picker switches the active provider; a
   deselected client stays connected, so it can be picked again without
   reconnecting.
@@ -325,10 +328,11 @@ Build order:
         local server or any connected client; switching takes effect on the
         next message)
   - [x] Execution Host (`make host`): a persistent agent on a machine that
-        provisions a per-chat sandbox — a working directory, or git worktrees
-        on one or more shared repos (each chat gets its own branch per repo) —
-        and serves it as that chat's execution provider; archiving a sandboxed
-        chat releases its worktrees
+        provisions a per-chat sandbox — always isolated (never the host's own
+        working directory), holding git worktrees on one or more shared repos
+        (each chat gets its own branch per repo) or empty when no repo is
+        named — and serves it as that chat's execution provider; archiving a
+        sandboxed chat releases its sandbox
 - [ ] Metrics & performance (tokens/sec, tool timing, worktree cache)
 - [x] Tool output trimming (`tool_output` head+tail model view, `read_output` recall) — full output kept in History/DB, only the model view trimmed
 - [ ] Token budget before send

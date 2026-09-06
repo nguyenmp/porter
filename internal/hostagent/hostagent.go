@@ -1,12 +1,12 @@
 // Package hostagent is the persistent execution host: a long-running process
 // on a machine (e.g. a laptop) that connects to a porter server once and
 // provisions execution contexts for any session on demand. Each provisioned
-// context is an isolated environment — a working directory, or a sandbox
-// container holding one git worktree per requested repo — that the host
-// serves as that session's execution provider, so many chats can run on the
-// same machine and repos without sharing state. It is the roadmap's Execution
-// Host: a host creates an execution environment and returns an Execution
-// Provider.
+// context is an isolated sandbox — a container directory under the sandbox
+// root, holding one git worktree per requested repo, or empty when no repo is
+// named — that the host serves as that session's execution provider, so many
+// chats can run on the same machine and repos without sharing state. It is
+// the roadmap's Execution Host: a host creates an execution environment and
+// returns an Execution Provider.
 package hostagent
 
 import (
@@ -35,11 +35,12 @@ import (
 // cancelled. The agent identifies itself by hostname (override with
 // PORTER_HOST_ID), reports its working directory (the process cwd) and the
 // git repositories it discovered under the user's home (for the web UI's
-// sandbox picker), and reconnects to the server forever, provisioning a
-// provider for every session the server asks for. A provision that names a
-// repo is served from a fresh git worktree sandbox under ~/.porter/sandboxes
-// (not configurable); stale sandboxes left by a previous run are cleaned up
-// on startup.
+// "new chat on" picker), and reconnects to the server forever, provisioning a
+// provider for every session the server asks for. Every provision is a fresh
+// sandbox under ~/.porter/sandboxes/<providerID> (not configurable): with
+// repos it holds one git worktree per requested repo, with none it is an
+// empty directory. The host never executes in its own working directory.
+// Stale sandboxes left by a previous run are cleaned up on startup.
 func Run(ctx context.Context, cfg config.ClientConfig) error {
 	c := client.New(cfg.ServerURL, client.BasicAuth{Username: cfg.Username, Password: cfg.Password})
 
@@ -66,9 +67,10 @@ func Run(ctx context.Context, cfg config.ClientConfig) error {
 		}
 		defer unlock()
 	}
-	// The host's default working directory is the directory the host process
-	// runs from (there is no PORTER_HOST_CWD); a chat can still request a
-	// different one when it's created.
+	// The host's working directory is reported to the server (and shown in the
+	// web picker) so the user can see where the host process runs, but it is
+	// never an execution target: every provision is a sandbox under the root
+	// below, so the host never runs tools against its own working directory.
 	cwd, err := os.Getwd()
 	if err != nil {
 		return fmt.Errorf("get host working directory: %w", err)
@@ -118,7 +120,7 @@ func Run(ctx context.Context, cfg config.ClientConfig) error {
 	log.Printf("execution host %s: %s @ %s (%d skills, sandboxes in %s, %d repos, %d mcp servers)",
 		hostID, env.System, env.CWD, len(env.Skills), root, len(env.Repos), len(env.MCPServers))
 
-	prov := &provisioner{c: c, hostID: hostID, cwd: cwd, worktrees: root, serves: map[string]*serveState{}, mcp: hub}
+	prov := &provisioner{c: c, hostID: hostID, worktrees: root, serves: map[string]*serveState{}, mcp: hub}
 	watcher := &sleepWatcher{}
 	go watchSleep(ctx, watcher)
 	for {
@@ -248,23 +250,22 @@ func watchSleep(ctx context.Context, w *sleepWatcher) {
 }
 
 // provisioner owns the host's per-session sandboxes and serves their tool
-// calls. serves tracks active worktree sandboxes by provider id so a release
-// request can stop them and remove the worktree; plain working-directory
-// provisions (no repo) are not tracked — their serve loop lives for the
-// process, matching the phase-1 host behavior.
+// calls. serves tracks active sandboxes by provider id so a release request
+// can stop one and remove its directory. Every provision is sandboxed and
+// tracked — there is no untracked plain working-directory mode.
 type provisioner struct {
 	c         *client.Client
 	hostID    string
-	cwd       string // default working directory for provisions without a CWD
-	worktrees string // root directory for worktree sandboxes
+	worktrees string // root directory for sandboxes (~/.porter/sandboxes)
 	mu        sync.Mutex
 	serves    map[string]*serveState
 	mcp       *mcp.Hub // the host's own MCP servers, served on this machine
 }
 
-// serveState is one live worktree sandbox: the context that bounds its serve
-// loop (cancelled on release), the container directory the worktrees live in
-// (removed on release), and each worktree's repo/path/branch to tear down.
+// serveState is one live sandbox: the context that bounds its serve loop
+// (cancelled on release), the container directory (removed on release), and
+// each worktree's repo/path/branch to tear down (empty for a sandbox with no
+// repos).
 type serveState struct {
 	cancel    context.CancelFunc
 	dir       string
@@ -272,25 +273,23 @@ type serveState struct {
 }
 
 // provision handles one request from the server. Kind "release" tears down a
-// worktree sandbox the host created earlier. Kind "provision" creates the
-// execution environment a session asked for and starts serving it as that
-// session's execution provider: a working directory (req.CWD or the host
-// default) when no repos are named, or a multi-repo sandbox when they are — a
-// container directory holding one git worktree per repo (each a fresh branch
-// porter/<providerID>, -2, -3... for later worktrees of the same repo, based
-// at the repo's requested branch or HEAD), so many chats can work on the same
-// repos without trampling each other and one chat can work across several at
-// once. It returns an error only for internal failures — a bad request is
-// reported to the server (PostHostProviderError) and the host connection
-// keeps serving.
+// sandbox the host created earlier. Kind "provision" creates the execution
+// environment a session asked for and starts serving it as that session's
+// execution provider. Every provision is a sandbox: a fresh container
+// directory under ~/.porter/sandboxes/<providerID> that becomes the session's
+// working directory. When the request names repos, the container holds one
+// git worktree per repo (each a fresh branch porter/<providerID>, -2, -3...
+// for later worktrees of the same repo, based at the repo's requested branch
+// or HEAD), so many chats can work on the same repos without trampling each
+// other and one chat can work across several at once. With no repos the
+// container is empty — an isolated scratch directory the model can write
+// into, never the host's own working tree. It returns an error only for
+// internal failures — a bad request is reported to the server
+// (PostHostProviderError) and the host connection keeps serving.
 func (p *provisioner) provision(req api.HostRequest) error {
 	if req.Kind == "release" {
 		p.release(req)
 		return nil
-	}
-	dir := req.CWD
-	if dir == "" {
-		dir = p.cwd
 	}
 	// A short timeout keeps one bad provision from stalling the host
 	// connection's read loop (PostExecContext is quick, but never trust the
@@ -298,18 +297,20 @@ func (p *provisioner) provision(req api.HostRequest) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	var serveCtx context.Context = context.Background()
+	// Every provision gets its own container directory under the sandbox root,
+	// so the host's own working directory is never an execution target.
+	sandboxDir := filepath.Join(p.worktrees, req.ProviderID)
 	var extraRoots []string
-	sandboxed := len(req.Repos) > 0
-	if sandboxed {
-		// A multi-repo sandbox is a container directory holding one git
-		// worktree per requested repo, so the session's working directory
-		// shows every repo as a sibling and the model can work across them.
-		// Resolving and branch/directory naming live in provisionWorktrees;
-		// on any failure the worktrees created so far are rolled back so a
-		// bad repo never leaves a half-open sandbox behind.
-		sandboxDir := filepath.Join(p.worktrees, req.ProviderID)
-		wts, err := provisionWorktrees(ctx, req.ProviderID, req.Repos, sandboxDir)
+	var wts []worktreeRef
+	if len(req.Repos) > 0 {
+		// A container holding one git worktree per requested repo, so the
+		// session's working directory shows every repo as a sibling and the
+		// model can work across them. Resolving and branch/directory naming
+		// live in provisionWorktrees; on any failure the worktrees created so
+		// far are rolled back so a bad repo never leaves a half-open sandbox
+		// behind.
+		var err error
+		wts, err = provisionWorktrees(ctx, req.ProviderID, req.Repos, sandboxDir)
 		if err != nil {
 			for _, w := range wts {
 				if rerr := removeWorktree(w.repo, w.path, w.branch); rerr != nil {
@@ -326,26 +327,31 @@ func (p *provisioner) provision(req api.HostRequest) error {
 			errCancel()
 			return nil
 		}
-		sctx, scancel := context.WithCancel(context.Background())
-		p.mu.Lock()
-		p.serves[req.ProviderID] = &serveState{cancel: scancel, dir: sandboxDir, worktrees: wts}
-		p.mu.Unlock()
-		dir = sandboxDir
-		serveCtx = sctx
 		for _, w := range wts {
 			extraRoots = append(extraRoots, w.path)
 		}
+	} else {
+		// No repos: an empty sandbox. Create the container so the session has
+		// an isolated, writable working directory.
+		if err := os.MkdirAll(sandboxDir, 0o755); err != nil {
+			_ = p.c.PostHostProviderError(ctx, p.hostID, req.ProviderID, err.Error())
+			return nil
+		}
 	}
+	// Track the sandbox before serving it so a release request (or an error
+	// below) can stop the serve loop and remove the directory.
+	sctx, scancel := context.WithCancel(context.Background())
+	p.mu.Lock()
+	p.serves[req.ProviderID] = &serveState{cancel: scancel, dir: sandboxDir, worktrees: wts}
+	p.mu.Unlock()
 
 	// DiscoverRoots lists files from the container and every worktree (each
 	// bounded by its own file budget) and finds skills across every worktree
-	// too, so a repo's skills load wherever it sits in the sandbox. With no
-	// extra roots it behaves exactly like Discover.
-	env, err := exec.DiscoverRoots(dir, extraRoots)
+	// too, so a repo's skills load wherever it sits in the sandbox. An empty
+	// sandbox lists no files.
+	env, err := exec.DiscoverRoots(sandboxDir, extraRoots)
 	if err != nil {
-		if sandboxed {
-			p.release(api.HostRequest{ProviderID: req.ProviderID})
-		}
+		p.release(api.HostRequest{ProviderID: req.ProviderID})
 		_ = p.c.PostHostProviderError(ctx, p.hostID, req.ProviderID, err.Error())
 		return nil
 	}
@@ -358,26 +364,23 @@ func (p *provisioner) provision(req api.HostRequest) error {
 	// active and resolves the server's provision wait. ServeExec retries on
 	// drops, so a brief network blip reconnects the provider without
 	// re-provisioning. Sandboxed providers serve under a cancellable context
-	// so a release request can stop them and remove the worktrees; plain-dir
-	// provisions serve for the process.
+	// so a release request can stop them and remove the directory.
 	if err := p.c.PostExecContext(ctx, req.SessionID, env); err != nil {
-		if sandboxed {
-			p.release(api.HostRequest{ProviderID: req.ProviderID})
-		}
+		p.release(api.HostRequest{ProviderID: req.ProviderID})
 		_ = p.c.PostHostProviderError(ctx, p.hostID, req.ProviderID, err.Error())
 		return nil
 	}
 	disp := tools.NewDispatcherWithSkills(env.Skills)
-	go p.serve(serveCtx, req.SessionID, req.ProviderID, disp, dir)
+	go p.serve(sctx, req.SessionID, req.ProviderID, disp, sandboxDir)
 	return nil
 }
 
-// release tears down a worktree sandbox the host created for a session: it
-// stops the sandbox's serve loop, removes every worktree (and its branch),
-// prunes each repo's worktree admin entries, and removes the container
-// directory. It is idempotent — an unknown provider id (a duplicate release,
-// or a non-sandboxed provision, whose serve loop lives for the process) is a
-// no-op — so a stale release from a reconnecting server is harmless.
+// release tears down a sandbox the host created for a session: it stops the
+// sandbox's serve loop, removes every worktree (and its branch), prunes each
+// repo's worktree admin entries, and removes the container directory. It is
+// idempotent — an unknown provider id (a duplicate release, or a release for a
+// provision that already failed and cleaned up) is a no-op — so a stale
+// release from a reconnecting server is harmless.
 func (p *provisioner) release(req api.HostRequest) {
 	p.mu.Lock()
 	st, ok := p.serves[req.ProviderID]
@@ -407,10 +410,10 @@ func (p *provisioner) release(req api.HostRequest) {
 }
 
 // serve holds a session's exec connection open, running every tool call in
-// the sandbox directory and streaming the output back. It lives for the
-// process unless ctx is cancelled (a release request for a worktree sandbox);
-// on a dropped connection it retries, so the provider re-registers on
-// reconnect (e.g. after a server restart) without re-provisioning.
+// the sandbox directory and streaming the output back. It lives until ctx is
+// cancelled (a release request for the sandbox); on a dropped connection it
+// retries, so the provider re-registers on reconnect (e.g. after a server
+// restart) without re-provisioning.
 func (p *provisioner) serve(ctx context.Context, sessionID, providerID string, disp *tools.Dispatcher, dir string) {
 	for {
 		_ = p.c.ServeExec(ctx, sessionID, func(ctx context.Context, name string, args []byte) (io.ReadCloser, error) {

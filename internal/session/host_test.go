@@ -63,7 +63,7 @@ func TestProvisionHappyPath(t *testing.T) {
 		st.ProvisionRegistered("session_1", req.ProviderID)
 	}()
 
-	if err := st.Provision(context.Background(), "session_1", "mac", api.HostRequest{CWD: "/tmp"}); err != nil {
+	if err := st.Provision(context.Background(), "session_1", "mac", api.HostRequest{}); err != nil {
 		t.Fatalf("Provision: %v", err)
 	}
 	req := <-got
@@ -73,8 +73,8 @@ func TestProvisionHappyPath(t *testing.T) {
 	if req.SessionID != "session_1" {
 		t.Errorf("request session = %q, want session_1", req.SessionID)
 	}
-	if req.CWD != "/tmp" {
-		t.Errorf("request cwd = %q, want /tmp", req.CWD)
+	if len(req.Repos) != 0 {
+		t.Errorf("request repos = %v, want none", req.Repos)
 	}
 	if !strings.HasPrefix(req.ProviderID, "mac-provider-") {
 		t.Errorf("provider id = %q, want mac-provider-N", req.ProviderID)
@@ -131,13 +131,14 @@ func TestReleaseSessionSendsRelease(t *testing.T) {
 	ch := make(chan api.HostRequest, 8)
 	st.RegisterHost(ch, "mac", "macbook", "host", "mac-inst")
 
-	// A sandboxed provision (repo named) is recorded when the provider
-	// registers, so archiving the session can release the worktree.
+	// Every provision is a sandbox on the host — even one with no repos — so
+	// it is recorded when the provider registers and archiving the session
+	// releases it.
 	go func() {
 		req := <-ch
 		st.ProvisionRegistered("session_1", req.ProviderID)
 	}()
-	if err := st.Provision(context.Background(), "session_1", "mac", api.HostRequest{Repos: []api.RepoRef{{Path: "/tmp/repo"}}}); err != nil {
+	if err := st.Provision(context.Background(), "session_1", "mac", api.HostRequest{}); err != nil {
 		t.Fatalf("Provision: %v", err)
 	}
 
@@ -153,29 +154,6 @@ func TestReleaseSessionSendsRelease(t *testing.T) {
 	select {
 	case r := <-ch:
 		t.Fatalf("unexpected request after second release: %+v", r)
-	case <-time.After(20 * time.Millisecond):
-	}
-}
-
-func TestReleaseSessionNoSandbox(t *testing.T) {
-	st := newTestStore(t)
-	ch := make(chan api.HostRequest, 8)
-	st.RegisterHost(ch, "mac", "macbook", "host", "mac-inst")
-
-	// A plain-dir provision (no repo) has no sandbox to release: archiving
-	// the session must not send anything to the host.
-	go func() {
-		req := <-ch
-		st.ProvisionRegistered("session_1", req.ProviderID)
-	}()
-	if err := st.Provision(context.Background(), "session_1", "mac", api.HostRequest{}); err != nil {
-		t.Fatalf("Provision: %v", err)
-	}
-
-	st.ReleaseSession("session_1")
-	select {
-	case r := <-ch:
-		t.Fatalf("unexpected release for non-sandboxed session: %+v", r)
 	case <-time.After(20 * time.Millisecond):
 	}
 }

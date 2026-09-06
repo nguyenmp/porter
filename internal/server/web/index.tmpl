@@ -19,12 +19,14 @@
 			<select id="new-chat-host" name="host" title="Run on" aria-label="Run on">
 				<option value="">local</option>
 			</select>
-			{{/* Sandbox fields (hidden until a host is chosen): each repo makes
-			     that host provision this chat in a git worktree on the repo —
-			     one worktree per repo, so sessions don't trample each other
-			     and a chat can work across several repos at once. Add the same
-			     repo twice with different base branches to compare branches
-			     side by side. The repo list is populated from the host's
+			{{/* Sandbox fields (hidden until a host is chosen). Host chats are
+			     always sandboxed — a fresh isolated directory on the host — and
+			     each repo row below adds a git worktree to that sandbox: one
+			     worktree per repo, so sessions don't trample each other and a
+			     chat can work across several repos at once. Add the same repo
+			     twice with different base branches to compare branches side by
+			     side. No rows means an empty sandbox, still isolated from the
+			     host's own files. The repo list is populated from the host's
 			     discovered repos; a repo's branch defaults to its current
 			     branch. Rows are added/removed client-side and post as
 			     repeated repo=/branch= fields, aligned by index. */}}
@@ -189,13 +191,14 @@
       if (hosts.length === 0) sel.hidden = true;
       // Selecting a host reveals the sandbox fields and populates the repo
       // suggestions with that host's discovered repos (the repos under the
-      // host's home directory). There is deliberately no default: the repo is
-      // chosen per chat, and the rows are cleared on host switch so a chat
-      // never silently runs against the wrong repo. A repo the scan missed
-      // can still be typed directly. Multiple repos are supported — each row
-      // posts a repo= and branch= field, aligned by index server-side, so a
-      // chat can sandbox several repos at once (or the same repo twice with
-      // different branches to compare them).
+      // host's home directory). A chat on a host is always sandboxed; the rows
+      // start empty on purpose, so a chat with no repos runs in an empty
+      // isolated sandbox rather than the host's own directory. The rows are
+      // cleared on host switch so a chat never silently runs against the wrong
+      // repo. A repo the scan missed can still be typed directly. Multiple
+      // repos are supported — each row posts a repo= and branch= field, aligned
+      // by index server-side, so a chat can sandbox several repos at once (or
+      // the same repo twice with different branches to compare them).
       const sandbox = document.getElementById('new-chat-sandbox');
       const repoRows = document.getElementById('repo-rows');
       const repoList = document.getElementById('repo-options');

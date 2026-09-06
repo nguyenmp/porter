@@ -404,7 +404,6 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 	warning := ""
 	if req.Host != "" && req.Host != "local" {
 		if err := s.store.Provision(r.Context(), ses.ID(), req.Host, api.HostRequest{
-			CWD:   req.CWD,
 			Repos: req.Repos,
 		}); err != nil {
 			warning = fmt.Sprintf("could not create execution context on %s: %v", req.Host, err)
@@ -432,12 +431,12 @@ func readCreateRequest(r *http.Request) (api.CreateRequest, error) {
 			return req, fmt.Errorf("invalid form: %w", err)
 		}
 		req.Host = r.PostForm.Get("host")
-		req.CWD = r.PostForm.Get("cwd")
 		// Repos arrive as repeated repo= fields (one per row in the new-chat
 		// form), each with an optional branch= field aligned by index — the
 		// form posts rows in order, so repo[i] pairs with branch[i]. Rows
 		// with an empty repo are skipped (their branch goes with them), so
-		// blank rows never shift the pairing.
+		// blank rows never shift the pairing. Every host provision is
+		// sandboxed; with no repos the sandbox is empty.
 		repos := r.PostForm["repo"]
 		branches := r.PostForm["branch"]
 		for i, repo := range repos {

@@ -13,9 +13,9 @@ import (
 	"porter/internal/api"
 )
 
-// worktreeRoot returns the directory worktree sandboxes live in. It is
-// deliberately not configurable: ~/.porter/sandboxes, next to the other
-// porter state (~/.porter for the MCP config).
+// worktreeRoot returns the directory sandboxes live in. It is deliberately
+// not configurable: ~/.porter/sandboxes, next to the other porter state
+// (~/.porter for the MCP config).
 func worktreeRoot() string {
 	if home, err := os.UserHomeDir(); err == nil && home != "" {
 		return filepath.Join(home, ".porter", "sandboxes")
@@ -225,16 +225,18 @@ func removeWorktree(repo, path, branch string) error {
 	return nil
 }
 
-// cleanupStaleWorktrees removes worktree sandboxes left behind by a previous
-// host run (the host died without releasing them). Each sandbox is a linked
-// worktree whose .git file records the repo it came from ("gitdir: <repo>/.git/
-// worktrees/<name>"), so cleanup can derive the repo to remove — no sidecar
-// needed. Two layouts are handled: a legacy flat sandbox where the entry
-// itself is the worktree, and a multi-repo container whose entry holds one
-// worktree per repo in subdirectories. The branch to delete is read from each
-// worktree's HEAD (the branch the sandbox was created on). The repos are
-// pruned of stale admin entries afterwards. Best effort: failures are logged,
-// never fatal.
+// cleanupStaleWorktrees removes sandboxes left behind by a previous host run
+// (the host died without releasing them). Every directory under the sandbox
+// root is a container the host created — sandboxes are never anything else —
+// so cleanup removes each one, properly tearing down any worktrees it holds
+// first. A worktree's .git file records the repo it came from ("gitdir:
+// <repo>/.git/worktrees/<name>"), so cleanup can derive the repo to remove —
+// no sidecar needed. Two layouts are handled: a legacy flat sandbox where the
+// entry itself is the worktree, and a container whose entry holds one worktree
+// per repo in subdirectories (or none at all, for a sandbox with no repos).
+// The branch to delete is read from each worktree's HEAD (the branch the
+// sandbox was created on). The repos are pruned of stale admin entries
+// afterwards. Best effort: failures are logged, never fatal.
 func cleanupStaleWorktrees(root string) {
 	entries, err := os.ReadDir(root)
 	if err != nil {
@@ -255,12 +257,14 @@ func cleanupStaleWorktrees(root string) {
 			prune[repo] = true
 			continue
 		}
-		// Multi-repo container: the entry holds one worktree per repo.
+		// Container: the entry holds one worktree per repo, or none at all
+		// (an empty sandbox). Any worktrees inside are removed properly so
+		// the repos' admin entries are pruned; then the container goes.
 		subs, err := os.ReadDir(path)
 		if err != nil {
+			_ = os.RemoveAll(path)
 			continue
 		}
-		removed := false
 		for _, sub := range subs {
 			if !sub.IsDir() {
 				continue
@@ -274,11 +278,8 @@ func cleanupStaleWorktrees(root string) {
 				log.Printf("execution host: cleanup stale worktree %s: %v", sp, err)
 			}
 			prune[repo] = true
-			removed = true
 		}
-		if removed {
-			_ = os.RemoveAll(path)
-		}
+		_ = os.RemoveAll(path)
 	}
 	for repo := range prune {
 		pruneRepoWorktrees(repo)

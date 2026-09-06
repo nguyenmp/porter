@@ -3582,10 +3582,10 @@ func TestWebRendersExecPicker(t *testing.T) {
 func TestReadCreateRequestReposForm(t *testing.T) {
 	// The new-chat form posts repeated repo= fields with branch= fields
 	// aligned by index; readCreateRequest must zip them into RepoRefs and
-	// skip blank rows without shifting the pairing.
+	// skip blank rows without shifting the pairing. The form has no cwd field:
+	// every host provision is sandboxed.
 	form := url.Values{}
 	form.Set("host", "macbook")
-	form.Set("cwd", "/tmp")
 	form.Add("repo", "porter")
 	form.Add("repo", "")
 	form.Add("repo", "data-kernel")
@@ -3600,8 +3600,8 @@ func TestReadCreateRequestReposForm(t *testing.T) {
 	if err != nil {
 		t.Fatalf("readCreateRequest: %v", err)
 	}
-	if req.Host != "macbook" || req.CWD != "/tmp" {
-		t.Errorf("host/cwd = %q/%q, want macbook//tmp", req.Host, req.CWD)
+	if req.Host != "macbook" {
+		t.Errorf("host = %q, want macbook", req.Host)
 	}
 	want := []api.RepoRef{{Path: "porter", Branch: "main"}, {Path: "data-kernel", Branch: "feature"}}
 	if len(req.Repos) != len(want) {

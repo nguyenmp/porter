@@ -217,7 +217,6 @@ func TestProvisionCreatesMultiRepoSandbox(t *testing.T) {
 	p := &provisioner{
 		c:         c,
 		hostID:    "mac",
-		cwd:       t.TempDir(),
 		worktrees: worktrees,
 		serves:    map[string]*serveState{},
 		mcp:       mcp.New(nil),
@@ -324,12 +323,10 @@ func TestProvisionRollsBackOnFailure(t *testing.T) {
 	p := &provisioner{
 		c:         c,
 		hostID:    "mac",
-		cwd:       t.TempDir(),
 		worktrees: worktrees,
 		serves:    map[string]*serveState{},
 		mcp:       mcp.New(nil),
 	}
-
 	err := p.provision(api.HostRequest{
 		Kind:       "provision",
 		ProviderID: "mac-provider-100",
@@ -348,6 +345,102 @@ func TestProvisionRollsBackOnFailure(t *testing.T) {
 	sandboxDir := filepath.Join(worktrees, "mac-provider-100")
 	if _, err := os.Stat(sandboxDir); !os.IsNotExist(err) {
 		t.Errorf("container %q left behind after failed provision", sandboxDir)
+	}
+}
+
+// TestProvisionCreatesEmptySandbox drives provision() with no repos: the host
+// must still create a sandbox — an empty container directory, never its own
+// working directory — register it as the session's exec context with no files
+// listed, and release must tear the container down.
+func TestProvisionCreatesEmptySandbox(t *testing.T) {
+	worktrees := t.TempDir()
+
+	var mu sync.Mutex
+	var execCtxs []api.ExecContext
+	var providerErrs []string
+	holdExec := make(chan struct{}) // never closed until the test ends
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/sessions/", func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "POST" && strings.HasSuffix(r.URL.Path, "/exec/context"):
+			var ctx api.ExecContext
+			_ = json.NewDecoder(r.Body).Decode(&ctx)
+			mu.Lock()
+			execCtxs = append(execCtxs, ctx)
+			mu.Unlock()
+			w.WriteHeader(http.StatusOK)
+		case r.Method == "GET" && strings.HasSuffix(r.URL.Path, "/exec"):
+			w.Header().Set("Content-Type", "application/x-ndjson")
+			w.WriteHeader(http.StatusOK)
+			w.(http.Flusher).Flush()
+			<-holdExec // hold the provider's exec connection open
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	})
+	mux.HandleFunc("/api/hosts/", func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		providerErrs = append(providerErrs, string(b))
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	})
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+	defer close(holdExec)
+
+	c := client.New(ts.URL)
+	p := &provisioner{
+		c:         c,
+		hostID:    "mac",
+		worktrees: worktrees,
+		serves:    map[string]*serveState{},
+		mcp:       mcp.New(nil),
+	}
+
+	if err := p.provision(api.HostRequest{
+		Kind:       "provision",
+		ProviderID: "mac-provider-101",
+		SessionID:  "session_2",
+	}); err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+
+	// The provider registered with no error and the empty container as its CWD
+	// — never the host's own working directory (which the test process runs
+	// from, e.g. the porter repo).
+	mu.Lock()
+	if len(providerErrs) != 0 {
+		t.Errorf("provider errors: %v", providerErrs)
+	}
+	mu.Unlock()
+	if len(execCtxs) != 1 {
+		t.Fatalf("exec contexts registered = %d, want 1", len(execCtxs))
+	}
+	ctx := execCtxs[0]
+	sandboxDir := filepath.Join(worktrees, "mac-provider-101")
+	if ctx.CWD != sandboxDir {
+		t.Errorf("registered CWD = %q, want sandbox container %q", ctx.CWD, sandboxDir)
+	}
+	if len(ctx.Files) != 0 {
+		t.Errorf("registered files = %v, want none (empty sandbox)", ctx.Files)
+	}
+	if _, err := os.Stat(sandboxDir); err != nil {
+		t.Errorf("sandbox container missing after provision: %v", err)
+	}
+	// The sandbox is tracked for release.
+	p.mu.Lock()
+	_, tracked := p.serves["mac-provider-101"]
+	p.mu.Unlock()
+	if !tracked {
+		t.Error("provisioned sandbox not tracked in serves")
+	}
+
+	// Release tears the container down.
+	p.release(api.HostRequest{ProviderID: "mac-provider-101"})
+	if _, err := os.Stat(sandboxDir); !os.IsNotExist(err) {
+		t.Errorf("container %q still exists after release", sandboxDir)
 	}
 }
 
