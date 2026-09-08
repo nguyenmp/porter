@@ -115,35 +115,45 @@ func (r *remoteProvider) Run(ctx context.Context, name string, args []byte) (io.
 	return pr, nil
 }
 
-// localProvider runs tools in the server process and reports the server's own
-// environment context (system, working directory, files, skills), so "local"
-// is a first-class provider in the selector instead of an anonymous fallback:
-// the model sees where local commands run and can load local skills.
+// localProvider runs tools in the server process and reports its environment
+// context (system, working directory, files, skills), so "local" is a
+// first-class provider in the selector instead of an anonymous fallback: the
+// model sees where local commands run and can load local skills. dir is the
+// chat's own sandbox folder when it has one (the common case since local
+// sandboxing): tools run with that folder as their working directory,
+// mirroring how an execution host serves a provisioned sandbox. An empty dir
+// (pre-sandboxing chats, tests) keeps the historical behavior of running in
+// the server process's working directory.
 type localProvider struct {
 	d   *tools.Dispatcher
 	ctx api.ExecContext
+	dir string
 }
 
 // Defs returns the tools the local provider can run: shell plus load_skill for
-// the skills discovered in the server's own environment.
+// the skills discovered in the provider's environment.
 func (p *localProvider) Defs() []llm.Tool { return p.d.Defs() }
 
-// Environment returns the server process's environment context as a system
-// message, so the model knows where local commands run.
+// Environment returns the provider's environment context as a system message,
+// so the model knows where local commands run.
 func (p *localProvider) Environment() string { return exec.SystemMessage(p.ctx) }
 
-// Run executes the tool locally, streaming its output.
+// Run executes the tool locally, in the provider's working directory (the
+// chat's sandbox folder, or the server process cwd when dir is empty),
+// streaming its output.
 func (p *localProvider) Run(ctx context.Context, name string, args []byte) (io.ReadCloser, error) {
-	return p.d.Run(ctx, name, args)
+	return p.d.RunDir(ctx, name, args, p.dir)
 }
 
-// pausedProvider is what a sandboxed chat's tools resolve to while its host
-// is offline: every run fails fast with a clear error instead of silently
-// falling back to the server's local execution (a different environment,
-// whose file changes the sandbox would never see). The chat resumes on the
-// host provider automatically when it reconnects.
+// pausedProvider is what a sandboxed chat's tools resolve to while the chat
+// cannot run: every run fails fast with a clear reason instead of silently
+// falling back to a different environment (whose file changes the sandbox
+// would never see). Two cases produce it — a host-sandboxed chat whose host
+// is offline (it resumes automatically when the host reconnects) and a
+// locally-sandboxed chat whose folder is missing (it resumes when the folder
+// is recreated).
 type pausedProvider struct {
-	host string
+	reason string
 }
 
 // Defs reports no tools while paused: the model cannot act, so it should not
@@ -155,7 +165,22 @@ func (pausedProvider) Environment() string { return "" }
 
 // Run fails fast: there is nowhere to run.
 func (p pausedProvider) Run(ctx context.Context, name string, args []byte) (io.ReadCloser, error) {
-	return nil, fmt.Errorf("host %q is offline; this chat is paused until the host reconnects", p.host)
+	return nil, fmt.Errorf("%s", p.reason)
+}
+
+// hostOfflineReason is the pause reason for a host-sandboxed chat whose host
+// provider is offline. Kept next to the provider so PausedReason (the gate)
+// and pausedProvider (the mid-turn fallback) say the same thing.
+func hostOfflineReason(host string) string {
+	return fmt.Sprintf("this chat runs on host %q, which is offline; it will resume when the host reconnects", host)
+}
+
+// localSandboxMissingReason is the pause reason for a locally-sandboxed chat
+// whose folder has gone missing (deleted by hand, or lost with a wiped
+// volume). The chat refuses to run in the server's working directory, which
+// would silently resurrect the exact bug per-chat sandboxing fixes.
+func localSandboxMissingReason(dir string) string {
+	return fmt.Sprintf("this chat's sandbox folder %s is missing; the chat is paused instead of running on the server's working directory (recreate the folder, or archive the chat)", dir)
 }
 
 // execCall tracks one in-flight tool call awaiting the client's streamed result.

@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -85,6 +86,10 @@ type Persister interface {
 	// the new id. AUTOINCREMENT never reuses an id, so provider ids are unique
 	// across restarts and archives.
 	MintProvider(hostID string) (int64, error)
+	// SetLocalSandbox records whether the session's local provider runs in its
+	// own per-chat sandbox folder (see the db v12 migration). The flag is set
+	// once, when the session is created, and survives restarts and archives.
+	SetLocalSandbox(id int64, on bool) error
 }
 
 // Store owns the live set of sessions. Sessions are created by persisting a
@@ -122,6 +127,17 @@ type Store struct {
 	// can be reconnected to its sandbox after host/server restarts. A row
 	// lives until the chat is archived — never just for the host's connection.
 	sandboxes map[string]*sandbox
+
+	// sandboxRoot is where the server's own per-chat sandbox folders live
+	// (set via SetSandboxRoot by the server before Load; "" disables local
+	// sandboxing, used by tests and embedders that opt out). Every session the
+	// store creates gets a folder <sandboxRoot>/session_<id> that its local
+	// provider works in, mirroring execution-host sandboxes so a chat never
+	// runs in the server's working directory. The folder is recorded in the
+	// persisted local_sandbox flag so a restart can tell a sandboxed chat
+	// (whose folder must exist) from a pre-sandboxing chat (which keeps the
+	// server cwd as-is).
+	sandboxRoot string
 }
 
 // NewStore returns an empty store backed by persist, serving MCP tools from
@@ -148,7 +164,12 @@ func NewStore(persist Persister, hub *mcp.Hub, ctxs ...context.Context) *Store {
 // Create makes a new session and starts its turn scheduler. The session is
 // persisted before it exists in memory: the row id becomes the numeric part of
 // the public "session_<id>" identifier, and an insert failure is returned so
-// the caller can surface it as a server fault.
+// the caller can surface it as a server fault. Every new session also gets a
+// server-local sandbox folder (when the store has a sandbox root), so its
+// local provider — the fallback whenever no execution host is picked or
+// reachable — works in its own directory instead of the server's working
+// directory. A folder that cannot be created fails the create: a chat must
+// never run unsandboxed because setup half-failed.
 func (st *Store) Create(client *llm.Client) (*Session, error) {
 	now := time.Now().UnixMilli()
 	dbID, err := st.persist.CreateSession(now)
@@ -157,6 +178,9 @@ func (st *Store) Create(client *llm.Client) (*Session, error) {
 	}
 	id := fmt.Sprintf("session_%d", dbID)
 	s := newSession(id, client, nil, st.persist, dbID, now, 0, "", st.hub)
+	if err := st.createLocalSandbox(dbID, s); err != nil {
+		return nil, err
+	}
 	st.mu.Lock()
 	st.sessions[id] = s
 	st.mu.Unlock()
@@ -215,7 +239,10 @@ func (st *Store) Archive(id string) error {
 }
 
 // Unarchive clears a session's archived flag, moving it back to the active
-// list. Persist first, then update memory, mirroring Archive. Idempotent.
+// list. Persist first, then update memory, mirroring Archive. Idempotent. A
+// chat that was locally sandboxed gets its folder recreated: archiving
+// released it, and the persisted flag says this chat runs in its own folder,
+// so it must not come back to life in the server's working directory.
 func (st *Store) Unarchive(id string) error {
 	ses, ok := st.Get(id)
 	if !ok {
@@ -225,6 +252,7 @@ func (st *Store) Unarchive(id string) error {
 		return fmt.Errorf("unarchive session: %w", err)
 	}
 	ses.setArchived(0)
+	st.recreateLocalSandbox(ses)
 	return nil
 }
 
@@ -263,6 +291,14 @@ func (st *Store) Load(client *llm.Client) error {
 		}
 		id := fmt.Sprintf("session_%d", ps.ID)
 		s := newSession(id, client, nil, st.persist, ps.ID, ps.CreatedAt, ps.ArchivedAt, ps.Name, st.hub)
+		// A chat created since local sandboxing (the persisted flag is set)
+		// runs in its own folder; one that predates it keeps the server's
+		// working directory as-is — the flag is what tells the two apart, not
+		// folder existence, so a sandboxed chat whose folder was deleted while
+		// the server was down pauses instead of silently running in the cwd.
+		if sm.LocalSandbox {
+			st.restoreLocalSandbox(s)
+		}
 		s.rebuildFromPersisted(ps)
 		st.mu.Lock()
 		st.sessions[id] = s
@@ -287,6 +323,10 @@ func (st *Store) Load(client *llm.Client) error {
 		st.mu.Unlock()
 		ses.setSandbox(r.ProviderID, r.HostID)
 	}
+	// Remove server-local sandbox folders no live chat owns (a crash between
+	// archiving and releasing a chat's folder). Live chats' folders — even
+	// flagged ones whose folder is missing — are never touched here.
+	st.gcLocalSandboxes()
 	return nil
 }
 
@@ -406,6 +446,16 @@ type Session struct {
 	// reports why instead and tool calls fail fast.
 	sandboxProvider string
 	sandboxHost     string
+
+	// localDir is this chat's server-local sandbox folder, or "" for chats
+	// that predate local sandboxing (they keep running in the server's own
+	// working directory, as-is). Every session created since local sandboxing
+	// gets a folder, set at creation and when the persisted flag loads at
+	// startup; it is never cleared, so an archived chat can be unarchived back
+	// into its sandbox (the folder is recreated then). The local provider
+	// works in this folder; a set folder that goes missing pauses the chat
+	// (PausedReason) rather than silently falling back to the server cwd.
+	localDir string
 
 	execCalls map[string]*execCall
 	execSeq   int
@@ -533,33 +583,65 @@ func (s *Session) provider() tools.Provider {
 // execution client: a remoteProvider routing to that client when a remote is
 // selected, a pausedProvider when a sandboxed chat's host provider is offline
 // (it must not fall back to the server), else the local provider (the server
-// process).
+// process). The local provider runs in the chat's own sandbox folder when it
+// has one, so a chat that never picked an execution host still works in an
+// isolated directory rather than the server's working directory.
 func (s *Session) activeProviderLocked() tools.Provider {
 	if c, ok := s.execClients[s.activeExec]; ok && c.connected && c.kind != "local" {
 		return &remoteProvider{sess: s}
 	}
 	if s.sandboxProvider != "" && s.activeExec == s.sandboxProvider {
-		return pausedProvider{host: s.sandboxHost}
+		return pausedProvider{reason: hostOfflineReason(s.sandboxHost)}
 	}
 	if s.local == nil {
+		// A locally sandboxed chat whose folder is missing is paused: the
+		// provider errors on every run instead of silently executing in the
+		// server's working directory. The provider is not cached in that
+		// case, so recreating the folder lets the chat resume without a
+		// restart (PausedReason refuses new messages until then).
+		if s.localDir != "" {
+			if _, err := os.Stat(s.localDir); err != nil {
+				return pausedProvider{reason: localSandboxMissingReason(s.localDir)}
+			}
+		}
 		ctx := s.localContextLocked()
-		s.local = &localProvider{d: tools.NewDispatcherWithSkills(ctx.Skills), ctx: ctx}
+		s.local = &localProvider{d: tools.NewDispatcherWithSkills(ctx.Skills), ctx: ctx, dir: s.localDir}
 	}
 	return s.local
 }
 
-// localContextLocked returns the server process's own environment context,
-// discovered once and cached. Discovery is best-effort: on failure an empty
-// context is reported rather than failing the request.
+// localContextLocked returns the environment context of the provider the
+// local provider runs in: the chat's own sandbox folder when it has one, else
+// the server process's working directory (pre-sandboxing chats). Discovered
+// once and cached per session, mirroring how an execution host discovers a
+// provisioned sandbox once at provision time. Discovery is best-effort and
+// only successes are cached: a folder that is missing (or a transient
+// discovery failure) reports an empty context and is retried on the next
+// call, so a recreated folder is picked up without a restart.
 func (s *Session) localContextLocked() api.ExecContext {
 	if s.localCtx == nil {
-		ctx, err := exec.Discover("")
+		ctx, err := s.discoverLocalContext()
 		if err != nil {
-			ctx = api.ExecContext{}
+			return api.ExecContext{}
 		}
 		s.localCtx = &ctx
 	}
 	return *s.localCtx
+}
+
+// discoverLocalContext discovers the local provider's environment without
+// caching. For a locally sandboxed chat the folder must exist: a missing
+// folder is an error (the caller reports an empty context and the pause rule
+// keeps the chat from running), so discovery never falls back to describing
+// the server's working directory for a chat that must not run there.
+func (s *Session) discoverLocalContext() (api.ExecContext, error) {
+	if s.localDir != "" {
+		if _, err := os.Stat(s.localDir); err != nil {
+			return api.ExecContext{}, err
+		}
+		return exec.DiscoverRoots(s.localDir, nil)
+	}
+	return exec.Discover("")
 }
 
 // loop is the turn scheduler. It consumes queued user messages one at a time,

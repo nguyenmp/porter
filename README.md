@@ -72,7 +72,11 @@ A tree of turns. Each turn has a single parent and can fork into many children.
   and every provider that could run this session's tools.
 - **Choosing where commands run (web).** A session can have several providers
   connected at once — the server process itself (always available, listed as
-  **local**) plus any execution clients (e.g. a REPL on a laptop). A bar below
+  **local**) plus any execution clients (e.g. a REPL on a laptop). A chat that
+  runs local works in its own per-chat sandbox folder beside the database
+  (`<db dir>/.porter/sandboxes/session_<id>`), mirroring host sandboxes: it
+  never works in the server's working directory, and its folder is released on
+  archive and recreated on unarchive. A bar below
   the chat shows where commands run; opening it lists every provider (name,
   system, working directory) and clicking one switches execution via
   `POST /api/sessions/{id}/exec/select`. A connecting client takes over
@@ -310,7 +314,10 @@ Terms used throughout this README, grouped by the part of the system they belong
 
 - **Execution provider** — where a session's commands run. The local server
   process (always available) or a connected execution client, e.g. the REPL on
-  a laptop. An **execution host** (`make host`) is a persistent agent that can
+  a laptop. When no execution client is active the server runs the session
+  itself, in the session's own sandbox folder beside the database — the same
+  per-chat isolation an execution host provides, so the server's working
+  directory is never a chat's working context. An **execution host** (`make host`) is a persistent agent that can
   provision these per-chat: every host provision is a sandbox — a fresh
   container directory under `~/.porter/<host id>/sandboxes` that the host
   never reuses and never runs against its own working tree. Each host id owns

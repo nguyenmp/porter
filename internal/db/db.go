@@ -22,7 +22,7 @@ var ErrNotFound = errors.New("db: session not found")
 
 // schemaVersion is the current schema revision, tracked in PRAGMA user_version.
 // Bump it and extend migrate when the schema changes.
-const schemaVersion = 11
+const schemaVersion = 12
 
 // DB wraps the SQLite database handle. It deliberately uses a single
 // connection: pragmas like foreign_keys are per-connection, and a single
@@ -305,6 +305,23 @@ CREATE TABLE IF NOT EXISTS providers (
 			return fmt.Errorf("set user_version: %w", err)
 		}
 	}
+	if v < 12 {
+		// v12: local_sandbox on sessions, marking that the chat's local
+		// provider (the server process itself, used when no execution host is
+		// picked) runs in its own per-chat sandbox folder next to the database
+		// instead of the server's working directory. The flag is set when the
+		// chat is created, survives restarts and archives, and is never
+		// cleared: unarchiving a sandboxed chat recreates its folder. Chats
+		// created before this migration have the flag off and keep running in
+		// the server's working directory.
+		const ddl = "ALTER TABLE sessions ADD COLUMN local_sandbox INTEGER NOT NULL DEFAULT 0"
+		if _, err := d.db.Exec(ddl); err != nil {
+			return fmt.Errorf("apply schema v12: %w", err)
+		}
+		if _, err := d.db.Exec("PRAGMA user_version=12"); err != nil {
+			return fmt.Errorf("set user_version: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -392,6 +409,9 @@ type Summary struct {
 	// Name is the session's custom display name ("" = none).
 	Name      string
 	FirstUser string
+	// LocalSandbox records that the chat's local provider runs in its own
+	// per-chat sandbox folder (see the v12 migration).
+	LocalSandbox bool
 }
 
 // boolInt converts a Go bool to the 0/1 integer SQLite stores booleans as.
@@ -414,6 +434,16 @@ func (d *DB) CreateSession(createdAt int64) (int64, error) {
 		return 0, fmt.Errorf("session id: %w", err)
 	}
 	return id, nil
+}
+
+// SetLocalSandbox records whether the session's local provider runs in its
+// own per-chat sandbox folder (see the v12 migration). The flag is set once,
+// when the session is created; it survives restarts and archives.
+func (d *DB) SetLocalSandbox(id int64, on bool) error {
+	if _, err := d.db.Exec("UPDATE sessions SET local_sandbox = ? WHERE id = ?", boolInt(on), id); err != nil {
+		return fmt.Errorf("set local sandbox: %w", err)
+	}
+	return nil
 }
 
 // AppendMessage writes one committed message. seq must be the message's bus
@@ -581,7 +611,7 @@ func (d *DB) LoadSession(id int64) (Session, error) {
 // session's first user message (the sidebar preview source).
 func (d *DB) ListSessions() ([]Summary, error) {
 	rows, err := d.db.Query(`
-		SELECT s.id, s.created_at, s.archived_at_epoch_ms, s.name, COALESCE((
+		SELECT s.id, s.created_at, s.archived_at_epoch_ms, s.name, s.local_sandbox, COALESCE((
 			SELECT m.content FROM messages m
 			WHERE m.session_id = s.id AND m.role = 'user'
 			ORDER BY m.seq ASC LIMIT 1
@@ -598,7 +628,7 @@ func (d *DB) ListSessions() ([]Summary, error) {
 	var out []Summary
 	for rows.Next() {
 		var s Summary
-		if err := rows.Scan(&s.ID, &s.CreatedAt, &s.ArchivedAt, &s.Name, &s.FirstUser); err != nil {
+		if err := rows.Scan(&s.ID, &s.CreatedAt, &s.ArchivedAt, &s.Name, &s.LocalSandbox, &s.FirstUser); err != nil {
 			return nil, fmt.Errorf("scan session: %w", err)
 		}
 		out = append(out, s)

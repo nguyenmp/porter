@@ -15,6 +15,7 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -307,11 +308,34 @@ func newServer(cfg config.Config, dbPath, mcpPath string) (*Server, error) {
 	}
 	client := llm.NewClient(cfg, nil)
 	store := session.NewStore(d, hub)
+	// Server-local chats run in per-chat sandbox folders beside the database
+	// (<db dir>/.porter/sandboxes/session_<id>), mirroring execution-host
+	// sandboxes, so a chat created through the web UI never works directly in
+	// the server's working directory (e.g. /data in the container). Beside
+	// the database means the folders live on whatever volume persists the DB.
+	// The server opens ./porter.db from its working directory, so the root
+	// resolves to ./porter.db's directory.
+	store.SetSandboxRoot(localSandboxRoot(dbPath))
 	if err := store.Load(client); err != nil {
 		_ = d.Close()
 		return nil, fmt.Errorf("load persisted sessions: %w", err)
 	}
 	return &Server{addr: cfg.Addr, client: client, store: store}, nil
+}
+
+// localSandboxRoot returns the server's per-chat sandbox root for a database
+// at dbPath: the database's directory plus .porter/sandboxes. A database with
+// no directory component (e.g. an in-memory test DB) yields no root, which
+// disables local sandboxing for that server.
+func localSandboxRoot(dbPath string) string {
+	if dbPath == "" || dbPath == ":memory:" {
+		return ""
+	}
+	abs, err := filepath.Abs(dbPath)
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(filepath.Dir(abs), ".porter", "sandboxes")
 }
 
 // Close stops the session schedulers and closes the session database. It is

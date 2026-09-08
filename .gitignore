@@ -4,6 +4,10 @@
 # REPL log file (see PORTER_LOG)
 porter.log
 
+# Runtime state under the working directory (spooled output, and the server's
+# per-chat sandboxes when the server DB lives inside a repo)
+.porter/
+
 # Go
 /porter
 /porter-macos

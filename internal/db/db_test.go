@@ -1072,3 +1072,28 @@ func TestMigratesFromV8ToV9(t *testing.T) {
 		t.Errorf("user_version after migration = %d, want %d", v, schemaVersion)
 	}
 }
+
+func TestSetLocalSandboxRoundTrip(t *testing.T) {
+	d := openTemp(t)
+	id, err := d.CreateSession(1)
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	sums, err := d.ListSessions()
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	if len(sums) != 1 || sums[0].LocalSandbox {
+		t.Fatalf("new session summaries = %+v, want LocalSandbox false", sums)
+	}
+	if err := d.SetLocalSandbox(id, true); err != nil {
+		t.Fatalf("SetLocalSandbox(true): %v", err)
+	}
+	sums, err = d.ListSessions()
+	if err != nil {
+		t.Fatalf("ListSessions after flag: %v", err)
+	}
+	if len(sums) != 1 || !sums[0].LocalSandbox {
+		t.Fatalf("flagged session summaries = %+v, want LocalSandbox true", sums)
+	}
+}

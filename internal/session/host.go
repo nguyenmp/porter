@@ -308,16 +308,24 @@ func (st *Store) ProvisionRegistered(sessionID, providerID string) {
 	}
 }
 
-// ReleaseSession tells the execution host that provisioned a session's
-// sandbox to tear it down (the server sends this when the session is
-// archived). It is best-effort and non-blocking: the session is already gone
-// from the user's flow, so a missed release (host disconnected, channel full)
-// only leaks the sandbox until the host's next restart, when the offer/refuse
-// flow cleans it up — never blocks or fails the archive. The persisted
-// mapping is removed so the chat is no longer sandboxed (a later unarchive
-// makes it a normal chat). Idempotent: a session with no recorded sandbox
-// (already released) is a no-op.
+// ReleaseSession tears down a session's execution environments when the
+// session is archived: it removes the chat's server-local sandbox folder (if
+// it has one) and tells the execution host that provisioned its sandbox to
+// tear that down too (if it had one). Both halves are best-effort and
+// non-blocking: the session is already gone from the user's flow, so a missed
+// release (host disconnected, channel full) only leaks the sandbox until the
+// next cleanup — the host's offer/refuse flow on its next restart, or the
+// server's startup GC — never blocks or fails the archive. The persisted host
+// mapping is removed so the chat is no longer host-sandboxed; the local
+// sandbox flag is kept, so a later unarchive recreates the folder rather than
+// running the chat in the server's working directory. Idempotent: a session
+// with no recorded environments is a no-op.
 func (st *Store) ReleaseSession(sessionID string) {
+	// Release the server-local folder first: every chat created since local
+	// sandboxing owns one, whether or not a host also provisioned a sandbox.
+	if ses, ok := st.Get(sessionID); ok {
+		st.removeLocalSandbox(ses)
+	}
 	st.mu.Lock()
 	sb, ok := st.sandboxes[sessionID]
 	if !ok {
