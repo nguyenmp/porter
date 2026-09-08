@@ -706,7 +706,8 @@ func TestRunTurnCarriesCacheSplit(t *testing.T) {
 }
 
 // envProvider wraps a Dispatcher and reports a fixed environment context, so a
-// test can verify RunTurn injects it as the first (system) message.
+// test can verify RunTurn injects the standing writing-style directive as the
+// leading system message and the environment context right after it.
 type envProvider struct {
 	*tools.Dispatcher
 	env string
@@ -714,8 +715,9 @@ type envProvider struct {
 
 func (p *envProvider) Environment() string { return p.env }
 
-// TestRunTurnInjectsEnvironmentContext verifies the execution provider's
-// environment context is prepended as a system message to every request.
+// TestRunTurnInjectsEnvironmentContext verifies every request leads with the
+// plain-language writing-style directive, followed by the execution provider's
+// environment context, both as system messages ahead of the history.
 func TestRunTurnInjectsEnvironmentContext(t *testing.T) {
 	srv, snapshot := toolServer(t)
 	defer srv.Close()
@@ -734,15 +736,21 @@ func TestRunTurnInjectsEnvironmentContext(t *testing.T) {
 		t.Fatalf("expected 2 requests, got %d", len(captured))
 	}
 	for i, msgs := range captured {
-		if len(msgs) < 2 {
-			t.Fatalf("request %d has %d messages, want >= 2 (context + history)", i, len(msgs))
+		if len(msgs) < 3 {
+			t.Fatalf("request %d has %d messages, want >= 3 (style + context + history)", i, len(msgs))
 		}
-		var first llm.ChatMessage
-		if err := json.Unmarshal(msgs[0], &first); err != nil {
+		var style, env llm.ChatMessage
+		if err := json.Unmarshal(msgs[0], &style); err != nil {
 			t.Fatalf("unmarshal first message: %v", err)
 		}
-		if first.Role != "system" || !strings.Contains(first.Content, "/work") {
-			t.Errorf("request %d first message = %+v, want the injected system context", i, first)
+		if err := json.Unmarshal(msgs[1], &env); err != nil {
+			t.Fatalf("unmarshal second message: %v", err)
+		}
+		if style.Role != "system" || !strings.Contains(style.Content, "plain language") {
+			t.Errorf("request %d first message = %+v, want the writing-style directive", i, style)
+		}
+		if env.Role != "system" || !strings.Contains(env.Content, "/work") {
+			t.Errorf("request %d second message = %+v, want the injected system context", i, env)
 		}
 	}
 }

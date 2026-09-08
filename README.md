@@ -182,7 +182,21 @@ its command, and the partial output is committed to history marked *cancelled*
 so a reload (and the model, on the next turn) sees the run was aborted rather
 than completed. The backend surface is `POST /api/sessions/{id}/cancel/{call_id}`.
 
-### Humanized variants (plain language)
+### Plain language
+
+Porter writes in plain language by default. Every model request leads with a
+standing writing-style directive — hard-coded in `internal/humanize`
+(`Directive()`), sharing one rule body with the rewrite prompt so the two
+cannot drift — so replies are written plainly the first time instead of only
+being cleaned up afterwards. The directive names the surfaces it governs:
+replies to the user, reports and other documents the agent drafts, and
+comments on code it writes or edits. It is audience-aware rather than
+patronizing: replies go to you, a working developer, so technical terms you
+already know stay as-is and undefined, while text drafted for other readers
+keeps the terms that audience needs and defines them the first time each
+appears.
+
+#### Humanized variants
 
 Every assistant reply with content shows a small tab bar in the web UI —
 **Original** plus a **+** button — and each plain-language pass adds a
@@ -218,7 +232,8 @@ plain-language skill — no web fetches, no commentary, markdown preserved,
 facts and code untouched), stamped on every pass as `prompt_version`, and
 exposed as a built-in skill: `humanize.Prompt()` is the body of the
 `plain-language` skill that `load_skill` serves from memory, so the
-background pass and the loadable skill share one source of truth. The
+background pass, the loadable skill, and the standing writing directive
+share one rule body. The
 auto-trigger thresholds (`MinWords`, `MinSentences`, code-block detection)
 live there too. The backend surface is
 `POST /api/sessions/{id}/messages/{seq}/humanize`.

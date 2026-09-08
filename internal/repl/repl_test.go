@@ -65,8 +65,9 @@ func TestRunResumesExistingSession(t *testing.T) {
 	srv := newReplServer(t)
 
 	// First REPL creates a session and has one turn ("hello"): the model sees
-	// the injected environment context + the committed provider-connect notice
-	// + the user message = 3 messages -> "reply 3".
+	// the standing writing-style directive + the injected environment context
+	// + the committed provider-connect notice + the user message = 4 messages
+	// -> "reply 4".
 	var firstOut, firstJSONL bytes.Buffer
 	if err := Run(context.Background(), config.ClientConfig{ServerURL: srv.URL}, strings.NewReader("hello\nquit\n"), &firstOut, &firstJSONL); err != nil {
 		t.Fatalf("first Run: %v", err)
@@ -75,11 +76,11 @@ func TestRunResumesExistingSession(t *testing.T) {
 	if id == "" {
 		t.Fatalf("no session id in first REPL output:\n%s", firstOut.String())
 	}
-	if !strings.Contains(firstOut.String(), "reply 3") {
-		t.Fatalf("first turn should see 3 messages; got:\n%s", firstOut.String())
+	if !strings.Contains(firstOut.String(), "reply 4") {
+		t.Fatalf("first turn should see 4 messages; got:\n%s", firstOut.String())
 	}
 
-	// Reconnecting REPL: the committed history replays (so "reply 3" shows up
+	// Reconnecting REPL: the committed history replays (so "reply 4" shows up
 	// again), and the new turn sees the grown history — old connect notice +
 	// hello + reply + the new connect notice + again (and, once the first
 	// REPL's connection teardown lands, a disconnect notice too), so the reply
@@ -93,11 +94,11 @@ func TestRunResumesExistingSession(t *testing.T) {
 	if !strings.Contains(got, "session "+id) {
 		t.Errorf("resumed REPL should print the same session id %q; got:\n%s", id, got)
 	}
-	if !strings.Contains(got, "reply 3") {
+	if !strings.Contains(got, "reply 4") {
 		t.Errorf("resumed REPL should replay the old reply; got:\n%s", got)
 	}
-	if max := maxReplyCount(got); max <= 3 {
-		t.Errorf("new turn on resumed session should see a grown history (reply count > 3); got max reply %d in:\n%s", max, got)
+	if max := maxReplyCount(got); max <= 4 {
+		t.Errorf("new turn on resumed session should see a grown history (reply count > 4); got max reply %d in:\n%s", max, got)
 	}
 
 	// The resumed REPL must not have created a new session: the server-side
@@ -167,20 +168,21 @@ func TestRunStreamsMultiTurn(t *testing.T) {
 	cfg := config.ClientConfig{ServerURL: srv.URL}
 	var out, jsonl bytes.Buffer
 	// Two turns: first "hello", then "again". The REPL is the session's
-	// execution provider, so every request sees the injected environment
-	// context (1 system message) plus the committed provider-connect notice
-	// (1 system message): first turn = 3 messages, second = 5.
+	// execution provider, so every request sees the standing writing-style
+	// directive + the injected environment context (2 system messages) plus the
+	// committed provider-connect notice (1 system message): first turn =
+	// 4 messages, second = 6.
 	err := Run(context.Background(), cfg, strings.NewReader("hello\nagain\nquit\n"), &out, &jsonl)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 
 	got := out.String()
-	if !strings.Contains(got, "reply 3") {
-		t.Errorf("first turn should see 3 messages (context + connect notice + user); got:\n%s", got)
+	if !strings.Contains(got, "reply 4") {
+		t.Errorf("first turn should see 4 messages (style + context + connect notice + user); got:\n%s", got)
 	}
-	if !strings.Contains(got, "reply 5") {
-		t.Errorf("second turn should see 5 messages (history grew); got:\n%s", got)
+	if !strings.Contains(got, "reply 6") {
+		t.Errorf("second turn should see 6 messages (history grew); got:\n%s", got)
 	}
 	if !strings.Contains(got, "execution provider connected:") {
 		t.Errorf("committed provider-connect notice missing from the view; got:\n%s", got)

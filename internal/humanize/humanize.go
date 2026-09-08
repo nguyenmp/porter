@@ -10,7 +10,11 @@
 // Prompt): the server is a single binary with no skill files in its build, so
 // the skill is hard-coded in Go and load_skill serves it from memory. A shared
 // rule base means the background pass and the loadable skill can never drift apart;
-// each mode appends only the behavior its own job needs.
+// each mode appends only the behavior its own job needs. The same rule body
+// is the standing style the agent injects into every request (Directive):
+// replies, drafted reports, and code comments are written plainly the first
+// time, and the rewrite pass becomes a safety net rather than the only
+// plain-language path.
 package humanize
 
 import (
@@ -27,7 +31,7 @@ import (
 // PromptVersion identifies the prompt revision that produced a variant. It is
 // stamped on every pass so the UI can explain why a tab reads the way it does,
 // and should be bumped whenever the prompt below changes.
-const PromptVersion = "plain-language-v4"
+const PromptVersion = "plain-language-v5"
 
 // SkillName is the name the built-in plain-language skill is exposed under,
 // both in the load_skill listing and as the sentinel path (api.BuiltinPrefix +
@@ -71,22 +75,34 @@ const (
 	MinSentences = 4
 )
 
-// systemPrompt is the hard-coded plain-language instruction,distilled from
-// the markdown files of the gsa/plainlanguage.gov git repository
-// (https://github.com/gsa/plainlanguage.gov;the guidelines live under
-// _pages/guidelines/,covering audience,words,sentences,voice,organization,
-// and design),so prompt edits stay anchored in the source material rather
-// than in memory. It condenses the guidance into a single-shot rewrite:one
-// LLM request,no web fetches. Output behavior - silent for the background
-// pass,reporting for interactive use - is added by the suffix each mode uses.
-const systemPrompt = `Rewrite the following text in plain language.
-Plain language means an average reader of the intended audience understands the text on the first read. It is simple and direct, not simplistic or patronizing: do not talk down to the reader. Follow these rules:
+// plainRules is the plain-language rule body both prompts share: the
+// definition plus the writing rules. systemPrompt (rewriting) and
+// systemDirective (fresh writing) wrap it with their own framing — a rewrite
+// pass must preserve the given text, while fresh writing just follows the
+// rules as it goes — so the shared guidance can never drift between the two.
+// It is distilled from the markdown files of the gsa/plainlanguage.gov git
+// repository (https://github.com/gsa/plainlanguage.gov;the guidelines live
+// under _pages/guidelines/,covering audience,words,sentences,voice,
+// organization,and design),so prompt edits stay anchored in the source
+// material rather than in memory. It condenses the guidance into one
+// LLM-request-sized block with no web fetches.
+const plainRules = `Plain language means an average reader of the intended audience understands the text on the first read. It is simple and direct, not simplistic or patronizing: do not talk down to the reader. Follow these rules:
 - Speak directly to the reader: use you, and prefer the present tense. Use contractions where they sound natural.
 - Choose simple, concrete, familiar words. Replace jargon, vague words, and filler (load-bearing, survived, rides, nobody, genuinely, outright, owed, rests, asymmetry, died, buys, settles, lever, byte-identical, delve, real) with everyday words. Cut unnecessary words: challenge every word, omit padding, and compress wordy phrases (in order to becomes to, at this point in time becomes now, is able to becomes can). Use must, not shall: must for an obligation, must not for a prohibition, may for a choice, should for a recommendation. Avoid and/or; write either, or, or both as intended. Keep technical terms the audience needs, like API names and legal terms,and define each one the first time you use it. Avoid abbreviations unless they are widely known; never redefine a common word to mean something other than its usual meaning.
 - Use the active voice and the strongest, most direct form of each verb. Make the actor the subject: say we manage the program, not we are responsible for management of the program; say apply, not make an application. Avoid noun strings: say developing procedures to protect workers, not underground mine worker safety protection procedures development. Keep the subject, verb, and object close together, and put modifiers next to the words they modify: say you are required to provide only the following, not you are only required to provide the following. Put long conditions and exceptions after the main clause.
 - Prefer short sentences carrying one clear idea each and short paragraphs covering one topic each. Use positive language: say what is true rather than what is not, and avoid double negatives and exceptions piled on exceptions. Use the same term for the same thing throughout; do not reach for synonyms just to sound varied.
-- Lead with the main point: start with the answer and the top task for the reader, then the reasoning, exceptions, and details, and say why it matters to the reader. Make the structure skimmable: use useful headings, preferring question-form or specific headings over vague noun headings; use lists, and put steps in the order they happen; add simple visuals or tables (an if-then table suits conditional rules) where they help. Avoid nesting lists more than one level deep, and use bold sparingly for emphasis; do not use ALL CAPS or underlining. For longer, report-style replies, give the bottom line up front, separate distinct audiences and topics into their own sections, and keep related material together rather than referring readers elsewhere. Write link text that says exactly where the link leads; do not use click here or read more. Use transition words sparingly, and write out for example or such as instead of e.g. or i.e. Use an example only when the original already gives you the material for one, and expand it from the original; do not invent new facts.
-- Self-review before finishing: read the rewrite as if it were the original and apply every rule above again. Each fresh pass catches what the last one missed, so keep iterating until a further pass would change nothing.
+- Lead with the main point: start with the answer and the top task for the reader, then the reasoning, exceptions, and details, and say why it matters to the reader. Make the structure skimmable: use useful headings, preferring question-form or specific headings over vague noun headings; use lists, and put steps in the order they happen; add simple visuals or tables (an if-then table suits conditional rules) where they help. Avoid nesting lists more than one level deep, and use bold sparingly for emphasis; do not use ALL CAPS or underlining. For longer, report-style replies, give the bottom line up front, separate distinct audiences and topics into their own sections, and keep related material together rather than referring readers elsewhere. Write link text that says exactly where the link leads; do not use click here or read more. Use transition words sparingly, and write out for example or such as instead of e.g. or i.e.
+`
+
+// systemPrompt is the plain-language prompt for rewriting: the shared rule
+// body (plainRules) plus the rewrite-only rules — self-review, example use,
+// and preserving the message — which only make sense for a pass over given
+// text. Output behavior, silent for the background pass and reporting for
+// interactive use, is added by the suffix each mode uses (humanizePrompt vs
+// Prompt).
+const systemPrompt = `Rewrite the following text in plain language.
+` + plainRules + `- Self-review before finishing: read the rewrite as if it were the original and apply every rule above again. Each fresh pass catches what the last one missed, so keep iterating until a further pass would change nothing.
+- Use an example only when the original already gives you the material for one, and expand it from the original; do not invent new facts.
 - Preserve the message. You are free to reformat, rephrase, and reorganize, and to add headings, lists, or simple visuals, to improve clarity, but do not change what the original conveys. Keep every fact, name, number, and date as given: do not add, drop, or alter anything in the original. Keep code, URLs, and quoted text exact.
 `
 
@@ -98,6 +114,26 @@ const silentSuffix = "\n\nThe rewrite runs unattended and lands directly in the 
 // plain-language skill:an interactive model can ask for input,edit files,
 // and report its passes - things the silent background pass must never do.
 const interactiveSuffix = "\n\nWhen used interactively:if you have no text,ask what to simplify;if the input is a file,edit the file in place. Tell the user when you start a new pass;after the rewrite,say how many passes you took,and list the main changes,each with the principle behind it."
+
+// Directive returns the standing writing-style instruction the agent injects
+// into every model request, so assistant output — replies to the user, drafted
+// reports, and comments on code — is written in plain language the first time
+// rather than only rewritten afterwards. It wraps the shared rule body
+// (plainRules) that systemPrompt also uses, adding only the generation
+// framing: where the style applies and for whom. Every rule is one copy, so
+// the two prompts cannot drift.
+func Directive() string { return systemDirective }
+
+// systemDirective is the text Directive returns: the standing plain-language
+// writing style for generation — the shared rule body (plainRules) plus the
+// generation-only framing. See Directive for why it wraps plainRules like
+// systemPrompt does.
+const systemDirective = `Write in plain language, as you write — not as a cleanup after the fact. Apply this style to everything you write: replies to the user, reports and other documents you draft, and comments on code you write or edit. Do not announce this style or talk about how you write; just write this way.
+` + plainRules + `
+Audience: replies go to the user, a working developer, so keep the technical terms they already know — do not define them, and do not pad to fill space. Text you draft for other readers, like a report or update, fits that audience instead: keep the technical terms they need and define each one the first time you use it. Code comments are prose too: short, direct, and about the code they sit in.
+
+Before you finish, reread what you wrote as if you were the reader, and cut anything that would not be clear on the first read.
+`
 
 // Should reports whether an assistant reply is worth a humanize pass: long
 // enough (the thresholds above) and mostly prose rather than code.

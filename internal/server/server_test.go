@@ -2656,12 +2656,23 @@ func TestExecProviderContextInjectedIntoModel(t *testing.T) {
 	if len(captured) == 0 {
 		t.Fatal("no LLM request captured")
 	}
-	var first llm.ChatMessage
-	if err := json.Unmarshal(captured[0][0], &first); err != nil {
+	if len(captured[0]) < 2 {
+		t.Fatalf("request has %d messages, want >= 2 (style + context + history)", len(captured[0]))
+	}
+	// Every request leads with the standing plain-language style, then the
+	// execution provider's injected context.
+	var style, first llm.ChatMessage
+	if err := json.Unmarshal(captured[0][0], &style); err != nil {
 		t.Fatalf("unmarshal first message: %v", err)
 	}
+	if err := json.Unmarshal(captured[0][1], &first); err != nil {
+		t.Fatalf("unmarshal second message: %v", err)
+	}
+	if style.Role != "system" || !strings.Contains(style.Content, "plain language") {
+		t.Errorf("first message = %+v, want the writing-style directive", style)
+	}
 	if first.Role != "system" {
-		t.Errorf("first message role = %q, want system (injected context)", first.Role)
+		t.Errorf("second message role = %q, want system (injected context)", first.Role)
 	}
 	for _, want := range []string{"/work", "README.md", "my-skill: does things"} {
 		if !strings.Contains(first.Content, want) {

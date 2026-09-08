@@ -130,3 +130,23 @@ func TestTranscriptEmptyWithoutContext(t *testing.T) {
 		t.Errorf("tool-only transcript = %q, want \"\"", got)
 	}
 }
+
+// TestDirectiveNamesSurfaces verifies the standing writing style explicitly
+// names the surfaces it governs — replies, drafted reports, and code comments —
+// so the always-on instruction is concrete about where it applies rather than a
+// vague "be clear" note. It also checks the directive carries no rewrite-pass
+// language: the pass path may narrate passes and variants, but the generation
+// directive must not leak that machinery into everyday writing instructions.
+func TestDirectiveNamesSurfaces(t *testing.T) {
+	d := Directive()
+	for _, want := range []string{"plain language", "replies", "reports", "comments"} {
+		if !strings.Contains(d, want) {
+			t.Errorf("directive missing %q:\n%s", want, d)
+		}
+	}
+	for _, banned := range []string{"passes", "rewrite", "variant", "Humanized"} {
+		if strings.Contains(d, banned) {
+			t.Errorf("directive leaked rewrite-pass language %q:\n%s", banned, d)
+		}
+	}
+}

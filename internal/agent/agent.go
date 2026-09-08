@@ -15,6 +15,7 @@ import (
 
 	"porter/internal/api"
 	"porter/internal/codec"
+	"porter/internal/humanize"
 	"porter/internal/llm"
 	"porter/internal/recall"
 	"porter/internal/tools"
@@ -255,9 +256,17 @@ func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage,
 		// History always holds full output, so each request re-projects fresh and
 		// never compounds.
 		msgs := recall.ProjectModelView(res.History)
+		// Every request leads with the standing plain-language writing style (a
+		// static system prefix, so provider prompt caching keeps it cheap
+		// across sessions and turns), then the execution provider's environment
+		// context — where commands run, what's in the working directory, and
+		// the skills and CLIs available — so the model knows its surroundings
+		// and writes replies, drafts, and code comments plainly the first time.
+		prefix := []llm.ChatMessage{llm.SystemMessage(humanize.Directive())}
 		if env := js.Environment(); env != "" {
-			msgs = append([]llm.ChatMessage{llm.SystemMessage(env)}, msgs...)
+			prefix = append(prefix, llm.SystemMessage(env))
 		}
+		msgs = append(prefix, msgs...)
 		// recall_tool_output is served by the agent itself (from History), so it is
 		// declared alongside the provider's tools on every request.
 		defs := append([]llm.Tool{recall.Def()}, js.Defs()...)
