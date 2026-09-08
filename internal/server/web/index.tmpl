@@ -1403,7 +1403,7 @@
       html += '<details class="tool-call"><summary>tool call: ' + escapeHTML(call.function.name) +
               (purpose ? ' — ' + escapeHTML(purpose)
                        : (call.function.arguments ? ' ' + escapeHTML(argsSnippet(call.function.arguments)) : '')) + '</summary>' +
-              '<pre><code>' + escapeHTML(call.function.arguments) + '</code></pre></details>';
+              '<pre><code>' + escapeHTML(prettyJSON(call.function.arguments)) + '</code></pre></details>';
     }
     return html;
   }
@@ -1474,8 +1474,11 @@
 
   // renderCall redraws the streaming call block from its run state. textContent
   // (not innerHTML) keeps the streaming JSON safe without escaping, same as the
-  // reasoning preview. The block lives inside the live assistant msg-content
-  // and is recreated from the committed message on finalize.
+  // reasoning preview. Arguments go through prettyJSON, which formats partial
+  // JSON as it streams in and produces the same layout the committed render
+  // will, so the block never changes shape when the call completes. The block
+  // lives inside the live assistant msg-content and is recreated from the
+  // committed message on finalize.
   function renderCall(run, contentEl) {
     if (!run.callEl) {
       run.callEl = document.createElement('details');
@@ -1491,7 +1494,7 @@
                     (purpose ? ' — ' + purpose
                              : (run.args ? ' ' + argsSnippet(run.args) : ''));
     run.callEl.querySelector('.tool-call-name').textContent = summary;
-    run.callEl.querySelector('.tool-call-args').textContent = run.args;
+    run.callEl.querySelector('.tool-call-args').textContent = prettyJSON(run.args);
     // Always re-append: redrawMarkdown detaches call blocks when it clears the
     // msg-content, and appendChild on an already-attached node is a cheap
     // no-op move, so this is safe on every path.
@@ -1518,6 +1521,81 @@
     } catch (e) { /* still-streaming arguments; keep the raw text */ }
     const flat = s.replace(/\s+/g, ' ').trim();
     return flat.length > 60 ? flat.slice(0, 60) + '…' : flat;
+  }
+
+  // prettyJSON indents a tool call's JSON arguments for the code block under
+  // the call's summary. It is a whitespace-only formatter — one left-to-right
+  // pass that tracks strings and bracket depth — so it works on still-streaming
+  // JSON as well as complete documents: a call reads indented from its first
+  // complete field, and lines already rendered never shift as later chunks
+  // arrive. Content bytes (key order, number spelling, escapes) pass through
+  // untouched, and the layout of a finished document matches json.Indent on
+  // the server exactly, so the live block and a reload render identically.
+  // Text that never looks like JSON (e.g. legacy plaintext arguments) is
+  // returned unchanged.
+  function prettyJSON(args) {
+    let s = args || '';
+    const first = s.search(/\S/); // first non-space character
+    if (first < 0) return s;
+    if (s[first] !== '{' && s[first] !== '[') return s;
+    if (s[first] === '{') {
+      // An object starts with a key, a nested container, or closes; anything
+      // else after the brace is plain text that happens to begin with one
+      // (legacy arguments), which stays raw like the server's render.
+      let i = first + 1;
+      while (i < s.length && (s[i] === ' ' || s[i] === '\t' || s[i] === '\n' || s[i] === '\r')) i++;
+      if (i < s.length && s[i] !== '"' && s[i] !== '{' && s[i] !== '[' && s[i] !== '}') return s;
+    }
+    let out = '';
+    let depth = 0;           // open containers
+    let had = [];            // per container: does it hold an item yet
+    let afterItem = false;   // the next item starts on a fresh indented line
+    function itemStart() {
+      if (afterItem && depth > 0) out += '\n' + '  '.repeat(depth);
+      afterItem = false;
+      if (depth > 0) had[depth - 1] = true;
+    }
+    let inStr = false;
+    for (let i = 0; i < s.length; i++) {
+      const c = s[i];
+      if (inStr) {
+        out += c;
+        if (c === '\\') {
+          if (i + 1 < s.length) { out += s[i + 1]; i++; }
+        } else if (c === '"') {
+          inStr = false;
+        }
+        continue;
+      }
+      if (c === ' ' || c === '\t' || c === '\n' || c === '\r') continue;
+      if (c === '"') {
+        itemStart();
+        out += c;
+        inStr = true;
+      } else if (c === '{' || c === '[') {
+        itemStart();
+        out += c;
+        had.push(false);
+        depth++;
+        afterItem = true;
+      } else if (c === '}' || c === ']') {
+        if (depth === 0) { out += c; continue; }
+        depth--;
+        const nonEmpty = had.pop();
+        out += nonEmpty ? '\n' + '  '.repeat(depth) + c : c;
+        afterItem = false;
+      } else if (c === ',') {
+        out += c;
+        afterItem = true;
+      } else if (c === ':') {
+        out += ': ';
+        afterItem = false;
+      } else {
+        itemStart();
+        out += c;
+      }
+    }
+    return out;
   }
 
   // purposeOf extracts the porter_action_description from a tool call's

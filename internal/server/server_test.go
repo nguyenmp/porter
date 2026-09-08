@@ -1048,15 +1048,45 @@ func TestViewRendersToolResultTiming(t *testing.T) {
 	// The args snippet is HTML-escaped in the summary (deliberately, like all
 	// other tool text), so assert on the escaped form.
 	for _, want := range []string{
-		`tool call: shell`,   // tool name in the call header
-		`tool result: shell`, // tool name in the result header
-		`echo hi`,            // args snippet from the call
-		`&#34;command&#34;`,  // escaped JSON in the args snippet
-		`exit_code: 0 · `,    // exit status + duration marker in the result header
-		`title="`,            // wall-clock tooltip
+		`tool call: shell`,       // tool name in the call header
+		`tool result: shell`,     // tool name in the result header
+		`echo hi`,                // args snippet from the call
+		`&#34;command&#34;`,      // escaped JSON in the args snippet
+		"{\n  &#34;command&#34;", // pretty-printed JSON in the call body
+		`exit_code: 0 · `,        // exit status + duration marker in the result header
+		`title="`,                // wall-clock tooltip
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("view missing %q; got:\n%s", want, s)
+		}
+	}
+}
+
+// TestPrettyJSON covers the indentation helper for tool-call argument bodies:
+// valid JSON indents, and anything that does not parse (including empty text)
+// comes back unchanged so a still-streaming or legacy call still displays.
+func TestPrettyJSON(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{
+			in:   `{"a":1,"b":[true,null,"x"]}`,
+			want: "{\n  \"a\": 1,\n  \"b\": [\n    true,\n    null,\n    \"x\"\n  ]\n}",
+		},
+		{
+			// Only whitespace is added: key order and number spelling are the
+			// model's own, so the body shows exactly what the model emitted.
+			in:   `{"z":1e2,"a":"first"}`,
+			want: "{\n  \"z\": 1e2,\n  \"a\": \"first\"\n}",
+		},
+		{in: `{"command":`, want: `{"command":`}, // incomplete JSON
+		{in: "", want: ""},
+		{in: "not json", want: "not json"},
+	}
+	for _, tc := range cases {
+		if got := prettyJSON(tc.in); got != tc.want {
+			t.Errorf("prettyJSON(%q) = %q, want %q", tc.in, got, tc.want)
 		}
 	}
 }

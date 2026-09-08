@@ -40,7 +40,7 @@
 					{{$purpose := toolPurpose .Function.Arguments}}
 					<details class="tool-call">
 						<summary>tool call: {{.Function.Name}}{{if $purpose}} — {{$purpose}}{{else if .Function.Arguments}} {{argsSnippet .Function.Arguments}}{{end}}</summary>
-						<pre><code>{{.Function.Arguments}}</code></pre>
+						<pre><code>{{prettyJSON .Function.Arguments}}</code></pre>
 					</details>
 				{{end}}
 			</div>

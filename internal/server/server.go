@@ -6,6 +6,7 @@
 package server
 
 import (
+	"bytes"
 	"embed"
 	"encoding/json"
 	"errors"
@@ -160,6 +161,21 @@ func argsSnippet(args string) string {
 	return flat
 }
 
+// prettyJSON indents a tool call's JSON arguments for the code block under the
+// call's summary. Arguments are stored single-line as the model emitted them,
+// so a multi-field call is unreadable without indentation. Only whitespace is
+// added: key order and value spelling are the model's own, and the input is
+// returned unchanged when it does not parse (e.g. a call from before the
+// contract required JSON). Mirrors prettyJSON in the web client so live and
+// reload render identically.
+func prettyJSON(s string) string {
+	var buf bytes.Buffer
+	if err := json.Indent(&buf, []byte(s), "", "  "); err != nil {
+		return s
+	}
+	return buf.String()
+}
+
 // toolPurpose extracts the porter_action_description from a tool call's
 // arguments — the one-sentence goal the model wrote for this call — so a
 // summary can read "shell — check whether the build server is up" instead of
@@ -210,6 +226,7 @@ var templates = template.Must(template.New("").Funcs(template.FuncMap{
 	"clock":          fmtClock,
 	"toolExitCode":   toolExitCode,
 	"argsSnippet":    argsSnippet,
+	"prettyJSON":     prettyJSON,
 	"toolPurpose":    toolPurpose,
 	"tokenLine":      tokenLine,
 	"fmtBytes":       fmtBytes,
