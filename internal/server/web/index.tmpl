@@ -1324,10 +1324,17 @@
 
   function ensureReasoning() {
     if (!currentReasoning) {
-      currentReasoning = document.createElement('div');
-      currentReasoning.className = 'reasoning';
-      initReasoning(currentReasoning, '');
-      ensureAssistant().before(currentReasoning);
+      const r = document.createElement('div');
+      r.className = 'reasoning';
+      initReasoning(r, '');
+      // ensureAssistant() may create a fresh assistant bubble, and creating a
+      // bubble clears currentReasoning (a new message never inherits the
+      // previous one's reasoning). Bind the block to a local so the insert and
+      // return below can't read the reset global: .before(null) would insert a
+      // literal "null" text node and leave the reasoning block orphaned.
+      const host = ensureAssistant();
+      currentReasoning = r;
+      host.before(r);
     }
     return currentReasoning;
   }
