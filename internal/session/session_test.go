@@ -1279,7 +1279,7 @@ func TestProviderNoticeDeferredToTurnBoundary(t *testing.T) {
 		if n == 1 {
 			// First request: the model asks for a shell tool call.
 			fmt.Fprint(w,
-				`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"shell","arguments":"{\"command\":\"echo hi\"}"}}]},"finish_reason":"tool_calls"}]}`+"\n\n"+
+				`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"shell","arguments":"{\"command\":\"echo hi\",\"porter_action_description\":\"say hi for the test\",\"porter_timeout_seconds\":30}"}}]},"finish_reason":"tool_calls"}]}`+"\n\n"+
 					`data: [DONE]`+"\n")
 			return
 		}

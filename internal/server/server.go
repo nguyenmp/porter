@@ -137,14 +137,42 @@ func toolExitCode(result string) string {
 
 // argsSnippet flattens a tool call's JSON arguments into the short single-line
 // form used on the tool-call/result summary, truncating past 60 chars with an
-// ellipsis. Mirrors argsSnippet in the web client so live and reload render
-// identically.
+// ellipsis. Porter's own contract fields (porter_action_description,
+// porter_timeout_seconds) are dropped: the description is shown separately via
+// toolPurpose, and the timeout is an execution detail, so the snippet is the
+// tool's real arguments only. Malformed (still-streaming) JSON falls back to
+// the raw text. Mirrors argsSnippet in the web client so live and reload
+// render identically.
 func argsSnippet(args string) string {
-	flat := strings.Join(strings.Fields(args), " ")
+	s := args
+	var in map[string]any
+	if err := json.Unmarshal([]byte(args), &in); err == nil && in != nil {
+		delete(in, llm.ArgPorterDescription)
+		delete(in, llm.ArgPorterTimeout)
+		if b, err := json.Marshal(in); err == nil {
+			s = string(b)
+		}
+	}
+	flat := strings.Join(strings.Fields(s), " ")
 	if len(flat) > 60 {
 		return flat[:60] + "…"
 	}
 	return flat
+}
+
+// toolPurpose extracts the porter_action_description from a tool call's
+// arguments — the one-sentence goal the model wrote for this call — so a
+// summary can read "shell — check whether the build server is up" instead of
+// dumping raw arguments. Returns "" when the arguments have no parseable
+// description (e.g. a call from before the field was required).
+func toolPurpose(args string) string {
+	var in struct {
+		Description string `json:"porter_action_description"`
+	}
+	if err := json.Unmarshal([]byte(args), &in); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(in.Description)
 }
 
 // fmtBytes renders a byte count as a short human-readable size for the
@@ -182,6 +210,7 @@ var templates = template.Must(template.New("").Funcs(template.FuncMap{
 	"clock":          fmtClock,
 	"toolExitCode":   toolExitCode,
 	"argsSnippet":    argsSnippet,
+	"toolPurpose":    toolPurpose,
 	"tokenLine":      tokenLine,
 	"fmtBytes":       fmtBytes,
 	"genMeta":        genMeta,

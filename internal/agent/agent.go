@@ -6,10 +6,12 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -271,8 +273,11 @@ func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage,
 		// recall_tool_output and spool_output are served by the agent itself
 		// (recall from History; spool from History plus a write on the active
 		// provider), so they are declared alongside the provider's tools on
-		// every request.
-		defs := append([]llm.Tool{recall.Def(), spool.Def()}, js.Defs()...)
+		// every request. AddToolContract then declares the per-call contract —
+		// the required porter_action_description and porter_timeout_seconds
+		// arguments — on every tool the model sees, in one place, so no tool
+		// definition site needs to know about it.
+		defs := llm.AddToolContract(append([]llm.Tool{recall.Def(), spool.Def()}, js.Defs()...))
 		// Wall-clock bounds of this model request: started just before the
 		// stream opens, finished once it closes. They are stamped on the
 		// assistant message(s) this request commits so the UI can show when
@@ -395,7 +400,22 @@ func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage,
 		if err := commit(assistant); err != nil {
 			return res, err
 		}
+		var prevCancel, prevStop context.CancelFunc // previous call's contexts, released at the next call's start
 		for _, c := range calls {
+			// Releasing the previous call's contexts here, at the start of the
+			// next iteration, stops its deadline timer the moment the call's
+			// processing is done — every path below ends in continue or return,
+			// so by the time we reach here the previous run is finished and its
+			// cancellation can no longer be mistaken for an outcome. (The
+			// defers on each context are the backstop for the return paths.)
+			if prevStop != nil {
+				prevStop()
+				prevStop = nil
+			}
+			if prevCancel != nil {
+				prevCancel()
+				prevCancel = nil
+			}
 			// A call already at the repeat cap is never issued again: commit
 			// the block as its tool result (the assistant message advertising
 			// the call is already committed, so history stays well-formed) and
@@ -411,16 +431,72 @@ func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage,
 				}
 				continue
 			}
+			// The per-call contract is enforced here, on every call the model
+			// makes. A call missing porter_action_description or
+			// porter_timeout_seconds never runs: it is rejected as a tool that
+			// failed to start, so the model sees the error and retries with the
+			// missing fields. Repeated identical rejections hit the repeat cap
+			// above like any other failure.
+			timeout, cerr := parseCallContract(c.Name, []byte(c.Arguments))
+			if cerr != nil {
+				result := noteRepeat(c.Name+"\x00"+c.Arguments, "error: "+cerr.Error())
+				if emit != nil {
+					emit(api.Envelope{Kind: api.KindToolResult, ToolCallID: c.ID, Name: c.Name, Arguments: c.Arguments, Result: result})
+				}
+				if err := commit(llm.ToolResult(c.ID, result)); err != nil {
+					return res, err
+				}
+				continue
+			}
 			// Each tool runs under its own context so it can be cancelled
 			// independently of the turn (a user clicking Cancel in the UI stops
 			// one runaway command without tearing down the whole session). The
 			// hook fires before the tool starts so the caller can register the
 			// cancel and no Cancel click can race ahead of it.
 			callCtx, callCancel := context.WithCancel(ctx)
+			prevCancel = callCancel
 			// Release the per-call context when the turn ends. The defer runs
 			// after every callCtx.Err() check below, so those checks see only a
 			// user's cancellation (via the hook), never our own cleanup.
 			defer callCancel()
+			// The run also carries the deadline the model set in
+			// porter_timeout_seconds. When it fires, the tool is stopped exactly
+			// like a user cancel — the local runner kills its process group, the
+			// remote runner is signalled — but the outcome is a timeout, not a
+			// cancel: the agent commits the partial output, marked timed out,
+			// and continues the turn, so the model sees that its call ran too
+			// long and can retry with a bigger bound or a different approach.
+			// classifyRun below tells the two apart: a cancelled ancestor
+			// context means the user stopped it; a fired deadline on runCtx
+			// alone means a timeout.
+			runCtx, runStop := context.WithTimeout(callCtx, timeout)
+			prevStop = runStop
+			defer runStop()
+			// finishTool emits the terminal KindToolResult envelope for this
+			// call and commits its message, marking it timed out when the run
+			// hit its porter_timeout_seconds deadline. The cancel branches
+			// below emit KindToolCancelled themselves — a cancel is not a
+			// result — and every other terminal (normal, failed, timed out)
+			// funnels through here so the envelope, the committed message, and
+			// the flags cannot drift.
+			finishTool := func(content string, timedOut bool, startedAt, finishedAt int64) error {
+				meta := recall.Meta(content)
+				if emit != nil {
+					env := api.Envelope{Kind: api.KindToolResult, ToolCallID: c.ID, Name: c.Name, Arguments: c.Arguments, StartedAt: startedAt, FinishedAt: finishedAt, Result: content, ToolOutput: meta}
+					if timedOut {
+						env.TimedOut = true
+					}
+					emit(env)
+				}
+				m := llm.ToolResult(c.ID, content)
+				m.StartedAt = startedAt
+				m.FinishedAt = finishedAt
+				m.ToolOutput = meta
+				if timedOut {
+					m.TimedOut = true
+				}
+				return commit(m)
+			}
 			// recall_tool_output is served by the agent itself from the turn's history:
 			// it needs no execution provider, no cancel hook, and works for any
 			// provider (local or remote) even when no client is connected.
@@ -499,12 +575,22 @@ func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage,
 				// becomes the spool_output result the model sees; it names the
 				// resolved absolute path so the model can shell or read it.
 				startedAt := time.Now().UnixMilli()
-				wstream, werr := js.Run(callCtx, tools.SpoolWriteTool, spool.WritePayload(path, content))
+				wstream, werr := js.Run(runCtx, tools.SpoolWriteTool, spool.WritePayload(path, content))
 				finishedAt := time.Now().UnixMilli()
 				if werr != nil {
 					// The write never started (e.g. no execution client is
-					// connected); report it like any tool that failed to start.
+					// connected), or the deadline fired before it answered.
+					// Report it like any tool that failed to start — except a
+					// fired deadline is a timed-out result, which the model
+					// sees and can react to, not a cancel.
 					result := "error: " + werr.Error()
+					if classifyRun(ctx, callCtx, runCtx) == runTimedOut {
+						result += "\n" + timeoutMarker(timeout)
+						if err := finishTool(result, true, 0, 0); err != nil {
+							return res, err
+						}
+						continue
+					}
 					meta := recall.Meta(result)
 					if emit != nil {
 						emit(api.Envelope{Kind: api.KindToolResult, ToolCallID: c.ID, Name: c.Name, Arguments: c.Arguments, Result: result, ToolOutput: meta})
@@ -532,7 +618,8 @@ func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage,
 				}
 				_ = wstream.Close()
 				final := confirm.String()
-				if callCtx.Err() != nil {
+				switch cause := classifyRun(ctx, callCtx, runCtx); cause {
+				case runStopped, runCancelled:
 					// Cancelled while the write was in flight: commit the
 					// partial (marked cancelled) and end like any cancelled
 					// tool.
@@ -550,23 +637,28 @@ func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage,
 					if err := commit(m); err != nil {
 						return res, err
 					}
-					if ctx.Err() != nil {
+					if cause == runStopped {
 						if qerr := h.reportQuery(Query{Idx: i + 1, Stopped: true}); qerr != nil {
 							return res, qerr
 						}
 						return res, ErrTurnStopped
 					}
 					return res, ErrToolCancelled
+				case runTimedOut:
+					// The deadline fired while the write was in flight: report
+					// the partial as a timed-out result and keep the turn going.
+					marker := timeoutMarker(timeout)
+					if strings.TrimSpace(final) == "" {
+						final = marker
+					} else {
+						final += "\n" + marker
+					}
+					if err := finishTool(final, true, startedAt, finishedAt); err != nil {
+						return res, err
+					}
+					continue
 				}
-				meta := recall.Meta(final)
-				if emit != nil {
-					emit(api.Envelope{Kind: api.KindToolResult, ToolCallID: c.ID, Name: c.Name, Arguments: c.Arguments, StartedAt: startedAt, FinishedAt: finishedAt, Result: final, ToolOutput: meta})
-				}
-				m := llm.ToolResult(c.ID, final)
-				m.StartedAt = startedAt
-				m.FinishedAt = finishedAt
-				m.ToolOutput = meta
-				if err := commit(m); err != nil {
+				if err := finishTool(final, false, startedAt, finishedAt); err != nil {
 					return res, err
 				}
 				continue
@@ -574,11 +666,21 @@ func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage,
 			if h.OnRunStarted != nil {
 				h.OnRunStarted(c.ID, callCancel)
 			}
-			stream, err := js.Run(callCtx, c.Name, []byte(c.Arguments))
+			stream, err := js.Run(runCtx, c.Name, []byte(c.Arguments))
 			if err != nil {
-				// The tool never started; there is nothing to stream, so emit the
-				// terminal envelope directly (matching the old single-shot shape).
-				result := noteRepeat(c.Name+"\x00"+c.Arguments, "error: "+err.Error())
+				// The tool never started; there is nothing to stream, so emit
+				// the terminal envelope directly (matching the old single-shot
+				// shape) — or, when the deadline fired while it was still
+				// starting, a timed-out result the model can react to.
+				result := "error: " + err.Error()
+				if classifyRun(ctx, callCtx, runCtx) == runTimedOut {
+					result += "\n" + timeoutMarker(timeout)
+					if err := finishTool(result, true, 0, 0); err != nil {
+						return res, err
+					}
+					continue
+				}
+				result = noteRepeat(c.Name+"\x00"+c.Arguments, result)
 				meta := recall.Meta(result)
 				if emit != nil {
 					emit(api.Envelope{Kind: api.KindToolResult, ToolCallID: c.ID, Name: c.Name, Arguments: c.Arguments, Result: result, ToolOutput: meta})
@@ -636,14 +738,20 @@ func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage,
 			_ = stream.Close()
 			finishedAt := time.Now().UnixMilli()
 
-			// Cancelled while it ran: emit the terminal tool_cancelled envelope,
-			// commit the partial result marked cancelled so history is
-			// transparent, and stop the turn — the user asked to stop, so don't
-			// feed the partial output back to the model and keep spending
-			// tokens. The stream already ended because cancellation closed it
-			// (the local runner kills its process group; the remote runner
-			// closes its pipe), so we get here promptly.
-			if callCtx.Err() != nil {
+			// How the run ended decides what happens next. A user cancel stops
+			// the turn: the partial result is committed (marked cancelled) for
+			// transparency but never fed back to the model — the user asked to
+			// stop, so don't keep spending tokens. A timeout is a tool outcome
+			// like any other: the partial is committed (marked timed out, with
+			// a marker in its content) and the turn continues, so the model
+			// sees its call ran too long and can retry with a bigger bound,
+			// narrow the command, or explain. The stream already ended in both
+			// cases because the deadline/cancel closed it (the local runner
+			// kills its process group; the remote runner closes its pipe), so
+			// we get here promptly.
+			final := result.String()
+			switch cause := classifyRun(ctx, callCtx, runCtx); cause {
+			case runStopped, runCancelled:
 				// A tool killed before producing any output (sleep 30, a silent
 				// build) leaves an empty partial result. The committed tool
 				// message must still carry content: it is what the next LLM
@@ -651,7 +759,7 @@ func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage,
 				// role-"tool" message whose content field is missing. Fall back
 				// to an explicit marker so the model (and history) sees the run
 				// was aborted rather than a tool that returned nothing.
-				partial := result.String()
+				partial := final
 				if strings.TrimSpace(partial) == "" {
 					partial = "(cancelled)"
 				}
@@ -670,42 +778,127 @@ func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage,
 				// this run's context: distinguish it from a per-tool Cancel so
 				// the turn ends with a stopped marker (and a stopped query is
 				// persisted for reload) rather than a plain tool cancellation.
-				if ctx.Err() != nil {
+				if cause == runStopped {
 					if qerr := h.reportQuery(Query{Idx: i + 1, Stopped: true}); qerr != nil {
 						return res, qerr
 					}
 					return res, ErrTurnStopped
 				}
 				return res, ErrToolCancelled
+			case runTimedOut:
+				// The deadline fired. Mark the committed result timed out and
+				// put the marker in its content — this is what the model reads
+				// on the next request of this same turn — then continue the
+				// turn. A timeout counts as a failure for the repeat guard: an
+				// identical call (same command, same bound) that keeps timing
+				// out is flagged instead of being retried forever, while a
+				// retry with a bigger porter_timeout_seconds is a different
+				// call and starts fresh.
+				marker := timeoutMarker(timeout)
+				if strings.TrimSpace(final) == "" {
+					final = marker
+				} else {
+					final += "\n" + marker
+				}
+				final = noteRepeat(c.Name+"\x00"+c.Arguments, final)
+				if err := finishTool(final, true, startedAt, finishedAt); err != nil {
+					return res, err
+				}
+				continue
 			}
 
-			// A repeated identical failure gets the hint appended (a success
-			// clears the record), so the model does not loop on the same call.
-			final := result.String()
+			// Normal completion (or a stream error). A repeated identical
+			// failure gets the hint appended (a success clears the record), so
+			// the model does not loop on the same call.
 			key := c.Name + "\x00" + c.Arguments
 			if errFailed || strings.HasPrefix(final, "error:") {
 				final = noteRepeat(key, final)
 			} else {
 				delete(lastFails, key)
 			}
-
-			meta := recall.Meta(final)
-			if emit != nil {
-				emit(api.Envelope{Kind: api.KindToolResult, ToolCallID: c.ID, Name: c.Name, Arguments: c.Arguments, StartedAt: startedAt, FinishedAt: finishedAt, Result: final, ToolOutput: meta})
-			}
-			// The committed tool message carries the server metadata (json:"-" so
-			// they never reach the model or the history API), letting /view
+			// The committed tool message carries the server metadata (json:"-"
+			// so they never reach the model or the history API), letting /view
 			// render timing on reload. Committing in completion order is what
 			// keeps history (and the live DOM) ordered by completion time.
-			m := llm.ToolResult(c.ID, final)
-			m.StartedAt = startedAt
-			m.FinishedAt = finishedAt
-			m.ToolOutput = meta
-			if err := commit(m); err != nil {
+			if err := finishTool(final, false, startedAt, finishedAt); err != nil {
 				return res, err
 			}
 		}
 	}
+}
+
+// parseCallContract extracts and validates the two required porter contract
+// fields from a tool call's arguments: porter_action_description (the semantic
+// goal, for the user to read) and porter_timeout_seconds (the run deadline the
+// agent enforces). It returns an error naming exactly what is wrong so the
+// model can fix the call; the agent rejects the call with that error and lets
+// the model retry.
+func parseCallContract(name string, args []byte) (time.Duration, error) {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(args, &raw); err != nil {
+		return 0, fmt.Errorf("%s: arguments are not valid JSON (%v)", name, err)
+	}
+	desc, ok := raw[llm.ArgPorterDescription]
+	if !ok {
+		return 0, fmt.Errorf("%s is missing its required %s argument: say what this call is for in one short sentence, then call the tool again", name, llm.ArgPorterDescription)
+	}
+	var d string
+	if err := json.Unmarshal(desc, &d); err != nil {
+		return 0, fmt.Errorf("%s: %s must be a sentence of text, got %s", name, llm.ArgPorterDescription, desc)
+	}
+	if strings.TrimSpace(d) == "" {
+		return 0, fmt.Errorf("%s: %s is empty — say what this call is for in one short sentence, then call the tool again", name, llm.ArgPorterDescription)
+	}
+	rawTimeout, ok := raw[llm.ArgPorterTimeout]
+	if !ok {
+		return 0, fmt.Errorf("%s is missing its required %s argument: pick how many seconds this call may run (a whole number from 1 to %d), then call the tool again", name, llm.ArgPorterTimeout, llm.MaxPorterTimeoutSeconds)
+	}
+	var n json.Number
+	if err := json.Unmarshal(rawTimeout, &n); err != nil {
+		return 0, fmt.Errorf("%s: %s must be a number, got %s", name, llm.ArgPorterTimeout, rawTimeout)
+	}
+	secs, err := strconv.ParseInt(n.String(), 10, 64)
+	if err != nil || secs < 1 || secs > llm.MaxPorterTimeoutSeconds {
+		return 0, fmt.Errorf("%s: %s must be a whole number of seconds from 1 to %d, got %q — pick again and call the tool", name, llm.ArgPorterTimeout, llm.MaxPorterTimeoutSeconds, n.String())
+	}
+	return time.Duration(secs) * time.Second, nil
+}
+
+// timeoutMarker is the line appended to a tool result whose run hit its
+// porter_timeout_seconds deadline. It lives in the committed content so the
+// model sees it on the next request of the same turn; the TimedOut flag on the
+// message and envelope is what history and the UI render from.
+func timeoutMarker(d time.Duration) string {
+	return fmt.Sprintf("(timed out after %ds)", int(d/time.Second))
+}
+
+// runCause says why a per-call run ended.
+type runCause int
+
+const (
+	runFinished  runCause = iota // the tool completed (or failed) on its own
+	runTimedOut                  // the porter_timeout_seconds deadline fired
+	runCancelled                 // the user cancelled this one tool (Cancel)
+	runStopped                   // the user stopped the whole turn (Stop)
+)
+
+// classifyRun reads the three contexts a run lives under to say why it ended.
+// The distinction is what the whole timeout design hangs on: a deadline fires
+// on runCtx alone, leaving its ancestors (callCtx, then the turn's ctx) alive;
+// a user Cancel fires on callCtx; a Stop fires on the turn's ctx, which also
+// cancels callCtx. Checking the ancestors first keeps a stop or cancel that
+// happened to land at the same instant as a deadline reading as a stop or
+// cancel, never a timeout.
+func classifyRun(ctx, callCtx, runCtx context.Context) runCause {
+	switch {
+	case ctx.Err() != nil:
+		return runStopped
+	case callCtx.Err() != nil:
+		return runCancelled
+	case runCtx.Err() != nil:
+		return runTimedOut
+	}
+	return runFinished
 }
 
 // noteTrim shortens a prior failure's text for embedding in a repeat note so

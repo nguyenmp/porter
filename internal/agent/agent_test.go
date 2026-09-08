@@ -50,8 +50,8 @@ func toolServer(t *testing.T) (*httptest.Server, func() ([][]json.RawMessage, []
 			// First turn: ask for a tool call (arguments stream in pieces), with reasoning.
 			fmt.Fprintf(w,
 				`data: {"choices":[{"delta":{"reasoning_content":"deciding to call the shell"},"finish_reason":null}]}`+"\n\n"+
-					`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"shell","arguments":"{\"command\":\""}}]},"finish_reason":null}]}`+"\n\n"+
-					`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"echo hi\"}"}}]},"finish_reason":"tool_calls"}]}`+"\n\n"+
+					`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"shell","arguments":"{\"command\":\"echo hi\",\"porter_action_desc"}}]},"finish_reason":null}]}`+"\n\n"+
+					`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"ription\":\"say hi for the test\",\"porter_timeout_seconds\":30}"}}]},"finish_reason":"tool_calls"}]}`+"\n\n"+
 					`data: [DONE]`+"\n")
 		} else {
 			// Second turn: reply plainly (with reasoning), with usage.
@@ -1049,7 +1049,7 @@ func TestRunTurnStopsAfterToolWithNoPartial(t *testing.T) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		if call == 1 {
 			fmt.Fprint(w,
-				`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","type":"function","function":{"name":"shell","arguments":"{\"command\":\"echo hi\"}"}}]},"finish_reason":"tool_calls"}]}`+"\n\n"+
+				`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","type":"function","function":{"name":"shell","arguments":"{\"command\":\"echo hi\",\"porter_action_description\":\"test the shell\",\"porter_timeout_seconds\":30}"}}]},"finish_reason":"tool_calls"}]}`+"\n\n"+
 					`data: [DONE]`+"\n")
 			return
 		}
@@ -1184,9 +1184,9 @@ func recallLLMServer(t *testing.T) (*httptest.Server, func() ([][]json.RawMessag
 		w.Header().Set("Content-Type", "text/event-stream")
 		switch n {
 		case 1:
-			fmt.Fprintf(w, `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"shell","arguments":"{\"command\":\"cat big\"}"}}]},"finish_reason":"tool_calls"}]}`+"\n\n"+`data: [DONE]`+"\n")
+			fmt.Fprintf(w, `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"shell","arguments":"{\"command\":\"cat big\",\"porter_action_description\":\"read the big file\",\"porter_timeout_seconds\":30}"}}]},"finish_reason":"tool_calls"}]}`+"\n\n"+`data: [DONE]`+"\n")
 		case 2:
-			fmt.Fprintf(w, `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_2","type":"function","function":{"name":"recall_tool_output","arguments":"{\"call_id\":\"call_1\",\"offset\":%d,\"max_bytes\":1000}"}}]},"finish_reason":"tool_calls"}]}`+"\n\n"+`data: [DONE]`+"\n", recall.HeadBytes)
+			fmt.Fprintf(w, `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_2","type":"function","function":{"name":"recall_tool_output","arguments":"{\"call_id\":\"call_1\",\"offset\":%d,\"max_bytes\":1000,\"porter_action_description\":\"read more of the big output\",\"porter_timeout_seconds\":30}"}}]},"finish_reason":"tool_calls"}]}`+"\n\n"+`data: [DONE]`+"\n", recall.HeadBytes)
 		default:
 			fmt.Fprintf(w, `data: {"choices":[{"delta":{"content":"done"},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":3}}`+"\n\n"+`data: [DONE]`+"\n")
 		}
@@ -1397,9 +1397,9 @@ func TestRunTurnReadOutputUnknownCallID(t *testing.T) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		switch n {
 		case 1:
-			fmt.Fprintf(w, `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"shell","arguments":"{\"command\":\"echo hi\"}"}}]},"finish_reason":"tool_calls"}]}`+"\n\n"+`data: [DONE]`+"\n")
+			fmt.Fprintf(w, `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"shell","arguments":"{\"command\":\"echo hi\",\"porter_action_description\":\"test the shell\",\"porter_timeout_seconds\":30}"}}]},"finish_reason":"tool_calls"}]}`+"\n\n"+`data: [DONE]`+"\n")
 		case 2:
-			fmt.Fprintf(w, `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_2","type":"function","function":{"name":"recall_tool_output","arguments":"{\"call_id\":\"nope\"}"}}]},"finish_reason":"tool_calls"}]}`+"\n\n"+`data: [DONE]`+"\n")
+			fmt.Fprintf(w, `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_2","type":"function","function":{"name":"recall_tool_output","arguments":"{\"call_id\":\"nope\",\"porter_action_description\":\"load a bogus output\",\"porter_timeout_seconds\":30}"}}]},"finish_reason":"tool_calls"}]}`+"\n\n"+`data: [DONE]`+"\n")
 		default:
 			fmt.Fprintf(w, `data: {"choices":[{"delta":{"content":"done"},"finish_reason":"stop"}]}`+"\n\n"+`data: [DONE]`+"\n")
 		}
@@ -1457,10 +1457,10 @@ func TestRunTurnFlagsRepeatedIdenticalFailure(t *testing.T) {
 		switch prior {
 		case 0:
 			// First turn: call shell with an empty command, which fails to start.
-			fmt.Fprintf(w, `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"shell","arguments":"{\"command\":\"\"}"}}]},"finish_reason":"tool_calls"}]}`+"\n\n"+`data: [DONE]`+"\n")
+			fmt.Fprintf(w, `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"shell","arguments":"{\"command\":\"\",\"porter_action_description\":\"run an empty command on purpose\",\"porter_timeout_seconds\":30}"}}]},"finish_reason":"tool_calls"}]}`+"\n\n"+`data: [DONE]`+"\n")
 		case 1:
 			// Second turn: the model re-issues the identical call.
-			fmt.Fprintf(w, `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_2","type":"function","function":{"name":"shell","arguments":"{\"command\":\"\"}"}}]},"finish_reason":"tool_calls"}]}`+"\n\n"+`data: [DONE]`+"\n")
+			fmt.Fprintf(w, `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_2","type":"function","function":{"name":"shell","arguments":"{\"command\":\"\",\"porter_action_description\":\"run an empty command on purpose\",\"porter_timeout_seconds\":30}"}}]},"finish_reason":"tool_calls"}]}`+"\n\n"+`data: [DONE]`+"\n")
 		default:
 			fmt.Fprintf(w, `data: {"choices":[{"delta":{"content":"done"},"finish_reason":"stop"}]}`+"\n\n"+`data: [DONE]`+"\n")
 		}
@@ -1530,7 +1530,7 @@ func TestRunTurnBlocksRepeatedIdenticalFailure(t *testing.T) {
 		switch {
 		case prior < 4:
 			callID := fmt.Sprintf("call_%d", prior+1)
-			fmt.Fprintf(w, `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":%q,"type":"function","function":{"name":"shell","arguments":"{\"command\":\"\"}"}}]},"finish_reason":"tool_calls"}]}`+"\n\n"+`data: [DONE]`+"\n", callID)
+			fmt.Fprintf(w, `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":%q,"type":"function","function":{"name":"shell","arguments":"{\"command\":\"\",\"porter_action_description\":\"run an empty command on purpose\",\"porter_timeout_seconds\":30}"}}]},"finish_reason":"tool_calls"}]}`+"\n\n"+`data: [DONE]`+"\n", callID)
 		default:
 			fmt.Fprintf(w, `data: {"choices":[{"delta":{"content":"done"},"finish_reason":"stop"}]}`+"\n\n"+`data: [DONE]`+"\n")
 		}
@@ -1694,5 +1694,186 @@ func TestRunTurnScrubsHeaderOnlyReply(t *testing.T) {
 		if strings.Contains(m.Content, "[replied") {
 			t.Errorf("history stored a header: %q", m.Content)
 		}
+	}
+}
+
+// contractlessServer streams a shell call whose arguments omit porter's two
+// required contract fields (porter_action_description and
+// porter_timeout_seconds), then replies plainly on the next request — so a
+// test can observe the agent rejecting the call and continuing the turn.
+func contractlessServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		var req struct {
+			Messages []json.RawMessage `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		// Count how many turns this stream has served by inspecting the last
+		// message's role.
+		last := ""
+		if len(req.Messages) > 0 {
+			var m struct {
+				Role string `json:"role"`
+			}
+			_ = json.Unmarshal(req.Messages[len(req.Messages)-1], &m)
+			last = m.Role
+		}
+		if last != "tool" {
+			// First request: ask for a contract-less tool call.
+			fmt.Fprintf(w,
+				`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"shell","arguments":"{\"command\":\"echo hi\"}"}}]},"finish_reason":"tool_calls"}]}`+"\n\n"+
+					`data: [DONE]`+"\n")
+			return
+		}
+		// Second request: the rejection was fed back; reply plainly.
+		fmt.Fprintf(w,
+			`data: {"choices":[{"delta":{"content":"done"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`+"\n\n"+
+				`data: [DONE]`+"\n")
+	}))
+}
+
+// TestRunTurnRejectsContractlessCall verifies a tool call that omits the
+// required porter contract fields never runs: the agent commits a rejection
+// that names the missing field and the turn continues, so the model sees the
+// error and can retry.
+func TestRunTurnRejectsContractlessCall(t *testing.T) {
+	srv := contractlessServer(t)
+	defer srv.Close()
+
+	cfg := config.Config{BaseURL: srv.URL + "/v1", Model: "test", APIKey: "k"}
+	client := llm.NewClient(cfg, nil)
+	var got []api.Envelope
+	res, err := RunTurn(context.Background(), client, []llm.ChatMessage{llm.UserMessage("run it")}, tools.NewDispatcher(), func(env api.Envelope) { got = append(got, env) }, nil)
+	if err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+	if res.Text != "done" {
+		t.Errorf("final text = %q, want %q (the turn must continue after a rejection)", res.Text, "done")
+	}
+
+	// The rejection is committed as the tool result: it names the missing
+	// field and tells the model to retry. The tool never started.
+	var rejection string
+	for _, m := range res.History {
+		if m.Role == "tool" && m.ToolCallID == "call_1" {
+			rejection = m.Content
+		}
+	}
+	if !strings.Contains(rejection, "porter_action_description") || !strings.Contains(rejection, "call the tool again") {
+		t.Errorf("tool result = %q, want a rejection naming porter_action_description", rejection)
+	}
+	for _, env := range got {
+		switch env.Kind {
+		case api.KindToolStarted:
+			t.Errorf("contract-less call must not start a tool; got tool_started %+v", env)
+		case api.KindToolResult:
+			if !strings.Contains(env.Result, "porter_action_description") {
+				t.Errorf("tool_result = %q, want the rejection error", env.Result)
+			}
+		}
+	}
+}
+
+// timeoutServer streams one shell call that will exceed its declared
+// porter_timeout_seconds, then replies plainly — so a test can observe the
+// agent timing the run out and continuing the turn.
+func timeoutServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		var req struct {
+			Messages []json.RawMessage `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		last := ""
+		if len(req.Messages) > 0 {
+			var m struct {
+				Role string `json:"role"`
+			}
+			_ = json.Unmarshal(req.Messages[len(req.Messages)-1], &m)
+			last = m.Role
+		}
+		if last != "tool" {
+			fmt.Fprintf(w,
+				`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"shell","arguments":"{\"command\":\"sleep 30\",\"porter_action_description\":\"time out on purpose\",\"porter_timeout_seconds\":1}"}}]},"finish_reason":"tool_calls"}]}`+"\n\n"+
+					`data: [DONE]`+"\n")
+			return
+		}
+		fmt.Fprintf(w,
+			`data: {"choices":[{"delta":{"content":"done"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`+"\n\n"+
+				`data: [DONE]`+"\n")
+	}))
+}
+
+// TestRunTurnTimesOutTool verifies a call whose run exceeds its
+// porter_timeout_seconds deadline is reported as a timed-out result — not a
+// cancel: the partial is committed marked timed out with a marker in its
+// content, and the turn continues so the model sees the timeout and can
+// retry.
+func TestRunTurnTimesOutTool(t *testing.T) {
+	srv := timeoutServer(t)
+	defer srv.Close()
+
+	cfg := config.Config{BaseURL: srv.URL + "/v1", Model: "test", APIKey: "k"}
+	client := llm.NewClient(cfg, nil)
+	var got []api.Envelope
+	res, err := RunTurn(context.Background(), client, []llm.ChatMessage{llm.UserMessage("run it")}, &cancelProvider{}, func(env api.Envelope) { got = append(got, env) }, nil)
+	if err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+	if res.Text != "done" {
+		t.Errorf("final text = %q, want %q (the turn must continue after a timeout)", res.Text, "done")
+	}
+
+	var sawResult, sawCancelled, sawStarted bool
+	var resultEnv api.Envelope
+	for _, env := range got {
+		switch env.Kind {
+		case api.KindToolStarted:
+			sawStarted = true
+		case api.KindToolCancelled:
+			sawCancelled = true
+		case api.KindToolResult:
+			sawResult = true
+			resultEnv = env
+		}
+	}
+	if !sawStarted {
+		t.Errorf("missing tool_started envelope")
+	}
+	if sawCancelled {
+		t.Errorf("a timeout is not a user cancel; got tool_cancelled envelope")
+	}
+	if !sawResult || !resultEnv.TimedOut {
+		t.Errorf("want a terminal tool_result marked timed out; got %+v", resultEnv)
+	}
+	if !strings.Contains(resultEnv.Result, "(timed out after 1s)") {
+		t.Errorf("tool_result result = %q, want a (timed out after 1s) marker", resultEnv.Result)
+	}
+	if resultEnv.FinishedAt < resultEnv.StartedAt || resultEnv.StartedAt <= 0 {
+		t.Errorf("timed-out envelope clocks = start %d finish %d, want start>0 and finish>=start", resultEnv.StartedAt, resultEnv.FinishedAt)
+	}
+
+	// The committed history holds the timed-out result, marked timed out (not
+	// cancelled), with the marker in its content so the model sees it.
+	var committed *llm.ChatMessage
+	for i := range res.History {
+		if res.History[i].Role == "tool" && res.History[i].ToolCallID == "call_1" {
+			committed = &res.History[i]
+		}
+	}
+	if committed == nil {
+		t.Fatal("missing committed tool message for call_1")
+	}
+	if !committed.TimedOut || committed.Cancelled {
+		t.Errorf("committed message flags = timed_out %v cancelled %v, want timed_out only", committed.TimedOut, committed.Cancelled)
+	}
+	if !strings.Contains(committed.Content, "(timed out after 1s)") {
+		t.Errorf("committed content = %q, want the timeout marker", committed.Content)
 	}
 }

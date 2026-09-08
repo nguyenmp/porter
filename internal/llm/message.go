@@ -48,6 +48,16 @@ type ChatMessage struct {
 	// so the SSE replay of the committed message carries it to a reconnecting
 	// client, and so the model knows on the next turn that the previous run was
 	// aborted. It only appears when true.
+	Cancelled bool `json:"cancelled,omitempty"`
+	// TimedOut reports that a tool run was stopped because it exceeded the
+	// porter_timeout_seconds deadline the model set on the call, rather than by
+	// the user. The agent keeps the turn going after a timeout — the model sees
+	// the partial output and a "(timed out after Ns)" marker as a normal tool
+	// result and can retry with a bigger bound — so unlike Cancelled this flag
+	// carries no turn-flow meaning; it is serialized (json:"timed_out,omitempty")
+	// so the SSE replay and /view can render the run as timed out instead of a
+	// normal exit. It only appears when true.
+	TimedOut bool `json:"timed_out,omitempty"`
 	// ToolOutput is structured metadata about a tool result's size and model-view
 	// presentation (see ToolOutputMeta): total/shown bytes, whether the model
 	// view truncated the result, and recall details for recall_tool_output results. It
@@ -55,7 +65,6 @@ type ChatMessage struct {
 	// DB persists it explicitly and the UI reads it from the committed message
 	// or the bus envelope.
 	ToolOutput *ToolOutputMeta `json:"-"`
-	Cancelled  bool            `json:"cancelled,omitempty"`
 }
 
 // ToolCall is a request the assistant made to run a named tool. Arguments is

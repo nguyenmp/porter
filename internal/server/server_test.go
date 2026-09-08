@@ -167,7 +167,7 @@ func toolThenReplyLLM() http.HandlerFunc {
 		mu.Unlock()
 		if call == 1 {
 			fmt.Fprint(w,
-				`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","type":"function","function":{"name":"shell","arguments":"{\"command\":\"echo hi\"}"}}]},"finish_reason":"tool_calls"}]}`+"\n\n"+
+				`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","type":"function","function":{"name":"shell","arguments":"{\"command\":\"echo hi\",\"porter_action_description\":\"say hi for the test\",\"porter_timeout_seconds\":30}"}}]},"finish_reason":"tool_calls"}]}`+"\n\n"+
 					`data: [DONE]`+"\n")
 			return
 		}
@@ -1763,7 +1763,7 @@ func TestCancelStopsRunningTool(t *testing.T) {
 		mu.Unlock()
 		if call == 1 {
 			fmt.Fprint(w,
-				`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","type":"function","function":{"name":"shell","arguments":"{\"command\":\"sleep 60\"}"}}]},"finish_reason":"tool_calls"}]}`+"\n\n"+
+				`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","type":"function","function":{"name":"shell","arguments":"{\"command\":\"sleep 60\",\"porter_action_description\":\"sleep so the test can act\",\"porter_timeout_seconds\":30}"}}]},"finish_reason":"tool_calls"}]}`+"\n\n"+
 					`data: [DONE]`+"\n")
 			return
 		}
@@ -2066,7 +2066,7 @@ func TestCancelSilentToolThenRequeue(t *testing.T) {
 		mu.Unlock()
 		if call == 1 {
 			fmt.Fprint(w,
-				`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","type":"function","function":{"name":"shell","arguments":"{\"command\":\"sleep 60\"}"}}]},"finish_reason":"tool_calls"}]}`+"\n\n"+
+				`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","type":"function","function":{"name":"shell","arguments":"{\"command\":\"sleep 60\",\"porter_action_description\":\"sleep so the test can act\",\"porter_timeout_seconds\":30}"}}]},"finish_reason":"tool_calls"}]}`+"\n\n"+
 					`data: [DONE]`+"\n")
 			return
 		}
@@ -3069,11 +3069,11 @@ func mcpThenReplyLLM() http.HandlerFunc {
 		switch call {
 		case 1:
 			fmt.Fprint(w,
-				`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","type":"function","function":{"name":"FindMCP","arguments":"{\"server_name\":\"mock\"}"}}]},"finish_reason":"tool_calls"}]}`+"\n\n"+
+				`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","type":"function","function":{"name":"FindMCP","arguments":"{\"server_name\":\"mock\",\"porter_action_description\":\"list the mock server\",\"porter_timeout_seconds\":30}"}}]},"finish_reason":"tool_calls"}]}`+"\n\n"+
 					`data: [DONE]`+"\n")
 		case 2:
 			fmt.Fprint(w,
-				`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c2","type":"function","function":{"name":"CallMCP","arguments":"{\"server_name\":\"mock\",\"tool_name\":\"echo\",\"args\":{\"text\":\"hi\"}}"}}]},"finish_reason":"tool_calls"}]}`+"\n\n"+
+				`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c2","type":"function","function":{"name":"CallMCP","arguments":"{\"server_name\":\"mock\",\"tool_name\":\"echo\",\"args\":{\"text\":\"hi\"},\"porter_action_description\":\"echo hi on the mock server\",\"porter_timeout_seconds\":30}"}}]},"finish_reason":"tool_calls"}]}`+"\n\n"+
 					`data: [DONE]`+"\n")
 		default:
 			fmt.Fprint(w,
@@ -3135,7 +3135,7 @@ func TestTruncationEndToEnd(t *testing.T) {
 		mu.Unlock()
 		if call == 1 {
 			io.WriteString(w,
-				`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","type":"function","function":{"name":"shell","arguments":"{\"command\":\"awk 'BEGIN{for(i=0;i<3000;i++) printf \\\"line %d\\\\n\\\", i}'\"}"}}]},"finish_reason":"tool_calls"}]}`+"\n\n"+
+				`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","type":"function","function":{"name":"shell","arguments":"{\"command\":\"awk 'BEGIN{for(i=0;i<3000;i++) printf \\\"line %d\\\\n\\\", i}'\",\"porter_action_description\":\"print many lines for the truncation test\",\"porter_timeout_seconds\":30}"}}]},"finish_reason":"tool_calls"}]}`+"\n\n"+
 					`data: [DONE]`+"\n")
 			return
 		}
@@ -3873,7 +3873,7 @@ func TestTimingAnnotationReachesModelNotStorage(t *testing.T) {
 		if call == 1 {
 			// First request: tell the model to run the shell tool.
 			fmt.Fprint(w,
-				`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","type":"function","function":{"name":"shell","arguments":"{\"command\":\"echo hi\"}"}}]},"finish_reason":"tool_calls"}]}`+"\n\n"+
+				`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","type":"function","function":{"name":"shell","arguments":"{\"command\":\"echo hi\",\"porter_action_description\":\"say hi for the test\",\"porter_timeout_seconds\":30}"}}]},"finish_reason":"tool_calls"}]}`+"\n\n"+
 					`data: [DONE]`+"\n")
 			return
 		}

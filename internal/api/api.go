@@ -288,7 +288,9 @@ const (
 	// far plus the server start/finish clocks, and is terminal like
 	// KindToolResult: the run leaves the in-flight set and the turn ends. The
 	// committed role-"tool" message still follows, marked cancelled, so history
-	// is transparent.
+	// is transparent. A tool that exceeds its porter_timeout_seconds deadline
+	// is NOT a cancel: it is reported as a plain KindToolResult with the
+	// TimedOut flag, and the turn continues.
 	KindToolCancelled = "tool_cancelled"
 	// KindMessage marks a message the server just committed to history, stamped
 	// with its seq. This is what reconciles a subscriber with history.
@@ -347,6 +349,14 @@ type Envelope struct {
 	Name        string `json:"name,omitempty"`         // KindToolResult, KindToolResultDelta, KindToolStarted
 	Arguments   string `json:"arguments,omitempty"`    // KindToolResult, KindToolStarted
 	Result      string `json:"result,omitempty"`       // KindToolResult
+	// TimedOut reports that a tool run was stopped because it exceeded the
+	// porter_timeout_seconds deadline the model set on the call (see
+	// llm.ChatMessage.TimedOut). Unlike a cancelled run, a timed-out run is a
+	// normal result: the agent commits the partial output (with a "(timed out
+	// after Ns)" marker) and continues the turn. Set on the terminal
+	// KindToolResult envelope of a timed-out run, and carried on the committed
+	// message (KindMessage) via the message's own json tag.
+	TimedOut bool `json:"timed_out,omitempty"` // KindToolResult
 	// ToolOutput is structured metadata about a tool result's size and model-view
 	// presentation (total/shown bytes, truncation, recall). It is set on
 	// KindToolResult (normal, cancelled, and recall_tool_output) and carried on the

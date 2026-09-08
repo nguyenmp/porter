@@ -156,6 +156,9 @@ func timingNote(m llm.ChatMessage) string {
 			if m.Cancelled {
 				return fmt.Sprintf("[cancelled after %s at %s]", durText(m.FinishedAt-m.StartedAt), utcStamp(m.FinishedAt))
 			}
+			if m.TimedOut {
+				return fmt.Sprintf("[timed out after %s at %s]", durText(m.FinishedAt-m.StartedAt), utcStamp(m.FinishedAt))
+			}
 			return fmt.Sprintf("[ran %s, finished %s]", durText(m.FinishedAt-m.StartedAt), utcStamp(m.FinishedAt))
 		}
 	case "system":

@@ -1217,6 +1217,7 @@
     const isUser = host.classList.contains('msg-user');
     const isSystem = host.classList.contains('msg-system');
     const cancelled = host.dataset.cancelled === '1';
+    const timedOut = host.dataset.timedOut === '1';
 
     let chip = host.querySelector('.msg-time');
     if (!chip) {
@@ -1263,7 +1264,7 @@
       if (isTool) {
         if (finished > started) rows.push('took ' + fmtDur(finished - started));
         if (finished > 0) {
-          rows.push((cancelled ? 'cancelled at ' : 'ended ') + fmtChipTime(finished));
+          rows.push((cancelled ? 'cancelled at ' : timedOut ? 'timed out at ' : 'ended ') + fmtChipTime(finished));
           rows.push('UTC ' + utcStamp(started) + ' → ' + utcStamp(finished));
         }
       } else {
@@ -1285,23 +1286,25 @@
   }
   // stampCommitted sets a committed message element's clocks from its envelope
   // (ChatMessage hides them json:"-", so they arrive on the envelope, not the
-  // message) and renders the chip. Cancelled applies to tool results; output
-  // (an assistant message's own completion tokens) to assistant messages.
-  function stampCommitted(el, started, finished, cancelled, output) {
+  // message) and renders the chip. Cancelled and timedOut apply to tool
+  // results; output (an assistant message's own completion tokens) to
+  // assistant messages.
+  function stampCommitted(el, started, finished, cancelled, output, timedOut) {
     if (!el) return;
     if (started) el.dataset.started = String(started); else delete el.dataset.started;
     if (finished) el.dataset.finished = String(finished); else delete el.dataset.finished;
     if (cancelled) el.dataset.cancelled = '1'; else delete el.dataset.cancelled;
+    if (timedOut) el.dataset.timedOut = '1'; else delete el.dataset.timedOut;
     if (output) el.dataset.output = String(output); else delete el.dataset.output;
     updateTime(el);
   }
   // stampToolRun mirrors a tool run's authoritative state onto its result
   // block's data clocks and renders the chip. Called whenever a run's clocks
-  // change (start, terminal result/cancel, reconnect reconciliation).
+  // change (start, terminal result/cancel/timeout, reconnect reconciliation).
   function stampToolRun(run) {
     const el = run && run.resultEl;
     if (!el) return;
-    stampCommitted(el, run.startedAt, run.finishedAt, run.status === 'cancelled', 0);
+    stampCommitted(el, run.startedAt, run.finishedAt, run.status === 'cancelled', 0, run.status === 'timed out');
   }
   function appendMessage(role, html) {
     const div = document.createElement('div');
@@ -1389,8 +1392,10 @@
     if (!calls || calls.length === 0) return '';
     let html = '';
     for (const call of calls) {
+      const purpose = purposeOf(call.function.arguments);
       html += '<details class="tool-call"><summary>tool call: ' + escapeHTML(call.function.name) +
-              (call.function.arguments ? ' ' + escapeHTML(argsSnippet(call.function.arguments)) : '') + '</summary>' +
+              (purpose ? ' — ' + escapeHTML(purpose)
+                       : (call.function.arguments ? ' ' + escapeHTML(argsSnippet(call.function.arguments)) : '')) + '</summary>' +
               '<pre><code>' + escapeHTML(call.function.arguments) + '</code></pre></details>';
     }
     return html;
@@ -1399,8 +1404,10 @@
   // createRun builds a fresh tool-run entry. State lives here, never on the
   // DOM elements (callEl/resultEl are views derived from this entry). status is
   // the run's lifecycle: streaming (call being typed) -> running (tool_started)
-  // -> done (tool_result) or cancelled (tool_cancelled, from the user pressing
-  // Cancel). A run is registered in toolRuns under its id once the id is known.
+  // -> done (tool_result), timed out (tool_result flagged timed_out — the run
+  // exceeded its porter_timeout_seconds deadline and the turn continued), or
+  // cancelled (tool_cancelled, from the user pressing Cancel). A run is
+  // registered in toolRuns under its id once the id is known.
   function createRun(callID, index) {
     const run = {
       callID: callID || '',
@@ -1468,10 +1475,14 @@
       run.callEl.className = 'tool-call';
       run.callEl.innerHTML = '<summary class="tool-call-name"></summary><pre><code class="tool-call-args"></code></pre>';
     }
-    // The summary mirrors the tool-result header (name + args snippet) but with
-    // no duration or exit status: this is a request, not a result.
+    // The summary mirrors the tool-result header: once the streamed arguments
+    // are complete enough to parse, it shows the model's own description of
+    // what this call is for (name — description); while they are still
+    // streaming in it shows the raw arguments, same as before.
+    const purpose = purposeOf(run.args);
     const summary = 'tool call: ' + (run.name || '') +
-                    (run.args ? ' ' + argsSnippet(run.args) : '');
+                    (purpose ? ' — ' + purpose
+                             : (run.args ? ' ' + argsSnippet(run.args) : ''));
     run.callEl.querySelector('.tool-call-name').textContent = summary;
     run.callEl.querySelector('.tool-call-args').textContent = run.args;
     // Always re-append: redrawMarkdown detaches call blocks when it clears the
@@ -1482,10 +1493,39 @@
 
   // argsSnippet flattens a tool call's JSON arguments into a short single-line
   // snippet for the result header, so results stay traceable to their calls
-  // even when a turn runs several tools.
+  // even when a turn runs several tools. Porter's own contract fields
+  // (porter_action_description, porter_timeout_seconds) are dropped: the
+  // description is shown separately via purposeOf, and the timeout is an
+  // execution detail, so the snippet is the tool's real arguments only.
+  // Malformed (still-streaming) JSON falls back to the raw text. Mirrors
+  // argsSnippet in the server's /view render.
   function argsSnippet(args) {
-    const flat = (args || '').replace(/\s+/g, ' ').trim();
+    let s = args || '';
+    try {
+      const o = JSON.parse(s);
+      if (o && typeof o === 'object' && !Array.isArray(o)) {
+        delete o.porter_action_description;
+        delete o.porter_timeout_seconds;
+        s = JSON.stringify(o);
+      }
+    } catch (e) { /* still-streaming arguments; keep the raw text */ }
+    const flat = s.replace(/\s+/g, ' ').trim();
     return flat.length > 60 ? flat.slice(0, 60) + '…' : flat;
+  }
+
+  // purposeOf extracts the porter_action_description from a tool call's
+  // arguments — the one-sentence goal the model wrote for this call — so a
+  // summary can read "shell — check whether the build server is up" instead of
+  // dumping raw arguments. Returns '' when the arguments have no parseable
+  // description (e.g. a call still streaming in).
+  function purposeOf(args) {
+    try {
+      const o = JSON.parse(args || '');
+      const d = o && typeof o.porter_action_description === 'string' ? o.porter_action_description.trim() : '';
+      return d || '';
+    } catch (e) {
+      return '';
+    }
   }
 
   // exitCodeLabel extracts the trailing "exit code: N" line the shell tool
@@ -1573,14 +1613,21 @@
   function renderResult(run) {
     const el = run.resultEl;
     if (!el) return;
+    const purpose = purposeOf(run.args);
     const base = 'tool result: ' + (run.name || '') +
-                 (run.args ? ' ' + argsSnippet(run.args) : '');
+                 (purpose ? ' — ' + purpose
+                          : (run.args ? ' ' + argsSnippet(run.args) : ''));
     let status;
     if (run.status === 'cancelled') {
       // The user stopped this run. No exit code (the process was killed), but
       // the server-derived duration is still useful.
       const dur = (run.finishedAt || 0) - (run.startedAt || 0);
       status = 'cancelled' + (dur > 0 ? ' · ' + fmtDur(dur) : '');
+    } else if (run.status === 'timed out') {
+      // The run exceeded its porter_timeout_seconds deadline. Distinct from a
+      // cancel: the server committed the partial and kept the turn going.
+      const dur = (run.finishedAt || 0) - (run.startedAt || 0);
+      status = 'timed out' + (dur > 0 ? ' · ' + fmtDur(dur) : '');
     } else if (run.status === 'done') {
       // The shell tool appends its exit status as the final line of output, so
       // a finished result shows exit_code: N (instead of 'done') plus the
@@ -2038,7 +2085,7 @@
           if (run.resultEl) {
             break;
           }
-          run.status = m.cancelled ? 'cancelled' : 'done';
+          run.status = m.timed_out ? 'timed out' : (m.cancelled ? 'cancelled' : 'done');
           run.result = m.content;
           run.toolOutput = env.tool_output;
           run.startedAt = env.started_at || 0;
@@ -2046,7 +2093,7 @@
           run.resultEl = document.createElement('details');
           run.resultEl.className = 'tool-result';
           const code = exitCodeLabel(m.content);
-          const status = m.cancelled ? 'cancelled' : (code ? code : '');
+          const status = m.timed_out ? 'timed out' : (m.cancelled ? 'cancelled' : (code ? code : ''));
           run.resultEl.innerHTML = '<summary>tool result' + (status ? ' · ' + status : '') + toolOutputBadge(run.toolOutput) + '</summary><pre><code>' + escapeHTML(m.content).replace(/\n/g, '<br>') + '</code></pre>';
           // Position the replayed result right after its owning assistant
           // message, matching /view's history layout (live placement already
@@ -2108,8 +2155,11 @@
         // series of tool_result_delta chunks that already rendered the block
         // live; getRun returns that same run and we reconcile it with the
         // authoritative full output (covering any dropped deltas, e.g. a
-        // subscriber buffer overrun), then mark it done with the server's
-        // start/finish clocks so the duration is server-derived.
+        // subscriber buffer overrun), then mark it done — or timed out when
+        // the run exceeded its porter_timeout_seconds deadline — with the
+        // server's start/finish clocks so the duration is server-derived. A
+        // timed-out run is a normal tool_result envelope (the turn continues),
+        // flagged timed_out; only a user cancel arrives as tool_cancelled.
         currentAssistant = null;
         currentReasoning = null;
         const trRun = getRun(env.tool_call_id);
@@ -2117,7 +2167,7 @@
         if (env.arguments) trRun.args = env.arguments;
         trRun.result = env.result;
         trRun.toolOutput = env.tool_output;
-        trRun.status = 'done';
+        trRun.status = env.timed_out ? 'timed out' : 'done';
         trRun.startedAt = env.started_at || trRun.startedAt || 0;
         trRun.finishedAt = env.finished_at || 0;
         ensureResult(trRun);
@@ -2154,7 +2204,7 @@
         if (env.name) trdRun.name = env.name;
         if (env.arguments) trdRun.args = env.arguments;
         trdRun.result += env.delta;
-        trdRun.status = trdRun.status === 'done' ? 'done' : 'running';
+        trdRun.status = (trdRun.status === 'done' || trdRun.status === 'timed out') ? trdRun.status : 'running';
         ensureResult(trdRun);
         renderResult(trdRun);
         break;
