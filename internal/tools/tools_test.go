@@ -303,3 +303,29 @@ func TestDispatcherEnvironmentEmpty(t *testing.T) {
 		t.Errorf("Dispatcher.Environment() = %q, want empty", got)
 	}
 }
+
+// TestShellDefSteersToDedicatedTools locks in the shell description's job
+// boundaries: it must point at the file tools and the MCP-provided web_fetch
+// instead of advertising edits and network calls as shell's job.
+func TestShellDefSteersToDedicatedTools(t *testing.T) {
+	defs := NewDispatcher().Defs()
+	var shellDesc string
+	for _, d := range defs {
+		if d.Function.Name == "shell" {
+			shellDesc = d.Function.Description
+		}
+	}
+	if shellDesc == "" {
+		t.Fatal("shell tool not declared")
+	}
+	for _, want := range []string{"read_with_line_numbers", "line_insert", "line_replace", "string_replace", "web_fetch", "curl"} {
+		if !strings.Contains(shellDesc, want) {
+			t.Errorf("shell description missing %q:\n%s", want, shellDesc)
+		}
+	}
+	for _, stale := range []string{"inspect or edit files", "make network calls"} {
+		if strings.Contains(shellDesc, stale) {
+			t.Errorf("shell description still advertises %q:\n%s", stale, shellDesc)
+		}
+	}
+}

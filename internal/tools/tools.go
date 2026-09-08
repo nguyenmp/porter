@@ -1,9 +1,11 @@
 // Package tools defines the tools an agent may call and the providers that
-// execute them. For now there are two: `shell` (running a command in the
-// working directory, which subsumes file edits and network calls) and
-// `load_skill` (loading a discovered skill's full body). Tool execution is a
-// stream so it can happen here, on a connected client, or on a remote host
-// without changing the agent loop.
+// execute them: `shell` (running a command in the working directory, the
+// escape hatch), the file editing tools (`read_with_line_numbers`,
+// `line_insert`, `line_replace`, `string_replace`), and `load_skill` (loading
+// a discovered skill's full body). The dedicated tools exist to be preferred
+// over shell for their own jobs; each error path points back to shell for
+// what it cannot do. Tool execution is a stream so it can happen here, on a
+// connected client, or on a remote host without changing the agent loop.
 package tools
 
 import (
@@ -28,7 +30,7 @@ func shellDef() llm.Tool {
 		Type: "function",
 		Function: llm.Function{
 			Name:        "shell",
-			Description: "Run a shell command in the working directory and return its output. Use this to inspect or edit files, run programs, and make network calls.",
+			Description: "Run a shell command in the working directory and return its output. Use it for anything the dedicated tools do not cover: run programs and CLIs, git, and create files. To read or change text in an existing file, prefer the file tools: read_with_line_numbers, line_insert, line_replace, string_replace. To fetch a URL, prefer web_fetch; use curl when you need methods, headers, auth, or downloads.",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
