@@ -356,6 +356,7 @@ func (s *Server) Handler() http.Handler {
 	r.Get(api.HostExecPath, s.handleHostExec)
 	r.Post(api.HostContextPath, s.handleHostContext)
 	r.Post(api.HostProviderErrorPath, s.handleHostProviderError)
+	r.Post(api.SandboxOfferPath, s.handleSandboxOffer)
 	return r
 }
 
@@ -491,6 +492,14 @@ func (s *Server) handleAppend(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+	}
+	// A sandboxed chat whose host is offline is paused: it refuses new
+	// messages instead of running them on the server's filesystem (a different
+	// environment whose file changes the sandbox would never see). The user
+	// can still opt out by selecting a provider by hand (e.g. local).
+	if reason := ses.PausedReason(); reason != "" {
+		http.Error(w, reason, http.StatusConflict)
+		return
 	}
 	ses.Enqueue(content)
 	w.WriteHeader(http.StatusAccepted)
@@ -664,7 +673,9 @@ func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
 	// persistent host agent's flow) resolves the session-create wait; a
 	// plain REPL connection has no pending provision and this is a no-op.
 	s.store.ProvisionRegistered(ses.ID(), id)
-	defer ses.UnregisterExec(id)
+	// Pass ch so a superseded registration's teardown cannot disconnect the
+	// newer connection that replaced it (see UnregisterExec).
+	defer ses.UnregisterExec(id, ch)
 
 	w.Header().Set("Content-Type", "application/x-ndjson")
 	w.WriteHeader(http.StatusOK)
@@ -742,7 +753,8 @@ func (s *Server) handleArchive(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Best-effort, non-blocking: the archive already succeeded; a missed
-	// release only leaks the sandbox until the host's next startup cleanup.
+	// release (host offline) only leaves the sandbox folder until the host's
+	// next offer, when the server refuses it and the host cleans it up.
 	s.store.ReleaseSession(id)
 	w.WriteHeader(http.StatusOK)
 }

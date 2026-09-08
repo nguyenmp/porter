@@ -92,6 +92,10 @@ const (
 	// HostProviderErrorPath reports that a host failed to provision a provider
 	// (e.g. a requested repo could not be checked out): POST.
 	HostProviderErrorPath = "/api/hosts/{host_id}/providers/{provider_id}/error"
+	// SandboxOfferPath answers an execution host's startup offer of the
+	// sandbox folders it found on disk: the server says which still belong to
+	// live chats (keep) and which are dead (refuse). POST.
+	SandboxOfferPath = "/api/hosts/{host_id}/sandboxes/offer"
 )
 
 // RepoRef names one local git repository to sandbox a session in, and the
@@ -126,6 +130,29 @@ type HostRequest struct {
 	// SessionID is the session the provider will serve.
 	SessionID string    `json:"session_id,omitempty"`
 	Repos     []RepoRef `json:"repos,omitempty"`
+}
+
+// SandboxOfferRequest is the body of an execution host's startup offer: the
+// provider ids of the sandbox folders it found on disk (each folder is named
+// by the provider id that served it). The host offers the folders on disk
+// minus the ones it is already serving.
+type SandboxOfferRequest struct {
+	Providers []string `json:"providers"`
+}
+
+// SandboxVerdict is the server's answer for one offered sandbox folder: keep
+// it (it still belongs to a live chat; SessionID names the chat to reconnect
+// it to) or refuse it (archived or unknown — the host cleans it up).
+type SandboxVerdict struct {
+	ProviderID string `json:"provider_id"`
+	Keep       bool   `json:"keep"`
+	SessionID  string `json:"session_id,omitempty"`
+}
+
+// SandboxOfferResponse is the server's full answer to a host's offer: one
+// verdict per offered folder, in the same order.
+type SandboxOfferResponse struct {
+	Verdicts []SandboxVerdict `json:"verdicts"`
 }
 
 // ExecRequest is one message the server pushes to a session's execution

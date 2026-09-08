@@ -42,8 +42,11 @@ import (
 // empty directory. Each host id owns its own sandbox root, so hosts with
 // different ids on one machine never touch each other's sandboxes, and a
 // duplicate id is stopped by a per-id file lock before it can clean or serve.
-// The host never executes in its own working directory. Stale sandboxes left
-// by a previous run are cleaned up on startup.
+// The host never executes in its own working directory. A restart never wipes
+// the sandbox root: on (re)connect the host offers the folders it found to the
+// server, which keeps the ones that still belong to live chats (they are
+// reconnected to their chats) and refuses the dead ones (the host cleans those
+// up).
 func Run(ctx context.Context, cfg config.ClientConfig) error {
 	c := client.New(cfg.ServerURL, client.BasicAuth{Username: cfg.Username, Password: cfg.Password})
 
@@ -78,7 +81,10 @@ func Run(ctx context.Context, cfg config.ClientConfig) error {
 		return fmt.Errorf("get host working directory: %w", err)
 	}
 	root := worktreeRoot(hostID)
-	cleanupStaleWorktrees(root)
+	// No startup cleanup: sandboxes from a previous run are adopted (or
+	// refused and cleaned up) through the offer/accept handshake once the host
+	// connects. Deleting first would destroy the very state this feature
+	// exists to reconnect.
 
 	// Report the host's base environment so the web UI's "new chat on" picker
 	// can show where this host runs, what skills it has, and the repos it can
@@ -148,6 +154,14 @@ func Run(ctx context.Context, cfg config.ClientConfig) error {
 		watcher.set(cancelConn)
 		err := c.ServeHost(connCtx, hostID, env.Instance, prov.provision, func() {
 			log.Printf("execution host %s: connected", hostID)
+			// Offer the sandbox folders found on disk (minus the ones already
+			// being served). Runs on its own goroutine so the exec read loop
+			// below starts draining provisions immediately; the server answers
+			// each folder, the kept ones are reconnected to their chats, and
+			// the refused ones are cleaned up. Re-offered on every reconnect:
+			// idempotent (already-serving folders are skipped), and it
+			// self-heals an offer that failed while the server was down.
+			go prov.offer(ctx)
 		})
 		cancelConn()
 		watcher.set(nil)
@@ -260,8 +274,11 @@ type provisioner struct {
 	hostID    string
 	worktrees string // this host's sandbox root (~/.porter/<hostID>/sandboxes)
 	mu        sync.Mutex
-	serves    map[string]*serveState
-	mcp       *mcp.Hub // the host's own MCP servers, served on this machine
+	// offerMu serializes offers so two reconnect blips can never run the
+	// offer/attach/gc sequence concurrently.
+	offerMu sync.Mutex
+	serves  map[string]*serveState
+	mcp     *mcp.Hub // the host's own MCP servers, served on this machine
 }
 
 // serveState is one live sandbox: the context that bounds its serve loop
@@ -373,7 +390,7 @@ func (p *provisioner) provision(req api.HostRequest) error {
 		return nil
 	}
 	disp := tools.NewDispatcherWithSkills(env.Skills)
-	go p.serve(sctx, req.SessionID, req.ProviderID, disp, sandboxDir)
+	go p.serve(sctx, req.SessionID, req.ProviderID, disp, env, sandboxDir)
 	return nil
 }
 
@@ -415,9 +432,15 @@ func (p *provisioner) release(req api.HostRequest) {
 // the sandbox directory and streaming the output back. It lives until ctx is
 // cancelled (a release request for the sandbox); on a dropped connection it
 // retries, so the provider re-registers on reconnect (e.g. after a server
-// restart) without re-provisioning.
-func (p *provisioner) serve(ctx context.Context, sessionID, providerID string, disp *tools.Dispatcher, dir string) {
+// restart) without re-provisioning. env is the sandbox's reported environment:
+// it is re-posted before each (re)connect because a server restart wipes the
+// pending-context slot, and without it the re-registered provider would lose
+// the system/files/skills message it reports to the model.
+func (p *provisioner) serve(ctx context.Context, sessionID, providerID string, disp *tools.Dispatcher, env api.ExecContext, dir string) {
 	for {
+		if err := p.c.PostExecContext(ctx, sessionID, env); err != nil && ctx.Err() == nil {
+			log.Printf("execution host: sandbox %s: re-post context: %v", providerID, err)
+		}
 		_ = p.c.ServeExec(ctx, sessionID, func(ctx context.Context, name string, args []byte) (io.ReadCloser, error) {
 			// MCP servers hosted on this machine (e.g. behind a VPN) are
 			// served here: the porter server routes CallMCP for a host-owned
@@ -433,6 +456,150 @@ func (p *provisioner) serve(ctx context.Context, sessionID, providerID string, d
 		}
 		time.Sleep(time.Second)
 	}
+}
+
+// offer lists the sandbox folders found on disk (minus the ones already being
+// served) and asks the server which still belong to live chats. Kept folders
+// are reconnected to their chats (attach); refused folders are cleaned up
+// (gc). It is called on every (re)connect and is idempotent, so a reconnect
+// storm or a server restart that wiped the offer's answer just re-offers. If
+// the server cannot answer (down, or this host id not registered), every
+// folder is kept: nothing is deleted on a guess.
+func (p *provisioner) offer(ctx context.Context) {
+	p.offerMu.Lock()
+	defer p.offerMu.Unlock()
+	entries, err := os.ReadDir(p.worktrees)
+	if err != nil {
+		log.Printf("execution host: offer: no sandbox root yet (%v)", err)
+		return
+	}
+	var providers []string
+	p.mu.Lock()
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		if _, serving := p.serves[e.Name()]; serving {
+			continue
+		}
+		providers = append(providers, e.Name())
+	}
+	p.mu.Unlock()
+	if len(providers) == 0 {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	verdicts, err := p.c.OfferSandboxes(ctx, p.hostID, providers)
+	if err != nil {
+		log.Printf("execution host: offer failed (%v); keeping all sandboxes", err)
+		return
+	}
+	for _, v := range verdicts {
+		if v.Keep && v.SessionID == "" {
+			log.Printf("execution host: offer: keep %s without a session id; refusing to attach", v.ProviderID)
+			continue
+		}
+		if v.Keep {
+			if err := p.attach(v.SessionID, v.ProviderID); err != nil {
+				log.Printf("execution host: reconnect sandbox %s: %v", v.ProviderID, err)
+			}
+			continue
+		}
+		p.gc(v.ProviderID)
+	}
+}
+
+// attach reconnects an existing sandbox folder to the chat it belongs to: it
+// is provision's twin for a sandbox that already exists on disk (created by a
+// previous host run, adopted through the offer/accept handshake). The folder
+// is the source of truth for what the sandbox holds — its worktrees are
+// re-scanned so a later release can tear them down — and once serving, the
+// chat resumes automatically (RegisterExec activates the provider). Idempotent:
+// a folder already being served is a no-op.
+func (p *provisioner) attach(sessionID, providerID string) error {
+	dir := filepath.Join(p.worktrees, providerID)
+	p.mu.Lock()
+	if _, ok := p.serves[providerID]; ok {
+		p.mu.Unlock()
+		return nil // already serving
+	}
+	p.mu.Unlock()
+	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
+		// The row says this chat has a sandbox here, but the folder is gone
+		// (deleted by hand, or this machine never had it). The chat stays
+		// paused; do not recreate or delete anything.
+		return fmt.Errorf("sandbox folder %s not found on this host", providerID)
+	}
+	// Re-discover the worktrees the folder holds (mirroring cleanup's scan) so
+	// the serve state carries them and a later release tears them down.
+	var wts []worktreeRef
+	var extraRoots []string
+	subs, err := os.ReadDir(dir)
+	if err == nil {
+		for _, sub := range subs {
+			if !sub.IsDir() {
+				continue
+			}
+			sp := filepath.Join(dir, sub.Name())
+			if repo := repoOfWorktree(sp); repo != "" {
+				wts = append(wts, worktreeRef{repo: repo, path: sp, branch: worktreeBranch(sp)})
+				extraRoots = append(extraRoots, sp)
+			}
+		}
+	}
+	env, err := exec.DiscoverRoots(dir, extraRoots)
+	if err != nil {
+		return fmt.Errorf("discover adopted sandbox: %w", err)
+	}
+	env.ID = providerID
+	env.Name = p.hostID
+	env.MCPServers = hubSummary(p.mcp, p.hostID)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	// Register the sandbox before serving it, so a release request arriving
+	// between now and the first ServeExec can stop it. The folder is never
+	// deleted here — an attach failure leaves the folder for a later offer.
+	sctx, scancel := context.WithCancel(context.Background())
+	p.mu.Lock()
+	p.serves[providerID] = &serveState{cancel: scancel, dir: dir, worktrees: wts}
+	p.mu.Unlock()
+	if err := p.c.PostExecContext(ctx, sessionID, env); err != nil {
+		scancel()
+		p.mu.Lock()
+		delete(p.serves, providerID)
+		p.mu.Unlock()
+		return fmt.Errorf("register context: %w", err)
+	}
+	disp := tools.NewDispatcherWithSkills(env.Skills)
+	go p.serve(sctx, sessionID, providerID, disp, env, dir)
+	log.Printf("execution host: reconnected session %s to sandbox %s", sessionID, providerID)
+	return nil
+}
+
+// gc deletes a sandbox folder the server refused. Worktree folders are
+// deleted even when dirty, but their branches are kept (and logged): the
+// branch is the chat's committed file history, and an unattended cleanup must
+// never destroy it — the folder is just a checkout. Empty (no-repo) sandboxes
+// hold nothing, so they are simply removed. Only folders the server refused
+// are ever touched, and a folder being served is never refused (offer skips
+// it), so this cannot delete a live sandbox.
+func (p *provisioner) gc(providerID string) {
+	dir := filepath.Join(p.worktrees, providerID)
+	p.mu.Lock()
+	if _, serving := p.serves[providerID]; serving {
+		p.mu.Unlock()
+		return
+	}
+	p.mu.Unlock()
+	if _, err := os.Stat(dir); err != nil {
+		return // already gone
+	}
+	for repo := range removeSandboxEntry(dir, true) {
+		pruneRepoWorktrees(repo)
+	}
+	log.Printf("execution host: removed refused sandbox %s", providerID)
 }
 
 // hubSummary renders a hub's servers as reported metadata, tagged with the

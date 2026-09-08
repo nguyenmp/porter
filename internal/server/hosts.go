@@ -89,3 +89,26 @@ func (s *Server) handleHostProviderError(w http.ResponseWriter, r *http.Request)
 	}
 	w.WriteHeader(http.StatusOK)
 }
+
+// handleSandboxOffer answers an execution host's startup offer: the host posts
+// the provider ids of the sandbox folders it found on disk, and the server
+// says which still belong to live, unarchived chats (keep, naming the chat to
+// reconnect it to) and which are dead (refuse — archived or unknown). The host
+// reconnects the kept sandboxes and cleans up the refused ones, so cleanup
+// only ever touches folders the server explicitly refused. An offer from a
+// host id that is not connected is refused outright (409): the host should
+// register before offering.
+func (s *Server) handleSandboxOffer(w http.ResponseWriter, r *http.Request) {
+	var req api.SandboxOfferRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid offer: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	verdicts, err := s.store.OfferSandboxes(chi.URLParam(r, "host_id"), req.Providers)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(api.SandboxOfferResponse{Verdicts: verdicts})
+}

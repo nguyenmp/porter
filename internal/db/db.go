@@ -22,7 +22,7 @@ var ErrNotFound = errors.New("db: session not found")
 
 // schemaVersion is the current schema revision, tracked in PRAGMA user_version.
 // Bump it and extend migrate when the schema changes.
-const schemaVersion = 10
+const schemaVersion = 11
 
 // DB wraps the SQLite database handle. It deliberately uses a single
 // connection: pragmas like foreign_keys are per-connection, and a single
@@ -268,6 +268,40 @@ CREATE INDEX IF NOT EXISTS idx_variants_message ON variants(session_id, message_
 			return fmt.Errorf("apply schema v10: %w", err)
 		}
 		if _, err := d.db.Exec("PRAGMA user_version=10"); err != nil {
+			return fmt.Errorf("set user_version: %w", err)
+		}
+	}
+	if v < 11 {
+		// v11: which chat a host sandbox serves, and the ledger of provider ids
+		// ever issued. A row in session_sandboxes is one durable fact —
+		// session_id (the public "session_<id>" string) runs in a sandbox on
+		// host_id under provider_id — so a chat can be reconnected to its
+		// sandbox after host and server restarts. The row lives until the chat
+		// is archived (released), never for just the host's connection.
+		// providers mints provider ids: provider ids must never be reused (a
+		// folder on disk keeps its id's name), and the mapping rows go away
+		// when chats are archived, so the id source is a ledger that only ever
+		// grows — SQLite's AUTOINCREMENT never reuses an id, even after rows
+		// are deleted. A row is inserted at mint time; whether the sandbox
+		// ever registers is a separate fact (session_sandboxes), so a
+		// provision that fails between mint and registration leaves a harmless
+		// providers row with no mapping.
+		const ddl = `
+CREATE TABLE IF NOT EXISTS session_sandboxes (
+	session_id  TEXT PRIMARY KEY,
+	host_id     TEXT NOT NULL,
+	provider_id TEXT NOT NULL UNIQUE
+);
+CREATE INDEX IF NOT EXISTS idx_session_sandboxes_host ON session_sandboxes(host_id);
+CREATE TABLE IF NOT EXISTS providers (
+	id      INTEGER PRIMARY KEY AUTOINCREMENT,
+	host_id TEXT NOT NULL
+);
+`
+		if _, err := d.db.Exec(ddl); err != nil {
+			return fmt.Errorf("apply schema v11: %w", err)
+		}
+		if _, err := d.db.Exec("PRAGMA user_version=11"); err != nil {
 			return fmt.Errorf("set user_version: %w", err)
 		}
 	}
@@ -608,4 +642,80 @@ func (d *DB) RenameSession(id int64, name string) error {
 		return fmt.Errorf("rename session: %w", err)
 	}
 	return nil
+}
+
+// Sandbox is one persisted chat-to-host-sandbox mapping: the chat (public
+// "session_<id>" string) that runs in a host's sandbox, the host that made
+// the sandbox, and the provider id the sandbox serves under (also its folder
+// name on the host). It is what lets a chat reconnect to its sandbox after
+// host and server restarts, and it lives until the chat is archived.
+type Sandbox struct {
+	SessionID  string
+	HostID     string
+	ProviderID string
+}
+
+// SaveSandbox records which chat a host sandbox serves, upserting by session
+// id (a chat has at most one sandbox).
+func (d *DB) SaveSandbox(sessionID, hostID, providerID string) error {
+	_, err := d.db.Exec(
+		`INSERT INTO session_sandboxes (session_id, host_id, provider_id) VALUES (?, ?, ?)
+		 ON CONFLICT(session_id) DO UPDATE SET host_id = excluded.host_id, provider_id = excluded.provider_id`,
+		sessionID, hostID, providerID)
+	if err != nil {
+		return fmt.Errorf("save sandbox: %w", err)
+	}
+	return nil
+}
+
+// DeleteSandbox removes a chat's sandbox mapping. It is idempotent: deleting
+// a mapping that does not exist is a no-op.
+func (d *DB) DeleteSandbox(sessionID string) error {
+	_, err := d.db.Exec("DELETE FROM session_sandboxes WHERE session_id = ?", sessionID)
+	if err != nil {
+		return fmt.Errorf("delete sandbox: %w", err)
+	}
+	return nil
+}
+
+// ListSandboxes returns every persisted chat-to-sandbox mapping, so a server
+// restart can rebuild its live registry and mark sandboxed chats before their
+// hosts reconnect.
+func (d *DB) ListSandboxes() ([]Sandbox, error) {
+	rows, err := d.db.Query("SELECT session_id, host_id, provider_id FROM session_sandboxes")
+	if err != nil {
+		return nil, fmt.Errorf("list sandboxes: %w", err)
+	}
+	defer rows.Close()
+	var out []Sandbox
+	for rows.Next() {
+		var s Sandbox
+		if err := rows.Scan(&s.SessionID, &s.HostID, &s.ProviderID); err != nil {
+			return nil, fmt.Errorf("scan sandbox: %w", err)
+		}
+		out = append(out, s)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate sandboxes: %w", err)
+	}
+	return out, nil
+}
+
+// MintProvider records that a provider id was issued for a host and returns
+// the new id. The providers table uses SQLite's AUTOINCREMENT, which never
+// reuses an id even after rows are deleted, so provider ids are never reused
+// across server restarts or archives — a sandbox folder on a host keeps its
+// id's name for as long as it exists, and a new provision must never claim
+// that name. A provision that fails after minting leaves a providers row with
+// no mapping, which is harmless: the id is still never reused.
+func (d *DB) MintProvider(hostID string) (int64, error) {
+	res, err := d.db.Exec("INSERT INTO providers (host_id) VALUES (?)", hostID)
+	if err != nil {
+		return 0, fmt.Errorf("mint provider: %w", err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return 0, fmt.Errorf("provider id: %w", err)
+	}
+	return id, nil
 }

@@ -2,11 +2,13 @@ package session
 
 import (
 	"context"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"porter/internal/api"
+	"porter/internal/db"
 )
 
 // newTestStore returns a Store with an in-memory persister, no sessions.
@@ -170,8 +172,9 @@ func TestReleaseSessionHostGone(t *testing.T) {
 		t.Fatalf("Provision: %v", err)
 	}
 
-	// The host disconnects (which also drops its sandbox records); releasing
-	// afterwards must not block, panic, or send.
+	// The host disconnects (its sandbox mappings are deliberately kept so the
+	// chat can reconnect later); releasing afterwards must not block, panic, or
+	// send.
 	st.UnregisterHost(conn)
 	st.ReleaseSession("session_1")
 }
@@ -286,5 +289,146 @@ func TestDuplicateHostErrorNamesOwnerPID(t *testing.T) {
 	_, err := st.RegisterHost(make(chan api.HostRequest, 8), "mac", "macbook", "host", "inst-2")
 	if err == nil || !strings.Contains(err.Error(), "PID 4242") {
 		t.Fatalf("rejection = %v, want it to name PID 4242", err)
+	}
+}
+
+// TestProvisionPersistsSandboxAndOfferAnswers covers the durable mapping and
+// the offer/accept handshake end to end at the store level: a provision is
+// recorded (in memory and persisted) under a unique provider id; the offer
+// answers keep for a live chat, refuse for an archived chat (its release was
+// missed because the host was down) and for unknown folders; releasing a chat
+// removes its row, so a later offer refuses its folder.
+func TestProvisionPersistsSandboxAndOfferAnswers(t *testing.T) {
+	st := newTestStore(t)
+	ch := make(chan api.HostRequest, 8)
+	st.RegisterHost(ch, "mac", "macbook", "host", "mac-inst")
+
+	live, err := st.Create(nil)
+	if err != nil {
+		t.Fatalf("Create live: %v", err)
+	}
+	archived, err := st.Create(nil)
+	if err != nil {
+		t.Fatalf("Create archived: %v", err)
+	}
+	// Provision both chats (the goroutines resolve the provisions the way the
+	// host's provider registration does).
+	provision := func(ses *Session) string {
+		got := make(chan string, 1)
+		go func() {
+			req := <-ch
+			st.ProvisionRegistered(ses.ID(), req.ProviderID)
+			got <- req.ProviderID
+		}()
+		if err := st.Provision(context.Background(), ses.ID(), "mac", api.HostRequest{}); err != nil {
+			t.Fatalf("Provision(%s): %v", ses.ID(), err)
+		}
+		return <-got
+	}
+	liveP := provision(live)
+	archivedP := provision(archived)
+	if liveP == archivedP {
+		t.Fatalf("provider ids reused: %q", liveP)
+	}
+	for _, pid := range []string{liveP, archivedP} {
+		if !strings.HasPrefix(pid, "mac-provider-") {
+			t.Errorf("provider id %q, want mac-provider-N", pid)
+		}
+	}
+
+	// Archiving while the host is "down" (no release delivered) leaves the
+	// row in place.
+	if err := st.Archive(archived.ID()); err != nil {
+		t.Fatalf("Archive: %v", err)
+	}
+
+	// The offer answers every folder: keep the live chat's, refuse the
+	// archived chat's and the unknown folder.
+	verdicts, err := st.OfferSandboxes("mac", []string{liveP, archivedP, "mac-provider-999"})
+	if err != nil {
+		t.Fatalf("OfferSandboxes: %v", err)
+	}
+	if len(verdicts) != 3 {
+		t.Fatalf("verdicts = %d, want 3", len(verdicts))
+	}
+	if !verdicts[0].Keep || verdicts[0].SessionID != live.ID() {
+		t.Errorf("verdict[0] = %+v, want keep for %s", verdicts[0], live.ID())
+	}
+	if verdicts[1].Keep {
+		t.Errorf("verdict[1] = %+v, want refuse (archived)", verdicts[1])
+	}
+	if verdicts[2].Keep {
+		t.Errorf("verdict[2] = %+v, want refuse (unknown)", verdicts[2])
+	}
+
+	// Releasing removes the persisted row: the next offer refuses the folder.
+	st.ReleaseSession(live.ID())
+	verdicts, err = st.OfferSandboxes("mac", []string{liveP})
+	if err != nil {
+		t.Fatalf("OfferSandboxes after release: %v", err)
+	}
+	if verdicts[0].Keep {
+		t.Errorf("verdict after release = %+v, want refuse", verdicts[0])
+	}
+
+	// An offer from an unregistered host is refused outright.
+	if _, err := st.OfferSandboxes("vps", []string{liveP}); err == nil {
+		t.Fatal("OfferSandboxes from unknown host succeeded, want error")
+	}
+}
+
+// TestProviderSeqSurvivesStoreRestart proves provider ids are never reused
+// across a server restart: the sequence lives in the database (not in a
+// counter that resets), so a new provision after a restart cannot claim an id
+// a sandbox folder on disk already holds.
+func TestProviderSeqSurvivesStoreRestart(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "porter.db")
+	d, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	st := NewStore(d, nil)
+	ch := make(chan api.HostRequest, 8)
+	st.RegisterHost(ch, "mac", "macbook", "host", "mac-inst")
+	ses, err := st.Create(nil)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	got := make(chan string, 1)
+	go func() {
+		req := <-ch
+		st.ProvisionRegistered(ses.ID(), req.ProviderID)
+		got <- req.ProviderID
+	}()
+	if err := st.Provision(context.Background(), ses.ID(), "mac", api.HostRequest{}); err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	first := <-got
+
+	// "Restart" the server on the same database.
+	st.Close()
+	d2, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("reopen db: %v", err)
+	}
+	defer d2.Close()
+	st2 := NewStore(d2, nil)
+	st2.RegisterHost(ch, "mac", "macbook", "host", "mac-inst")
+	ses2, err := st2.Create(nil)
+	if err != nil {
+		t.Fatalf("Create after restart: %v", err)
+	}
+	got2 := make(chan string, 1)
+	go func() {
+		req := <-ch
+		st2.ProvisionRegistered(ses2.ID(), req.ProviderID)
+		got2 <- req.ProviderID
+	}()
+	if err := st2.Provision(context.Background(), ses2.ID(), "mac", api.HostRequest{}); err != nil {
+		t.Fatalf("Provision after restart: %v", err)
+	}
+	second := <-got2
+	if first == second {
+		t.Fatalf("provider id %q reused across restart", first)
 	}
 }

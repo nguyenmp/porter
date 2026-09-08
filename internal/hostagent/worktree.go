@@ -240,18 +240,12 @@ func removeWorktree(repo, path, branch string) error {
 	return nil
 }
 
-// cleanupStaleWorktrees removes sandboxes left behind by a previous host run
-// (the host died without releasing them). Every directory under the sandbox
-// root is a container the host created — sandboxes are never anything else —
-// so cleanup removes each one, properly tearing down any worktrees it holds
-// first. A worktree's .git file records the repo it came from ("gitdir:
-// <repo>/.git/worktrees/<name>"), so cleanup can derive the repo to remove —
-// no sidecar needed. Two layouts are handled: a legacy flat sandbox where the
-// entry itself is the worktree, and a container whose entry holds one worktree
-// per repo in subdirectories (or none at all, for a sandbox with no repos).
-// The branch to delete is read from each worktree's HEAD (the branch the
-// sandbox was created on). The repos are pruned of stale admin entries
-// afterwards. Best effort: failures are logged, never fatal.
+// cleanupStaleWorktrees removes sandboxes left behind by a previous host run,
+// deleting each one's worktree branches too. It is the supervised, full
+// teardown variant of removeSandboxEntry (keepBranch=false) — the host no
+// longer calls it at startup (sandboxes are adopted or refused via the
+// offer/accept handshake instead), but it stays as the destructive primitive
+// for tests and anything that must fully remove a sandbox root's leftovers.
 func cleanupStaleWorktrees(root string) {
 	entries, err := os.ReadDir(root)
 	if err != nil {
@@ -262,43 +256,80 @@ func cleanupStaleWorktrees(root string) {
 		if !e.IsDir() {
 			continue
 		}
-		path := filepath.Join(root, e.Name())
-		if repo := repoOfWorktree(path); repo != "" {
-			// Legacy flat sandbox: the entry is the worktree itself.
-			if err := removeWorktree(repo, path, worktreeBranch(path)); err != nil {
-				log.Printf("execution host: cleanup stale worktree %s: %v", path, err)
-			}
-			_ = os.RemoveAll(path)
-			prune[repo] = true
-			continue
-		}
-		// Container: the entry holds one worktree per repo, or none at all
-		// (an empty sandbox). Any worktrees inside are removed properly so
-		// the repos' admin entries are pruned; then the container goes.
-		subs, err := os.ReadDir(path)
-		if err != nil {
-			_ = os.RemoveAll(path)
-			continue
-		}
-		for _, sub := range subs {
-			if !sub.IsDir() {
-				continue
-			}
-			sp := filepath.Join(path, sub.Name())
-			repo := repoOfWorktree(sp)
-			if repo == "" {
-				continue // not a worktree we created: leave it
-			}
-			if err := removeWorktree(repo, sp, worktreeBranch(sp)); err != nil {
-				log.Printf("execution host: cleanup stale worktree %s: %v", sp, err)
-			}
+		for repo := range removeSandboxEntry(filepath.Join(root, e.Name()), false) {
 			prune[repo] = true
 		}
-		_ = os.RemoveAll(path)
 	}
 	for repo := range prune {
 		pruneRepoWorktrees(repo)
 	}
+}
+
+// removeSandboxEntry removes one entry under the sandbox root — a container
+// holding one git worktree per repo in subdirectories (or none at all, for an
+// empty sandbox with no repos), or a legacy flat sandbox where the entry
+// itself is the worktree. A worktree's .git file records the repo it came from
+// ("gitdir: <repo>/.git/worktrees/<name>"), so the repo is derived from disk —
+// no sidecar needed — and the branch to delete is read from the worktree's
+// HEAD. keepBranch=true removes worktree folders (even dirty ones, with
+// --force) but leaves their branches in place, logging each kept branch: an
+// unattended cleanup must never destroy the branch, which is the chat's
+// committed file history. keepBranch=false also deletes the branches
+// (supervised teardown). Returns the repos whose worktree admin entries should
+// be pruned. Best effort: failures are logged, never fatal, and a folder that
+// fails to tear down is still removed from disk.
+func removeSandboxEntry(path string, keepBranch bool) map[string]bool {
+	prune := map[string]bool{}
+	teardown := func(sp string) {
+		repo := repoOfWorktree(sp)
+		if repo == "" {
+			return // not a worktree we created: leave it
+		}
+		branch := worktreeBranch(sp)
+		if keepBranch {
+			// git worktree remove refuses a dirty folder; --force deletes it
+			// anyway (uncommitted work is lost — the folder is just a
+			// checkout), while the branch — the committed history — survives.
+			cmd := exec.Command("git", "-C", repo, "worktree", "remove", "--force", sp)
+			if out, err := cmd.CombinedOutput(); err != nil {
+				log.Printf("execution host: remove worktree folder %s: %v: %s", sp, err, strings.TrimSpace(string(out)))
+				return
+			}
+			if branch != "" {
+				log.Printf("execution host: kept branch %s after removing sandbox folder %s", branch, sp)
+			}
+			prune[repo] = true
+			return
+		}
+		if err := removeWorktree(repo, sp, branch); err != nil {
+			log.Printf("execution host: remove stale worktree %s: %v", sp, err)
+			return
+		}
+		prune[repo] = true
+	}
+	if repo := repoOfWorktree(path); repo != "" {
+		// Legacy flat sandbox: the entry is the worktree itself.
+		teardown(path)
+		_ = os.RemoveAll(path)
+		prune[repo] = true
+		return prune
+	}
+	// Container: hold one worktree per repo, or none at all (an empty
+	// sandbox). Any worktrees inside are removed properly so the repos' admin
+	// entries are pruned; then the container goes.
+	subs, err := os.ReadDir(path)
+	if err != nil {
+		_ = os.RemoveAll(path)
+		return prune
+	}
+	for _, sub := range subs {
+		if !sub.IsDir() {
+			continue
+		}
+		teardown(filepath.Join(path, sub.Name()))
+	}
+	_ = os.RemoveAll(path)
+	return prune
 }
 
 // worktreeBranch returns the branch a linked worktree currently has checked

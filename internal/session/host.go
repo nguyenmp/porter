@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"sort"
 	"time"
 
@@ -156,11 +157,10 @@ func (st *Store) UnregisterHost(conn string) {
 			close(p.done)
 		}
 	}
-	for sid, sb := range st.sandboxes {
-		if sb.hostID == victim.id {
-			delete(st.sandboxes, sid)
-		}
-	}
+	// The host's per-session sandboxes are deliberately NOT dropped here: the
+	// mapping is what lets a chat reconnect to its sandbox when the host comes
+	// back, and it lives (persisted) until the chat is archived. Each sandbox's
+	// provider holds its own exec connection and pauses/reconnects on its own.
 }
 
 // SetHostContext stores the base environment context a connected execution
@@ -228,9 +228,18 @@ func (st *Store) Provision(ctx context.Context, sessionID, hostID string, req ap
 		st.mu.Unlock()
 		return fmt.Errorf("execution host %q is not connected", hostID)
 	}
-	st.hostSeq++
+	// Provider ids are minted from a ledger that lives in the database
+	// (providers.id, AUTOINCREMENT), so a server restart or archived chats can
+	// never cause one to be reused — a sandbox folder on the host keeps its
+	// id's name for as long as it exists, and a new provision must never claim
+	// that name.
+	seq, err := st.persist.MintProvider(hostID)
+	if err != nil {
+		st.mu.Unlock()
+		return fmt.Errorf("mint provider id: %w", err)
+	}
 	req.Kind = "provision"
-	req.ProviderID = fmt.Sprintf("%s-provider-%d", hostID, st.hostSeq)
+	req.ProviderID = fmt.Sprintf("%s-provider-%d", hostID, seq)
 	req.SessionID = sessionID
 	p := &pendingProvision{providerID: req.ProviderID, sessionID: sessionID, hostID: hostID, done: make(chan struct{})}
 	st.pending[req.ProviderID] = p
@@ -272,25 +281,41 @@ func (st *Store) dropProvision(providerID string) {
 // registered on its session (the host opened the exec connection). It is
 // called by the server after RegisterExec, so the session-create wait returns
 // as soon as the provider is live and active. Every provision is sandboxed,
-// so the registration is always recorded so archiving the session can release
-// the sandbox.
+// so the registration is recorded — in memory and in the persister, so a
+// server restart can reconnect the chat to its sandbox — and the chat is
+// marked sandboxed so the pause rule applies to it.
 func (st *Store) ProvisionRegistered(sessionID, providerID string) {
 	st.mu.Lock()
 	p, ok := st.pending[providerID]
-	if ok && p.sessionID == sessionID {
-		delete(st.pending, providerID)
-		close(p.done)
-		st.sandboxes[sessionID] = &sandbox{hostID: p.hostID, providerID: providerID}
+	if !ok || p.sessionID != sessionID {
+		st.mu.Unlock()
+		return
 	}
+	delete(st.pending, providerID)
+	close(p.done)
+	hostID := p.hostID
+	st.sandboxes[sessionID] = &sandbox{hostID: hostID, providerID: providerID}
 	st.mu.Unlock()
+
+	// Best-effort: a failed persist only loses the mapping across a restart
+	// (the folder is then refused and cleaned up on the next host restart),
+	// never the live registration.
+	if err := st.persist.SaveSandbox(sessionID, hostID, providerID); err != nil {
+		log.Printf("record sandbox for %s: %v", sessionID, err)
+	}
+	if ses, ok := st.Get(sessionID); ok {
+		ses.setSandbox(providerID, hostID)
+	}
 }
 
 // ReleaseSession tells the execution host that provisioned a session's
 // sandbox to tear it down (the server sends this when the session is
 // archived). It is best-effort and non-blocking: the session is already gone
 // from the user's flow, so a missed release (host disconnected, channel full)
-// only leaks the sandbox until the host restarts (startup cleanup) — never
-// blocks or fails the archive. Idempotent: a session with no recorded sandbox
+// only leaks the sandbox until the host's next restart, when the offer/refuse
+// flow cleans it up — never blocks or fails the archive. The persisted
+// mapping is removed so the chat is no longer sandboxed (a later unarchive
+// makes it a normal chat). Idempotent: a session with no recorded sandbox
 // (already released) is a no-op.
 func (st *Store) ReleaseSession(sessionID string) {
 	st.mu.Lock()
@@ -301,16 +326,27 @@ func (st *Store) ReleaseSession(sessionID string) {
 	}
 	delete(st.sandboxes, sessionID)
 	h, ok := st.hosts[sb.hostID]
-	if !ok || !h.connected || h.ch == nil {
-		st.mu.Unlock()
-		return
+	var ch chan api.HostRequest
+	if ok && h.connected && h.ch != nil {
+		ch = h.ch
 	}
-	ch := h.ch
+	providerID := sb.providerID
 	st.mu.Unlock()
 
+	if ses, ok := st.Get(sessionID); ok {
+		ses.clearSandbox()
+	}
+	// Best-effort: a failed delete only leaks the mapping until the next
+	// server restart rebuilds it from the same row.
+	if err := st.persist.DeleteSandbox(sessionID); err != nil {
+		log.Printf("forget sandbox for %s: %v", sessionID, err)
+	}
+	if ch == nil {
+		return
+	}
 	select {
-	case ch <- api.HostRequest{Kind: "release", ProviderID: sb.providerID, SessionID: sessionID}:
-	default: // host channel full: the host will reconnect; startup cleanup covers the leak
+	case ch <- api.HostRequest{Kind: "release", ProviderID: providerID, SessionID: sessionID}:
+	default: // host channel full: the host will reconnect; the offer/refuse flow cleans up
 	}
 }
 
@@ -328,4 +364,36 @@ func (st *Store) HostProviderError(hostID, providerID, msg string) error {
 	p.err = fmt.Errorf("provision failed: %s", msg)
 	close(p.done)
 	return nil
+}
+
+// OfferSandboxes answers an execution host's startup offer: the host lists the
+// sandbox folders it found on disk (by provider id), and the server says which
+// still belong to live, unarchived chats (keep, naming the chat) and which are
+// dead — archived, or no mapping at all (refuse). The host reconnects the kept
+// sandboxes and cleans up the refused ones. The mapping table is the source of
+// truth, so the host never has to guess whether a folder is waiting to be
+// attached or abandoned: every offered folder gets an answer.
+func (st *Store) OfferSandboxes(hostID string, providers []string) ([]api.SandboxVerdict, error) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	h, ok := st.hosts[hostID]
+	if !ok || !h.connected {
+		return nil, fmt.Errorf("execution host %q is not connected", hostID)
+	}
+	out := make([]api.SandboxVerdict, 0, len(providers))
+	for _, pid := range providers {
+		v := api.SandboxVerdict{ProviderID: pid}
+		for sessionID, sb := range st.sandboxes {
+			if sb.hostID != hostID || sb.providerID != pid {
+				continue
+			}
+			if ses, ok := st.sessions[sessionID]; ok && !ses.Archived() {
+				v.Keep = true
+				v.SessionID = sessionID
+			}
+			break
+		}
+		out = append(out, v)
+	}
+	return out, nil
 }

@@ -3921,3 +3921,70 @@ func TestTimingAnnotationReachesModelNotStorage(t *testing.T) {
 		t.Errorf("final stored assistant = role %q content %q, want prose 'done' (unannotated)", last.Role, last.Content)
 	}
 }
+
+// TestSandboxedChatPausesAndOfferEndpoint covers the feature end to end over
+// HTTP: a chat provisioned on a host whose provider is not connected is
+// paused (append is refused with a clear reason, not run on the server); the
+// host's startup offer gets keep/refuse verdicts naming the live chat; and
+// once the provider reconnects, appends are accepted again.
+func TestSandboxedChatPausesAndOfferEndpoint(t *testing.T) {
+	s, ts := startServerDB(t, filepath.Join(t.TempDir(), "porter.db"), plainLLM())
+	c := client.New(ts.URL)
+	ctx := context.Background()
+
+	info, err := c.Create(ctx)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// Register the host and provision the chat's sandbox (the goroutine
+	// resolves the provision the way the host's provider registration does).
+	ch := make(chan api.HostRequest, 8)
+	if _, err := s.store.RegisterHost(ch, "mac", "macbook", "host", "inst-1"); err != nil {
+		t.Fatalf("RegisterHost: %v", err)
+	}
+	got := make(chan string, 1)
+	go func() {
+		req := <-ch
+		s.store.ProvisionRegistered(info.ID, req.ProviderID)
+		got <- req.ProviderID
+	}()
+	if err := s.store.Provision(ctx, info.ID, "mac", api.HostRequest{}); err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	providerID := <-got
+
+	// The chat is sandboxed but its host provider never connected: appending
+	// is refused, so nothing runs on the server's filesystem.
+	if err := c.Append(ctx, info.ID, "run this for me"); err == nil ||
+		!strings.Contains(err.Error(), "offline") {
+		t.Fatalf("Append while paused = %v, want an offline error", err)
+	}
+
+	// The host's startup offer: the server keeps the live chat's folder
+	// (naming the chat) and refuses the unknown folder.
+	verdicts, err := c.OfferSandboxes(ctx, "mac", []string{providerID, "mac-provider-999"})
+	if err != nil {
+		t.Fatalf("OfferSandboxes: %v", err)
+	}
+	if len(verdicts) != 2 {
+		t.Fatalf("verdicts = %d, want 2", len(verdicts))
+	}
+	if !verdicts[0].Keep || verdicts[0].SessionID != info.ID {
+		t.Errorf("verdict[0] = %+v, want keep for %s", verdicts[0], info.ID)
+	}
+	if verdicts[1].Keep {
+		t.Errorf("verdict[1] = %+v, want refuse", verdicts[1])
+	}
+
+	// The host reconnects (its provider registers on the session): the chat
+	// resumes and appends are accepted.
+	ses, ok := s.store.Get(info.ID)
+	if !ok {
+		t.Fatalf("session %s not found", info.ID)
+	}
+	ses.RegisterExec(make(chan api.ExecRequest, 8), providerID, "macbook", "host")
+	if err := c.Append(ctx, info.ID, "hi"); err != nil {
+		t.Fatalf("Append after reconnect: %v", err)
+	}
+}

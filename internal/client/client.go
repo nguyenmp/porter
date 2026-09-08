@@ -475,3 +475,20 @@ func (c *Client) ServeHost(ctx context.Context, hostID, instance string, provisi
 	}
 	return nil
 }
+
+// OfferSandboxes posts the startup offer — the provider ids of the sandbox
+// folders found on disk — and returns the server's verdicts: which still
+// belong to live chats (keep) and which are dead (refuse). The caller
+// reconnects the kept sandboxes and cleans up the refused ones.
+func (c *Client) OfferSandboxes(ctx context.Context, hostID string, providers []string) ([]api.SandboxVerdict, error) {
+	body, err := json.Marshal(api.SandboxOfferRequest{Providers: providers})
+	if err != nil {
+		return nil, fmt.Errorf("marshal sandbox offer: %w", err)
+	}
+	u := strings.Replace(api.SandboxOfferPath, "{host_id}", url.PathEscape(hostID), 1)
+	var resp api.SandboxOfferResponse
+	if err := c.doJSON(ctx, http.MethodPost, c.base+u, body, &resp); err != nil {
+		return nil, err
+	}
+	return resp.Verdicts, nil
+}

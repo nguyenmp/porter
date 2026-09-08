@@ -73,6 +73,18 @@ type Persister interface {
 	// clears it back to the preview fallback (the first user message). Names
 	// are display-only: the id stays the session's identity.
 	RenameSession(id int64, name string) error
+	// SaveSandbox records which host sandbox serves a chat (upsert by session
+	// id), so a chat can reconnect to its sandbox after restarts.
+	SaveSandbox(sessionID, hostID, providerID string) error
+	// DeleteSandbox removes a chat's sandbox mapping (idempotent).
+	DeleteSandbox(sessionID string) error
+	// ListSandboxes returns every persisted chat-to-sandbox mapping, for a
+	// server restart to rebuild its live registry.
+	ListSandboxes() ([]db.Sandbox, error)
+	// MintProvider records that a provider id was issued for a host and returns
+	// the new id. AUTOINCREMENT never reuses an id, so provider ids are unique
+	// across restarts and archives.
+	MintProvider(hostID string) (int64, error)
 }
 
 // Store owns the live set of sessions. Sessions are created by persisting a
@@ -105,8 +117,10 @@ type Store struct {
 	hostSeq        int
 	connSeq        int
 	// sandboxes tracks, per session, the sandbox a host provisioned for it
-	// (recorded when the provider registers), so archiving the session can
-	// release the sandbox.
+	// (recorded when the provider registers and rebuilt from the persister at
+	// startup), so archiving the session can release the sandbox and a chat
+	// can be reconnected to its sandbox after host/server restarts. A row
+	// lives until the chat is archived — never just for the host's connection.
 	sandboxes map[string]*sandbox
 }
 
@@ -255,6 +269,24 @@ func (st *Store) Load(client *llm.Client) error {
 		st.mu.Unlock()
 		go s.loop(st.ctx)
 	}
+	// Rebuild the sandbox registry from the persisted mappings so a restarted
+	// server knows which chats run on which host — and marks them sandboxed —
+	// before their hosts reconnect. A mapping whose session is gone (shouldn't
+	// happen: rows are deleted when a session is archived) is skipped.
+	rows, err := st.persist.ListSandboxes()
+	if err != nil {
+		return fmt.Errorf("load sandboxes: %w", err)
+	}
+	for _, r := range rows {
+		ses, ok := st.sessions[r.SessionID]
+		if !ok {
+			continue
+		}
+		st.mu.Lock()
+		st.sandboxes[r.SessionID] = &sandbox{hostID: r.HostID, providerID: r.ProviderID}
+		st.mu.Unlock()
+		ses.setSandbox(r.ProviderID, r.HostID)
+	}
 	return nil
 }
 
@@ -363,6 +395,17 @@ type Session struct {
 	// provider and the picker.
 	localCtx  *api.ExecContext
 	clientSeq int
+
+	// sandboxProvider and sandboxHost record that this chat runs in a sandbox
+	// on an execution host (see Store.sandboxes): the provider that serves the
+	// sandbox and the host that owns it. They are set when a sandboxed
+	// provider registers and when the persisted mapping loads at server
+	// startup, and cleared when the chat is archived (its sandbox released).
+	// They drive the pause rule: while the host provider is offline the chat
+	// must not silently fall back to running on the server, so PausedReason
+	// reports why instead and tool calls fail fast.
+	sandboxProvider string
+	sandboxHost     string
 
 	execCalls map[string]*execCall
 	execSeq   int
@@ -488,10 +531,15 @@ func (s *Session) provider() tools.Provider {
 
 // activeProviderLocked returns the provider for the session's active
 // execution client: a remoteProvider routing to that client when a remote is
-// selected, else the local provider (the server process).
+// selected, a pausedProvider when a sandboxed chat's host provider is offline
+// (it must not fall back to the server), else the local provider (the server
+// process).
 func (s *Session) activeProviderLocked() tools.Provider {
 	if c, ok := s.execClients[s.activeExec]; ok && c.connected && c.kind != "local" {
 		return &remoteProvider{sess: s}
+	}
+	if s.sandboxProvider != "" && s.activeExec == s.sandboxProvider {
+		return pausedProvider{host: s.sandboxHost}
 	}
 	if s.local == nil {
 		ctx := s.localContextLocked()
@@ -577,6 +625,16 @@ func (s *Session) runTurn(ctx context.Context, content string, receivedAt int64)
 	// client can dedup the turn's outcome against what /view already rendered.
 
 	done := api.Envelope{Kind: api.KindTurnDone, TurnID: turnID, TurnSeq: turnSeq}
+	// A sandboxed chat whose host went offline before this queued message ran
+	// must not start a turn at all: nothing should run on the server's
+	// filesystem, so the turn fails fast with the pause reason. (Messages sent
+	// while paused are already refused at the append endpoint; this catches
+	// the ones queued just before the host dropped.)
+	if reason := s.PausedReason(); reason != "" {
+		done.Error = reason
+		s.endTurn(done)
+		return
+	}
 	// Persist each request's usage/error as the agent produces it (the query's
 	// origin), so turns are rebuildable from the database on a reload.
 	onQuery := func(q agent.Query) error { return s.commitQuery(turnSeq, q) }

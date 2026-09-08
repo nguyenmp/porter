@@ -92,7 +92,7 @@ func (r *remoteProvider) Run(ctx context.Context, name string, args []byte) (io.
 	c, ok := s.execClients[s.activeExec]
 	s.mu.Unlock()
 
-	if !ok || c == nil || c.ch == nil {
+	if !ok || c == nil || !c.connected || c.ch == nil {
 		s.dropCall(callID, pw)
 		return nil, errors.New("no execution client connected")
 	}
@@ -137,6 +137,27 @@ func (p *localProvider) Run(ctx context.Context, name string, args []byte) (io.R
 	return p.d.Run(ctx, name, args)
 }
 
+// pausedProvider is what a sandboxed chat's tools resolve to while its host
+// is offline: every run fails fast with a clear error instead of silently
+// falling back to the server's local execution (a different environment,
+// whose file changes the sandbox would never see). The chat resumes on the
+// host provider automatically when it reconnects.
+type pausedProvider struct {
+	host string
+}
+
+// Defs reports no tools while paused: the model cannot act, so it should not
+// be offered anything to try.
+func (pausedProvider) Defs() []llm.Tool { return nil }
+
+// Environment reports nothing while paused.
+func (pausedProvider) Environment() string { return "" }
+
+// Run fails fast: there is nowhere to run.
+func (p pausedProvider) Run(ctx context.Context, name string, args []byte) (io.ReadCloser, error) {
+	return nil, fmt.Errorf("host %q is offline; this chat is paused until the host reconnects", p.host)
+}
+
 // execCall tracks one in-flight tool call awaiting the client's streamed result.
 type execCall struct {
 	pw *io.PipeWriter
@@ -171,8 +192,12 @@ func (s *Session) ExecStatus() api.ExecStatus {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	st := api.ExecStatus{ActiveID: s.activeExec}
-	if c, ok := s.execClients[s.activeExec]; ok && c.connected && c.kind != "local" {
-		st.Connected = true
+	if c, ok := s.execClients[s.activeExec]; ok && c.kind != "local" {
+		// The active provider is a remote client — connected or not. A
+		// sandboxed chat whose host is offline keeps its provider selected
+		// (paused), so the status must report that provider as disconnected
+		// rather than claiming execution fell back to "local".
+		st.Connected = c.connected
 		st.Kind = c.kind
 		st.Context = c.ctx
 	} else {
@@ -248,22 +273,51 @@ func (s *Session) RegisterExec(ch chan api.ExecRequest, id, name, kind string) s
 	return id
 }
 
-// UnregisterExec removes a connected execution client from the registry and,
-// when it was the active provider, closes its in-flight calls (so the agent
-// does not hang) and reverts to local execution with a queued system notice.
-// A non-active client's disconnect only updates the registry — the model's
-// environment didn't change — but the status is still broadcast so the
-// selector drops the entry.
-func (s *Session) UnregisterExec(id string) {
+// UnregisterExec removes a connected execution client from the registry. For
+// a plain client that is the active provider, it closes the client's in-flight
+// calls (so the agent does not hang) and reverts to local execution with a
+// queued system notice. For a sandboxed chat's host provider it does NOT
+// revert: the chat is paused (its tools fail fast, new messages are refused)
+// until the provider reconnects, so nothing silently runs on the server's
+// filesystem instead of the sandbox. A non-active client's disconnect only
+// updates the registry — the model's environment didn't change — but the
+// status is still broadcast so the selector reflects it.
+//
+// expect, when given, is the exec channel of the connection this unregister
+// belongs to: a disconnect from a registration that a newer connection for the
+// same provider id superseded is a no-op, so a stale connection's teardown can
+// never disconnect the live replacement.
+func (s *Session) UnregisterExec(id string, expect ...chan api.ExecRequest) {
 	s.mu.Lock()
-	_, ok := s.execClients[id]
+	c, ok := s.execClients[id]
 	if !ok {
 		s.mu.Unlock()
 		return
 	}
+	if len(expect) > 0 && expect[0] != c.ch {
+		s.mu.Unlock()
+		return // superseded by a newer registration for this provider id
+	}
+	sandboxProvider := s.sandboxProvider != "" && s.sandboxProvider == id
+	active := s.activeExec == id
+	if sandboxProvider {
+		// Keep the client registered but offline, and keep it active, so the
+		// session reads as paused (selected provider offline) instead of
+		// reverting to local. A reconnect (RegisterExec) flips it back.
+		c.connected = false
+		for callID, call := range s.execCalls {
+			_ = call.pw.CloseWithError(errors.New("execution host disconnected"))
+			delete(s.execCalls, callID)
+		}
+		s.mu.Unlock()
+		if active {
+			s.queueProviderNotice("execution host disconnected; this chat is paused until it reconnects")
+		}
+		s.publishStatus()
+		return
+	}
 	delete(s.execClients, id)
-	reverted := s.activeExec == id
-	if reverted {
+	if active {
 		s.activeExec = "local"
 		for callID, call := range s.execCalls {
 			_ = call.pw.CloseWithError(errors.New("execution client disconnected"))
@@ -272,7 +326,7 @@ func (s *Session) UnregisterExec(id string) {
 	}
 	s.mu.Unlock()
 
-	if reverted {
+	if active {
 		s.queueProviderNotice("execution provider disconnected; reverting to local execution")
 	}
 	s.publishStatus()

@@ -352,7 +352,11 @@ Build order:
         working directory), holding git worktrees on one or more shared repos
         (each chat gets its own branch per repo) or empty when no repo is
         named — and serves it as that chat's execution provider; archiving a
-        sandboxed chat releases its sandbox
+        sandboxed chat releases its sandbox; a host restart reconnects each
+        chat to its own sandbox (the host offers the folders it finds to the
+        server, which keeps the live chats' folders and refuses the dead
+        ones) instead of wiping them, and a sandboxed chat pauses while its
+        host is offline rather than silently running on the server
 - [ ] Metrics & performance (tokens/sec, tool timing, worktree cache)
 - [x] Tool output trimming (`tool_output` head+tail model view, `read_output` recall) — full output kept in History/DB, only the model view trimmed
 - [ ] Token budget before send
