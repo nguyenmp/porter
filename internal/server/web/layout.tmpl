@@ -187,6 +187,15 @@
 		.msg-content ul, .msg-content ol { padding-left: 1.5em; }
 		.msg-content blockquote { border-left: 3px solid #ccc; margin: 0.5em 0; padding-left: 1em; color: #666; }
 		.msg-content h1, .msg-content h2, .msg-content h3 { margin: 0.5em 0 0.3em; }
+		/* Mermaid diagrams replace their source code block with a rendered
+		   SVG once the message commits: white card (mermaid colors assume a
+		   light ground, unlike the dark code blocks around it), centered, and
+		   scrollable sideways so a wide diagram never blows out the message. */
+		.msg-content .mermaid { background: #fff; border-radius: 4px; padding: 0.5rem 0.25rem; margin: 0.5em 0; overflow-x: auto; text-align: center; }
+		.msg-content .mermaid svg { max-width: 100%; height: auto; }
+		/* A diagram that failed to parse keeps its source code block and gains
+		   this caption, so the message still reads as authored. */
+		.mermaid-error { font-size: 0.8em; color: #999; margin: 0.5em 0 0; }
 		/* Humanize variant tabs: an assistant reply that got plain-language
 		   passes shows "Original" + "Humanized N" tabs above its content. The
 		   first pass is automatic; the "+" button chains another pass from the

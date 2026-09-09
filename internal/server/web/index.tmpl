@@ -911,6 +911,9 @@
     // form submit can never yank the user back down.
     chat.addEventListener('htmx:afterSwap', function() {
       initReasoningBlocks(chat);
+      // Mermaid fences in the freshly swapped history (server-rendered, so
+      // committed) become diagrams here; live streaming stays plain code.
+      hydrateMermaid(chat);
       // Time chips are client-built from the server's raw epoch-ms, so every
       // /view swap (which replaced the whole chat DOM) re-hydrates them.
       hydrateTimes(chat);
@@ -1177,6 +1180,108 @@
     (root || document).querySelectorAll('.reasoning[data-reasoning]:not(.reasoning-inited)').forEach(function(el) {
       initReasoning(el, el.dataset.reasoning);
       el.removeAttribute('data-reasoning');
+    });
+  }
+
+  // --- Mermaid diagrams ---
+  // A ```mermaid fence renders as a plain code block in both markdown paths
+  // (goldmark server-side, markdown-it live) because neither emits raw HTML.
+  // Once content is committed — a message_committed swap, a /view history
+  // load, or a humanize pane — hydrateMermaid turns each fence into a
+  // diagram. The library is not vendored (its min.js is ~3.4 MB): the page
+  // loads it from the jsdelivr CDN, pinned to 11.17.2 with an SRI integrity
+  // hash, only when the first fence appears — a chat with no diagrams never
+  // downloads it. htmx already loads from a CDN (unpkg), so the web UI does
+  // not claim to work offline. The diagram source is read as textContent,
+  // and both renderers HTML-escape code text, so no markup can ever reach
+  // mermaid; mermaid's own sanitizer (securityLevel: strict, the v11
+  // default) runs before its SVG touches the DOM. A data-mermaid marker
+  // keeps a rescan from rendering a block twice; a /view swap replaces the
+  // whole chat DOM, so the fresh blocks hydrate on that swap. Live
+  // streaming is left as code on purpose: the streamed copy is transient
+  // and the committed swap replaces it.
+  let mermaidInit = false;
+  let mermaidSeq = 0;
+  let mermaidScript = null; // in-flight promise while the CDN script loads
+  function loadMermaid() {
+    if (typeof window.mermaid !== 'undefined') return Promise.resolve(window.mermaid);
+    if (!mermaidScript) {
+      mermaidScript = new Promise(function(resolve, reject) {
+        const s = document.createElement('script');
+        s.src = 'https://cdn.jsdelivr.net/npm/mermaid@11.17.2/dist/mermaid.min.js';
+        s.integrity = 'sha256-WB7X10vZBI0OOpE2OSfXLvIpQtdyJUayf3zCnjU5Drg=';
+        s.crossOrigin = 'anonymous';
+        s.onload = function() { resolve(window.mermaid); };
+        s.onerror = function() {
+          mermaidScript = null; // allow a later retry (e.g. after a reconnect)
+          reject(new Error('could not load the mermaid library'));
+        };
+        document.head.appendChild(s);
+      });
+    }
+    return mermaidScript;
+  }
+  function mermaidErrorNote(pre, err) {
+    // Keep the source code block (it still reads as authored) and say why
+    // it is not a diagram.
+    pre.dataset.mermaid = 'error';
+    const note = document.createElement('div');
+    note.className = 'mermaid-error';
+    note.textContent = 'Could not render this diagram: ' + ((err && err.message) || err) + '. Showing the source instead.';
+    pre.parentNode.insertBefore(note, pre);
+  }
+  // mermaid's render is not safe to run concurrently (it keeps shared global
+  // state), and one /view load can present many fences at once, so queue the
+  // renders on a single chain instead of firing them in parallel.
+  let mermaidChain = Promise.resolve();
+  function hydrateMermaid(root) {
+    if (!root) return;
+    const blocks = root.querySelectorAll('pre > code.language-mermaid');
+    if (blocks.length === 0) return;
+    if (typeof window.mermaid === 'undefined') {
+      // First fence on this page: fetch the library, then hydrate the same
+      // blocks once it is here. A failed load leaves the source blocks in
+      // place with an error note each.
+      loadMermaid().then(function() {
+        hydrateMermaid(root);
+      }).catch(function(err) {
+        blocks.forEach(function(code) {
+          const pre = code.parentElement;
+          if (pre.isConnected && !pre.dataset.mermaid) mermaidErrorNote(pre, err);
+        });
+      });
+      return;
+    }
+    if (!mermaidInit) {
+      window.mermaid.initialize({ startOnLoad: false, securityLevel: 'strict' });
+      mermaidInit = true;
+    }
+    blocks.forEach(function(code) {
+      const pre = code.parentElement;
+      // pending skips a block already queued by an earlier scan; done/error
+      // keep a rendered block (or a failed one with its caption) from being
+      // retried. A /view swap replaces the whole chat DOM, so the fresh
+      // blocks carry no marker and hydrate on that swap.
+      if (pre.dataset.mermaid) return;
+      pre.dataset.mermaid = 'pending';
+      const id = 'mmd-' + (++mermaidSeq);
+      const text = code.textContent;
+      mermaidChain = mermaidChain.then(function() {
+        // A /view swap may have replaced this block while earlier renders
+        // ran; leave the fresh copy to its own hydration pass.
+        if (!pre.isConnected) return;
+        return window.mermaid.render(id, text).then(function(res) {
+          if (!pre.isConnected) return;
+          const wrap = document.createElement('div');
+          wrap.className = 'mermaid';
+          wrap.innerHTML = res.svg;
+          pre.dataset.mermaid = 'done';
+          pre.replaceWith(wrap);
+        });
+      }).catch(function(err) {
+        if (!pre.isConnected) return;
+        mermaidErrorNote(pre, err);
+      });
     });
   }
   // --- Message & tool timestamps ---
@@ -1948,6 +2053,9 @@
       // keeps the pane styled exactly like the rest of the chat (paragraph
       // spacing, code blocks, tables).
       pane.innerHTML = '<div class="msg-content">' + (v.html || mdText.render(v.content || '')) + '</div>';
+      // A rendered humanize pane is committed content; hydrate any mermaid
+      // fence inside it (the pass output is server-rendered markdown).
+      hydrateMermaid(pane);
     }
     return pane;
   }
@@ -2016,6 +2124,9 @@
     if (m.tool_calls) {
       div.insertAdjacentHTML('beforeend', renderToolCalls(m.tool_calls));
     }
+    // The committed copy is final, so any mermaid fences in it are safe to
+    // render now (the live streaming copy stays plain code until this swap).
+    hydrateMermaid(div);
     currentAssistant = null;
     currentReasoning = null;
   }

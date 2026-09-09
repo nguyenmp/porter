@@ -187,6 +187,35 @@ its command, and the partial output is committed to history marked *cancelled*
 so a reload (and the model, on the next turn) sees the run was aborted rather
 than completed. The backend surface is `POST /api/sessions/{id}/cancel/{call_id}`.
 
+### Mermaid diagrams
+
+Assistant replies can render diagrams. When the model answers with a markdown
+code fence tagged `mermaid` — a flowchart, sequence diagram, or Gantt chart
+written in plain text — the web UI draws it in place of the code once the
+message is committed. Nothing new for the model to learn: a diagram is just a
+code fence in the reply, and fences already passed through both render paths
+as code blocks.
+
+A fence shows as plain code while the message streams and swaps to a diagram
+only when the message commits. The committed copy is the final one — the live
+streaming view is a transient preview that the committed copy replaces — so
+rendering early would redraw and flicker. The same hydration step runs on a
+full page reload (the `/view` history) and on humanize variant panes, so a
+reload shows the same diagrams the live view produced.
+
+The mermaid library is not shipped inside the binary: its minified bundle is
+~3.4 MB, and most sessions never draw a diagram. Instead, the first fence on a
+page loads mermaid 11.17.2 from the jsdelivr CDN, pinned with an SRI integrity
+hash the browser verifies before running it. (The page already loads htmx from
+a CDN, so the web UI has no offline claim to protect.) If the library fails to
+load or a diagram fails to parse, the message keeps its source code block and
+gains a small caption saying why, so the content is never lost.
+
+Diagrams are safe by construction. The model is untrusted input, but fence
+text reaches mermaid as plain code text that both markdown renderers
+HTML-escape, and mermaid's own sanitizer runs in strict mode before its SVG
+touches the page.
+
 ### Plain language
 
 Porter writes in plain language by default. Every model request leads with a
