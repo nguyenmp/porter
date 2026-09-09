@@ -220,6 +220,36 @@ text reaches mermaid as plain code text that both markdown renderers
 HTML-escape, and mermaid's own sanitizer runs in strict mode before its SVG
 touches the page.
 
+### Hosted files & iframes
+
+The agent can show files it created. When a command in the execution
+environment produces a file — a PNG from a screenshot or `matplotlib`, an HTML
+page it generated — the model calls `publish_asset` with the file's path. The
+file is uploaded to the server and the tool returns a hosted URL like
+`/assets/sessions/<session>/<asset>/chart.png`. The model then embeds that URL
+in its reply the usual markdown way — `![alt text](/assets/...)` — and the
+picture renders with the message. There is nothing new to learn: an image is
+just an image, once its file has a URL.
+
+The bytes live with the session on the server, not on the machine that ran the
+command, so the URL works from any device that can reach the server: a chat
+started on the laptop still shows its images on the phone later. The file is
+stored under `<db dir>/.porter/assets/<session>/` beside the database, kept
+when the session is archived, and capped at 10 MiB. The content type is taken
+from the file extension, served with `nosniff`, and HTML and SVG assets also
+get a `Content-Security-Policy: sandbox allow-scripts` header — so even opened
+directly in a tab, content the model produced runs in an opaque origin and
+cannot script the porter site.
+
+For an HTML page, the model can go one step further and *show* it rather than
+link it: `render_iframe(src, height?)` displays a published page in the chat
+as an always-expanded iframe. The frame is sandboxed with `allow-scripts` and
+no `allow-same-origin`, so the page's scripts run but it cannot reach the chat
+page, cookies, or storage. The two tools' descriptions point at each other —
+`publish_asset` says to pass HTML URLs to `render_iframe`, and `render_iframe`
+says to publish first — so the model learns them as one flow: create a file,
+publish it, show it.
+
 ### Plain language
 
 Porter writes in plain language by default. Every model request leads with a
