@@ -17,23 +17,27 @@ Above all, it works with my use cases: work and personal, coding and research.
 
 A tree of turns. Each turn has a single parent and can fork into many children.
 
-- A `session_id` defines the top level chat, whereas a `turn_id` represents a node in the chat tree.  Thus, loading a `session_id` shows the chat leading to the most recent turn.  You can operate on turn_ids like forking, or direct-linking.
-- Forking or rewinding only affects the conversation, never the world state (files, network calls, side effects).
-- Link and share a specific conversation, fork, or turn.
+- [x] A `session_id` defines the top level chat, whereas a `turn_id` represents a node in the chat tree.  Thus, loading a `session_id` shows the chat leading to the most recent turn.  You can operate on turn_ids like forking, or direct-linking.
+- [ ] Forking or rewinding only affects the conversation, never the world state (files, network calls, side effects).
+- [ ] Link and share a specific conversation, fork, or turn.
 
 ### CLI interface
 
-- With no TTY, output as JSONL.
-- TTY REPL mode: stdout shows input/output, stderr shows JSONL. Fork by targeting an old `turn_uuid`.
-- Reconnect to a previous chat: `porter --session <id>` starts the REPL attached to that session — it replays the committed history and appends new turns to it instead of creating a new session. The one-shot path takes the same flag (`porter --session <id> "prompt"`, or `PORTER_SESSION`), and the session id is always printed on startup (`session <id>`).
+- [x] With no TTY, output as JSONL.
+- [x] TTY REPL mode: stdout shows input/output, stderr shows JSONL. Fork by targeting an old `turn_uuid`.
+- [x] Reconnect to a previous chat with `porter --session <id>`. The conversation will continue where you left off, and provide the execution environment . The one-shot path takes the same flag (`porter --session <id> "prompt"`, or `PORTER_SESSION`), and the session id is always printed on startup (`session <id>`).
 
 ### Handoff
 
-- An **execution provider** runs code: the local laptop via an agent process, a cloud provider like AWS EC2/EKS, or nsjail/subprocess on the server.
-- **Single-writer-per-session**. The server is the serialization point. When another client (e.g. phone) connects, it pulls old data from the DB but streams live from a bus.
-  - Conversation → sync the DB + network calls
-  - Filesystem → sync via git check pointing on a working branch
-  - Processes are not sync'ed
+The agent loop runs on a server, but other machines can provide an execution environment.  For example, I can start chat with the website that runs commands on my laptop.  I continue the conversation from my phone, running commands on my laptop.  The agent loop runs on the server, but my laptop handles the core executions.
+
+This provides a few nice features:
+1. I can easily inspect the progress and results of my agent from my laptop, by opening the sandbox folder.  This is useful for viewing the `git diff` or navigating with an IDE.  I can also interactively debug the program on my own laptop.
+2. I can define laptop-specific MCPs or CLIs, only available from my laptop.  These leverage my local authentication so I can connect to Slack or Google Workspaces through my VPN running on my laptop.
+3. Many of my repos are already cloned on my laptop, so I can make a quick `git worktree`, rather than re-cloning on my server and setting up all the dev tools in a docker container.
+
+I can also use the server as my execution environment in case my laptop is unavailable.
+
 ### Execution context & skills
 
 - The execution provider reports where it runs — system (so the model knows to
