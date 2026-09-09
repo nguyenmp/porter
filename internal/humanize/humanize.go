@@ -92,17 +92,17 @@ const plainRules = `Plain language means an average reader of the intended audie
 - Use the active voice and the strongest, most direct form of each verb. Make the actor the subject: say we manage the program, not we are responsible for management of the program; say apply, not make an application. Avoid noun strings: say developing procedures to protect workers, not underground mine worker safety protection procedures development. Keep the subject, verb, and object close together, and put modifiers next to the words they modify: say you are required to provide only the following, not you are only required to provide the following. Put long conditions and exceptions after the main clause.
 - Prefer short sentences carrying one clear idea each and short paragraphs covering one topic each. Use positive language: say what is true rather than what is not, and avoid double negatives and exceptions piled on exceptions. Use the same term for the same thing throughout; do not reach for synonyms just to sound varied.
 - Lead with the main point: start with the answer and the top task for the reader, then the reasoning, exceptions, and details, and say why it matters to the reader. Make the structure skimmable: use useful headings, preferring question-form or specific headings over vague noun headings; use lists, and put steps in the order they happen; add simple visuals or tables (an if-then table suits conditional rules) where they help. Avoid nesting lists more than one level deep, and use bold sparingly for emphasis; do not use ALL CAPS or underlining. For longer, report-style replies, give the bottom line up front, separate distinct audiences and topics into their own sections, and keep related material together rather than referring readers elsewhere. Write link text that says exactly where the link leads; do not use click here or read more. Use transition words sparingly, and write out for example or such as instead of e.g. or i.e.
+- Self-review before finishing: read your text as if you were the reader and apply every rule above again. Each fresh pass catches what the last one missed, so keep iterating until a further pass would change nothing.
 `
 
 // systemPrompt is the plain-language prompt for rewriting: the shared rule
-// body (plainRules) plus the rewrite-only rules — self-review, example use,
-// and preserving the message — which only make sense for a pass over given
+// body (plainRules) plus the rewrite-only rules — example use and
+// preserving the message — which only make sense for a pass over given
 // text. Output behavior, silent for the background pass and reporting for
 // interactive use, is added by the suffix each mode uses (humanizePrompt vs
 // Prompt).
 const systemPrompt = `Rewrite the following text in plain language.
-` + plainRules + `- Self-review before finishing: read the rewrite as if it were the original and apply every rule above again. Each fresh pass catches what the last one missed, so keep iterating until a further pass would change nothing.
-- Use an example only when the original already gives you the material for one, and expand it from the original; do not invent new facts.
+` + plainRules + `- Use an example only when the original already gives you the material for one, and expand it from the original; do not invent new facts.
 - Preserve the message. You are free to reformat, rephrase, and reorganize, and to add headings, lists, or simple visuals, to improve clarity, but do not change what the original conveys. Keep every fact, name, number, and date as given: do not add, drop, or alter anything in the original. Keep code, URLs, and quoted text exact.
 `
 
@@ -128,11 +128,9 @@ func Directive() string { return systemDirective }
 // writing style for generation — the shared rule body (plainRules) plus the
 // generation-only framing. See Directive for why it wraps plainRules like
 // systemPrompt does.
-const systemDirective = `Write in plain language, as you write — not as a cleanup after the fact. Apply this style to everything you write: replies to the user, reports and other documents you draft, and comments on code you write or edit. Do not announce this style or talk about how you write; just write this way.
+const systemDirective = `Always speak in plain language. Before replying, reflect on what you are about to say and revise it. Apply this style to everything you write, including replies to the user, reports and documents you draft, and code comments you write or edit.
 ` + plainRules + `
 Audience: replies go to the user, a working developer, so keep the technical terms they already know — do not define them, and do not pad to fill space. Text you draft for other readers, like a report or update, fits that audience instead: keep the technical terms they need and define each one the first time you use it. Code comments are prose too: short, direct, and about the code they sit in.
-
-Before you finish, reread what you wrote as if you were the reader, and cut anything that would not be clear on the first read.
 `
 
 // Should reports whether an assistant reply is worth a humanize pass: long
