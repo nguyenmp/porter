@@ -1333,9 +1333,12 @@
       chip.setAttribute('aria-expanded', 'false');
       if (isTool) {
         // Tool chips live at the far right of the summary row (flex pushes it
-        // there); inside <summary>, so clicking it must not toggle the details.
-        const summary = host.querySelector('summary');
-        (summary || host).appendChild(chip);
+        // there). An iframe result has a header row instead of a <summary>:
+        // drop the chip in that row so the row's flex layout keeps it clear of
+        // the open-in-a-new-tab link. Other tool results keep the chip inside
+        // the <summary>, where clicking it must not toggle the details.
+        const head = host.querySelector('.tool-iframe-head') || host.querySelector('summary');
+        (head || host).appendChild(chip);
       } else {
         // Message chips sit in the top-right corner of the padded .msg block,
         // on the label row the content never reaches.
@@ -1821,13 +1824,23 @@
   function iframeResultEl(run) {
     const el = document.createElement('div');
     el.className = 'tool-result tool-iframe';
-    el.innerHTML = '<div class="tool-result-name"></div>' +
+    el.innerHTML = '<div class="tool-iframe-head">' +
+      '<div class="tool-result-name"></div>' +
+      '<a class="tool-iframe-open" target="_blank" rel="noopener noreferrer" title="Open this page in a new browser tab"></a>' +
+      '</div>' +
       '<iframe class="tool-iframe-frame" sandbox="allow-scripts" referrerpolicy="no-referrer" loading="lazy"></iframe>';
+    const open = el.querySelector('.tool-iframe-open');
+    open.textContent = 'open ↗';
+    // The tool call may not have delivered its src yet; refreshIframe fills
+    // the href (and shows the link) once the arguments are known.
+    open.style.display = 'none';
     return el;
   }
   // refreshIframe sets the frame's src and height from the run's arguments,
   // which are present once the tool call is known (and unchanged when the
-  // committed result arrives).
+  // committed result arrives). It also points the open-in-a-new-tab link at
+  // the same published page, so the inline view is never the only way to read
+  // an iframe result.
   function refreshIframe(run) {
     const el = run && run.resultEl;
     if (!el) return;
@@ -1835,6 +1848,13 @@
     const args = iframeArgs(run);
     if (frame && args.src) frame.src = args.src;
     if (frame && args.height) frame.height = String(args.height);
+    const open = el.querySelector('.tool-iframe-open');
+    if (open && args.src) {
+      // The src is a relative /assets/sessions/... URL; resolve it against the
+      // page so the link opens the asset from any origin the chat is served on.
+      open.href = new URL(args.src, location.href).href;
+      open.style.display = '';
+    }
   }
 
   // Redraw a tool-result block from its run state: name + args snippet, then

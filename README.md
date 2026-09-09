@@ -245,10 +245,14 @@ For an HTML page, the model can go one step further and *show* it rather than
 link it: `render_iframe(src, height?)` displays a published page in the chat
 as an always-expanded iframe. The frame is sandboxed with `allow-scripts` and
 no `allow-same-origin`, so the page's scripts run but it cannot reach the chat
-page, cookies, or storage. The two tools' descriptions point at each other —
-`publish_asset` says to pass HTML URLs to `render_iframe`, and `render_iframe`
-says to publish first — so the model learns them as one flow: create a file,
-publish it, show it.
+page, cookies, or storage. Each iframe card carries an "open ↗" control that
+opens the same published page in a full browser tab, so the inline view never
+traps a page: whatever made the frame awkward to read — a wide layout, an
+interactive page, a slow script — is one click away from a normal tab, where
+the page can also navigate to its own links normally. The two tools'
+descriptions point at each other — `publish_asset` says to pass HTML URLs to
+`render_iframe`, and `render_iframe` says to publish first — so the model
+learns them as one flow: create a file, publish it, show it.
 
 ### Plain language
 

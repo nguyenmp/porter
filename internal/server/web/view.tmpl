@@ -61,7 +61,10 @@
 				     sandbox="allow-scripts" with no allow-same-origin keeps the
 				     frame's scripts from reaching this page. */}}
 				<div class="tool-result tool-iframe"{{if $m.StartedAt}} data-started="{{$m.StartedAt}}"{{end}}{{if $m.FinishedAt}} data-finished="{{$m.FinishedAt}}"{{end}}{{if $m.Cancelled}} data-cancelled="1"{{end}}{{if $m.TimedOut}} data-timed-out="1"{{end}}>
-					<div class="tool-result-name">tool result: {{$t.Name}}{{if $purpose}} — {{$purpose}}{{end}}{{if $m.Cancelled}} · cancelled{{else if $m.TimedOut}} · timed out{{else}}{{if $m.StartedAt}} · {{dur $m.StartedAt $m.FinishedAt}}{{end}}{{end}}</div>
+					<div class="tool-iframe-head">
+						<div class="tool-result-name">tool result: {{$t.Name}}{{if $purpose}} — {{$purpose}}{{end}}{{if $m.Cancelled}} · cancelled{{else if $m.TimedOut}} · timed out{{else}}{{if $m.StartedAt}} · {{dur $m.StartedAt $m.FinishedAt}}{{end}}{{end}}</div>
+						<a class="tool-iframe-open" href="{{$if.Src}}" target="_blank" rel="noopener noreferrer" title="Open this page in a new browser tab">open ↗</a>
+					</div>
 					<iframe class="tool-iframe-frame" src="{{$if.Src}}" height="{{$if.Height}}" sandbox="allow-scripts" referrerpolicy="no-referrer" loading="lazy"></iframe>
 				</div>
 			{{else}}
