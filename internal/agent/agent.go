@@ -286,7 +286,7 @@ func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage,
 		// the required porter_action_description and porter_timeout_seconds
 		// arguments — on every tool the model sees, in one place, so no tool
 		// definition site needs to know about it.
-		defs := llm.AddToolContract(append([]llm.Tool{recall.Def(), spool.Def(), asset.Def()}, js.Defs()...))
+		defs := llm.AddToolContract(append([]llm.Tool{recall.Def(), spool.Def(), asset.Def(), asset.IframeDef()}, js.Defs()...))
 		// Wall-clock bounds of this model request: started just before the
 		// stream opens, finished once it closes. They are stamped on the
 		// assistant message(s) this request commits so the UI can show when
@@ -668,6 +668,32 @@ func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage,
 					continue
 				}
 				if err := finishTool(final, false, startedAt, finishedAt); err != nil {
+					return res, err
+				}
+				continue
+			}
+			// render_iframe is served by the agent too, but it needs no
+			// provider: the call only records which published asset to show
+			// and how tall to make it. The committed result is a short
+			// caption; the web UI recognizes the tool by name and draws the
+			// message as an expanded sandboxed iframe instead of a collapsed
+			// tool result, on both the live stream and /view reloads.
+			if c.Name == asset.IframeTool {
+				startedAt := time.Now().UnixMilli()
+				args, ierr := asset.ParseIframeArgs(c.Arguments)
+				if ierr != nil {
+					result := "error: " + ierr.Error()
+					if err := finishTool(result, false, startedAt, time.Now().UnixMilli()); err != nil {
+						return res, err
+					}
+					continue
+				}
+				height := asset.DefaultIframeHeight
+				if args.Height != nil {
+					height = *args.Height
+				}
+				result := fmt.Sprintf("Rendered in a sandboxed iframe: %s (height %dpx).", args.Src, height)
+				if err := finishTool(result, false, startedAt, time.Now().UnixMilli()); err != nil {
 					return res, err
 				}
 				continue

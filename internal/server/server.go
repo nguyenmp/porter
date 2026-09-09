@@ -311,9 +311,20 @@ type viewItem struct {
 type viewData struct {
 	Items []viewItem
 	Tools map[string]ToolRunInfo
+	// Iframes maps the call_id of each committed render_iframe result to its
+	// display spec, so the view can draw those results as expanded sandboxed
+	// iframes (the same way the live client does) instead of collapsed code.
+	Iframes map[string]iframeView
 	// Variants maps an assistant message's bus seq to its completed humanize
 	// passes, so the view renders the same variant tabs the live stream does.
 	Variants map[uint64][]db.Variant
+}
+
+// iframeView is the display spec of one render_iframe tool result: which
+// published asset to show and how tall to make it.
+type iframeView struct {
+	Src    string
+	Height int
 }
 
 // Server owns the LLM client and all sessions.
@@ -1068,9 +1079,34 @@ func (s *Server) handleView(w http.ResponseWriter, r *http.Request) {
 	for _, v := range ps.Variants {
 		variants[v.MessageSeq] = append(variants[v.MessageSeq], v)
 	}
+	// Render_iframe tool results draw as expanded iframes, not collapsed code:
+	// collect each committed one (its assistant-side tool call carries the
+	// name; its own message carries the arguments) into a map the template
+	// looks up by call_id. The agent validated src at call time, so this pass
+	// only needs to skip anything malformed rather than re-validate deeply.
+	iframes := make(map[string]iframeView)
+	for _, m := range ps.Messages {
+		if m.Role != "tool" {
+			continue
+		}
+		t, ok := tools[m.ToolCallID]
+		if !ok || t.Name != asset.IframeTool {
+			continue
+		}
+		var a asset.IframeArgs
+		if err := json.Unmarshal([]byte(t.Arguments), &a); err != nil || !strings.HasPrefix(a.Src, "/assets/sessions/") {
+			continue
+		}
+		height := asset.DefaultIframeHeight
+		if a.Height != nil && *a.Height >= 100 {
+			height = *a.Height
+		}
+		iframes[m.ToolCallID] = iframeView{Src: a.Src, Height: height}
+	}
 	render(w, "view.tmpl", viewData{
 		Items:    items,
 		Tools:    tools,
+		Iframes:  iframes,
 		Variants: variants,
 	})
 }

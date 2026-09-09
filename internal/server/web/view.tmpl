@@ -53,10 +53,23 @@
 			{{$t := index $.Tools $m.ToolCallID}}
 			{{$code := toolExitCode $m.Content}}
 			{{$purpose := ""}}{{if $t}}{{$purpose = toolPurpose $t.Arguments}}{{end}}
-			<details class="tool-result"{{if $m.StartedAt}} data-started="{{$m.StartedAt}}"{{end}}{{if $m.FinishedAt}} data-finished="{{$m.FinishedAt}}"{{end}}{{if $m.Cancelled}} data-cancelled="1"{{end}}{{if $m.TimedOut}} data-timed-out="1"{{end}}>
-				<summary title="{{if $t.Name}}{{clock $m.StartedAt}} – {{clock $m.FinishedAt}}{{end}}">tool result: {{$t.Name}}{{if $purpose}} — {{$purpose}}{{else if $t.Arguments}} {{argsSnippet $t.Arguments}}{{end}}{{if $m.Cancelled}} · cancelled{{if $m.StartedAt}} · {{dur $m.StartedAt $m.FinishedAt}}{{end}}{{else if $m.TimedOut}} · timed out{{if $m.StartedAt}} · {{dur $m.StartedAt $m.FinishedAt}}{{end}}{{else}}{{if $code}} · {{$code}}{{end}}{{if $m.StartedAt}} · {{dur $m.StartedAt $m.FinishedAt}}{{end}}{{end}}{{if $m.ToolOutput}}{{if $m.ToolOutput.Recall}}<span class="tool-output-badge" title="read_output window served to the model; the full output stays under the source tool result">recall {{fmtBytes $m.ToolOutput.ShownBytes}}</span>{{else if $m.ToolOutput.Truncated}}<span class="tool-output-badge" title="This tool result was truncated in the model's context; the full output is shown here. Load the middle with read_output.">{{fmtBytes $m.ToolOutput.TotalBytes}} · model saw {{fmtBytes $m.ToolOutput.ShownBytes}}</span>{{end}}{{end}}</summary>
-				<pre><code>{{nl2br $m.Content}}</code></pre>
-			</details>
+			{{$if := index $.Iframes $m.ToolCallID}}
+			{{if $if.Src}}
+				{{/* A render_iframe result draws as an expanded sandboxed
+				     iframe, not a collapsed code block: the same special case
+				     the live client applies, so a reload matches the stream.
+				     sandbox="allow-scripts" with no allow-same-origin keeps the
+				     frame's scripts from reaching this page. */}}
+				<div class="tool-result tool-iframe"{{if $m.StartedAt}} data-started="{{$m.StartedAt}}"{{end}}{{if $m.FinishedAt}} data-finished="{{$m.FinishedAt}}"{{end}}{{if $m.Cancelled}} data-cancelled="1"{{end}}{{if $m.TimedOut}} data-timed-out="1"{{end}}>
+					<div class="tool-result-name">tool result: {{$t.Name}}{{if $purpose}} — {{$purpose}}{{end}}{{if $m.Cancelled}} · cancelled{{else if $m.TimedOut}} · timed out{{else}}{{if $m.StartedAt}} · {{dur $m.StartedAt $m.FinishedAt}}{{end}}{{end}}</div>
+					<iframe class="tool-iframe-frame" src="{{$if.Src}}" height="{{$if.Height}}" sandbox="allow-scripts" referrerpolicy="no-referrer" loading="lazy"></iframe>
+				</div>
+			{{else}}
+				<details class="tool-result"{{if $m.StartedAt}} data-started="{{$m.StartedAt}}"{{end}}{{if $m.FinishedAt}} data-finished="{{$m.FinishedAt}}"{{end}}{{if $m.Cancelled}} data-cancelled="1"{{end}}{{if $m.TimedOut}} data-timed-out="1"{{end}}>
+					<summary title="{{if $t.Name}}{{clock $m.StartedAt}} – {{clock $m.FinishedAt}}{{end}}">tool result: {{$t.Name}}{{if $purpose}} — {{$purpose}}{{else if $t.Arguments}} {{argsSnippet $t.Arguments}}{{end}}{{if $m.Cancelled}} · cancelled{{if $m.StartedAt}} · {{dur $m.StartedAt $m.FinishedAt}}{{end}}{{else if $m.TimedOut}} · timed out{{if $m.StartedAt}} · {{dur $m.StartedAt $m.FinishedAt}}{{end}}{{else}}{{if $code}} · {{$code}}{{end}}{{if $m.StartedAt}} · {{dur $m.StartedAt $m.FinishedAt}}{{end}}{{end}}{{if $m.ToolOutput}}{{if $m.ToolOutput.Recall}}<span class="tool-output-badge" title="read_output window served to the model; the full output stays under the source tool result">recall {{fmtBytes $m.ToolOutput.ShownBytes}}</span>{{else if $m.ToolOutput.Truncated}}<span class="tool-output-badge" title="This tool result was truncated in the model's context; the full output is shown here. Load the middle with read_output.">{{fmtBytes $m.ToolOutput.TotalBytes}} · model saw {{fmtBytes $m.ToolOutput.ShownBytes}}</span>{{end}}{{end}}</summary>
+					<pre><code>{{nl2br $m.Content}}</code></pre>
+				</details>
+			{{end}}
 		{{end}}
 	{{else if .Footer}}
 		{{if .Footer.Error}}

@@ -142,6 +142,14 @@
 		.tool-call, .tool-result { margin-top: 0.5rem; }
 		.tool-call summary, .tool-result summary { cursor: pointer; font-size: 0.85em; color: #555; }
 		.tool-call pre, .tool-result pre { background: #1e1e1e; color: #d4d4d4; padding: 0.5rem; border-radius: 4px; overflow-x: auto; white-space: pre-wrap; }
+		/* render_iframe tool results are always-expanded sandboxed iframes on a
+		   white card, not collapsed code blocks: the committed content of one
+		   tool message. The header reads like a collapsed result's summary; the
+		   frame below it is the actual rendered HTML asset. */
+		.tool-iframe { background: #fff; border: 1px solid #ddd; border-radius: 4px; padding: 0.4rem 0.5rem 0.5rem; margin-bottom: 0.75rem; position: relative; }
+		.tool-iframe .tool-result-name { margin-bottom: 0.4rem; padding-right: 4.5rem; }
+		.tool-iframe > .msg-time { position: absolute; top: 0.55rem; right: 0.55rem; }
+		.tool-iframe-frame { display: block; width: 100%; border: 1px solid #eee; border-radius: 4px; background: #fff; box-sizing: border-box; }
 		/* The Cancel button on a running tool block: a small right-aligned
 		   control inside the result summary. It appears only while the tool is
 		   running (JS toggles hidden). */

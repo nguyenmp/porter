@@ -1778,21 +1778,63 @@
   // appends each result as it finishes — is completion order.
   function ensureResult(run) {
     if (!run.resultEl) {
-      run.resultEl = document.createElement('details');
-      run.resultEl.className = 'tool-result';
-      // The summary holds the name/status text plus a Cancel button that is
-      // only visible while the run is running. A button inside <summary> is
-      // interactive; preventDefault stops its click from toggling the details.
-      run.resultEl.innerHTML = '<summary><span class="tool-result-name"></span>' +
-        '<button type="button" class="tool-cancel" title="Stop this command">Cancel</button></summary>' +
-        '<pre><code class="tool-result-body"></code></pre>';
+      if (isIframeRun(run)) {
+        run.resultEl = iframeResultEl(run);
+      } else {
+        run.resultEl = document.createElement('details');
+        run.resultEl.className = 'tool-result';
+        // The summary holds the name/status text plus a Cancel button that is
+        // only visible while the run is running. A button inside <summary> is
+        // interactive; preventDefault stops its click from toggling the details.
+        run.resultEl.innerHTML = '<summary><span class="tool-result-name"></span>' +
+          '<button type="button" class="tool-cancel" title="Stop this command">Cancel</button></summary>' +
+          '<pre><code class="tool-result-body"></code></pre>';
+        run.resultEl.querySelector('.tool-cancel').addEventListener('click', function(e) {
+          e.preventDefault();
+          cancelRun(run);
+        });
+      }
       insertToolResult(run.resultEl);
-      run.resultEl.querySelector('.tool-cancel').addEventListener('click', function(e) {
-        e.preventDefault();
-        cancelRun(run);
-      });
     }
     return run.resultEl;
+  }
+
+  // --- render_iframe tool results ---
+  // A render_iframe result is a published HTML asset the model asked to show:
+  // the committed tool message draws as an always-expanded sandboxed iframe
+  // (matching /view), never as a collapsed code block. The frame is sandboxed
+  // with allow-scripts only — no allow-same-origin — so the asset's scripts
+  // run in an opaque origin and cannot touch the chat page, and the server
+  // also serves HTML assets with a sandboxing CSP as a second layer. src and
+  // height come from the tool's arguments (the same JSON the agent parsed).
+  const IFRAME_TOOL = 'render_iframe';
+  function isIframeRun(run) { return !!(run && run.name === IFRAME_TOOL); }
+  function iframeArgs(run) {
+    try {
+      const o = JSON.parse(run.args || '{}');
+      const src = (o && typeof o.src === 'string') ? o.src : '';
+      let height = 480;
+      if (o && typeof o.height === 'number' && o.height >= 100 && o.height <= 2000) height = Math.round(o.height);
+      return { src: src, height: height };
+    } catch (e) { return { src: '', height: 480 }; }
+  }
+  function iframeResultEl(run) {
+    const el = document.createElement('div');
+    el.className = 'tool-result tool-iframe';
+    el.innerHTML = '<div class="tool-result-name"></div>' +
+      '<iframe class="tool-iframe-frame" sandbox="allow-scripts" referrerpolicy="no-referrer" loading="lazy"></iframe>';
+    return el;
+  }
+  // refreshIframe sets the frame's src and height from the run's arguments,
+  // which are present once the tool call is known (and unchanged when the
+  // committed result arrives).
+  function refreshIframe(run) {
+    const el = run && run.resultEl;
+    if (!el) return;
+    const frame = el.querySelector('.tool-iframe-frame');
+    const args = iframeArgs(run);
+    if (frame && args.src) frame.src = args.src;
+    if (frame && args.height) frame.height = String(args.height);
   }
 
   // Redraw a tool-result block from its run state: name + args snippet, then
@@ -1803,6 +1845,24 @@
   function renderResult(run) {
     const el = run.resultEl;
     if (!el) return;
+    if (isIframeRun(run)) {
+      // An iframe result's body is the frame itself; the header mirrors a
+      // collapsed result's summary (name, purpose, duration/status) so the
+      // block still reads as one tool result.
+      const purpose = purposeOf(run.args);
+      const base = 'tool result: render_iframe' + (purpose ? ' — ' + purpose : '');
+      const dur = (run.finishedAt || 0) - (run.startedAt || 0);
+      let status = '';
+      if (run.status === 'cancelled') status = 'cancelled';
+      else if (run.status === 'timed out') status = 'timed out';
+      else if (run.status === 'running') status = 'running';
+      if (status && dur > 0 && status !== 'running') status += ' · ' + fmtDur(dur);
+      else if (!status && dur > 0) status = fmtDur(dur);
+      const nameEl = el.querySelector('.tool-result-name');
+      if (nameEl) nameEl.textContent = base + (status ? ' · ' + status : '');
+      refreshIframe(run);
+      return;
+    }
     const purpose = purposeOf(run.args);
     const base = 'tool result: ' + (run.name || '') +
                  (purpose ? ' — ' + purpose
@@ -2286,11 +2346,19 @@
           run.toolOutput = env.tool_output;
           run.startedAt = env.started_at || 0;
           run.finishedAt = env.finished_at || 0;
-          run.resultEl = document.createElement('details');
-          run.resultEl.className = 'tool-result';
           const code = exitCodeLabel(m.content);
           const status = m.timed_out ? 'timed out' : (m.cancelled ? 'cancelled' : (code ? code : ''));
-          run.resultEl.innerHTML = '<summary>tool result' + (status ? ' · ' + status : '') + toolOutputBadge(run.toolOutput) + '</summary><pre><code>' + escapeHTML(m.content).replace(/\n/g, '<br>') + '</code></pre>';
+          if (isIframeRun(run)) {
+            // A replayed render_iframe result draws as the expanded iframe
+            // block, exactly like the live path and /view.
+            run.resultEl = iframeResultEl(run);
+            run.resultEl.querySelector('.tool-result-name').textContent = 'tool result: render_iframe' + (status ? ' · ' + status : '');
+            refreshIframe(run);
+          } else {
+            run.resultEl = document.createElement('details');
+            run.resultEl.className = 'tool-result';
+            run.resultEl.innerHTML = '<summary>tool result' + (status ? ' · ' + status : '') + toolOutputBadge(run.toolOutput) + '</summary><pre><code>' + escapeHTML(m.content).replace(/\n/g, '<br>') + '</code></pre>';
+          }
           // Position the replayed result right after its owning assistant
           // message, matching /view's history layout (live placement already
           // does this via insertToolResult).

@@ -1,13 +1,14 @@
-// Package asset defines the publish_asset tool: it moves a file out of the
-// execution environment and onto the server, where the session can serve it,
-// and returns the file's hosted URL so the model can show it in a reply
-// (an <img> for a picture, render_iframe for HTML). It is the mirror image of
-// spool_output: spool writes server-side bytes to the provider's disk;
-// publish_asset reads a provider-side file and stores the bytes on the
-// server, keyed by session. The read itself is executed by the active
-// provider through a private provider tool (tools.AssetReadTool), so
-// publish_asset works for any execution context — local sandbox or a remote
-// host — and the file never has to stay on the machine that made it.
+// Package asset defines the tools that move files the model creates in the
+// execution environment onto the server, where the session can serve them:
+// publish_asset uploads a file and returns its hosted URL (so the model can
+// show it as an <img> in a reply), and render_iframe displays an HTML asset
+// in a sandboxed iframe. publish_asset is the mirror image of spool_output:
+// spool writes server-side bytes to the provider's disk; publish_asset reads
+// a provider-side file and stores the bytes on the server, keyed by session.
+// The read is executed by the active provider through a private provider tool
+// (tools.AssetReadTool), so publish_asset works for any execution context —
+// local sandbox or a remote host — and the file never has to stay on the
+// machine that made it.
 package asset
 
 import (
@@ -15,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"porter/internal/llm"
@@ -28,6 +30,17 @@ const PublishTool = "publish_asset"
 // provider-side cap (tools.AssetMaxBytes) that guards the read; the agent
 // re-checks after decoding so the two ends of the private channel agree.
 const MaxBytes = tools.AssetMaxBytes
+
+// IframeTool is the model-facing name of the iframe rendering tool.
+const IframeTool = "render_iframe"
+
+// DefaultIframeHeight is the height in px the UI gives an iframe when the
+// model does not pick one.
+const DefaultIframeHeight = 480
+
+// MaxIframeHeight caps the height so a careless call cannot request a
+// viewport taller than the page it renders in.
+const MaxIframeHeight = 2000
 
 // publishArgs is the parsed model-facing publish_asset call.
 type publishArgs struct {
@@ -68,6 +81,7 @@ func Def() llm.Tool {
 				"Then call publish_asset with the file's path (relative to the working directory, or absolute). " +
 				"The file is uploaded to the server and the result is its hosted URL, which stays available as long as the session exists. " +
 				"To show the file in your reply, reference the URL as an image: ![alt text](URL) or <img src=\"URL\">. " +
+				"To show an HTML file as a live page instead of a static image, pass the URL to render_iframe — render_iframe displays HTML that publish_asset uploaded. " +
 				"Content type is guessed from the file extension (png, jpg, gif, webp, svg, html, pdf, and more).",
 			Parameters: map[string]any{
 				"type": "object",
@@ -78,6 +92,62 @@ func Def() llm.Tool {
 					},
 				},
 				"required": []string{"path"},
+			},
+		},
+	}
+}
+
+// IframeArgs is the parsed render_iframe call: the asset URL publish_asset
+// returned, and an optional height in px.
+type IframeArgs struct {
+	Src    string `json:"src"`
+	Height *int   `json:"height"`
+}
+
+// ParseIframeArgs validates a render_iframe call: the src must be a relative
+// asset URL (an absolute or foreign URL would defeat the sandbox's purpose —
+// the frame is only safe because the served HTML carries a sandboxing CSP).
+func ParseIframeArgs(raw string) (IframeArgs, error) {
+	var in IframeArgs
+	if err := json.Unmarshal([]byte(raw), &in); err != nil {
+		return in, fmt.Errorf("parse render_iframe arguments: %w", err)
+	}
+	if !strings.HasPrefix(in.Src, "/assets/sessions/") {
+		return in, errors.New("render_iframe: src must be the URL publish_asset returned (a relative /assets/sessions/... URL)")
+	}
+	if in.Height != nil && (*in.Height < 100 || *in.Height > MaxIframeHeight) {
+		return in, fmt.Errorf("render_iframe: height must be between 100 and %d px (got %d)", MaxIframeHeight, *in.Height)
+	}
+	return in, nil
+}
+
+// IframeDef is the model-facing definition of the render_iframe tool. It is
+// served by the agent (it needs no execution provider): the call only records
+// which asset to show, and the web UI draws the committed result as an
+// expanded sandboxed iframe.
+func IframeDef() llm.Tool {
+	return llm.Tool{
+		Type: "function",
+		Function: llm.Function{
+			Name: IframeTool,
+			Description: "Display an HTML page you generated in the chat, in a sandboxed iframe that is always expanded. " +
+				"render_iframe requires an asset you published with publish_asset first: call publish_asset with the path to an HTML file you created, " +
+				"then pass the URL it returned as src. The page is shown in an iframe sandboxed with allow-scripts only (no same-origin), so its " +
+				"scripts run but it cannot touch the rest of the chat or the site. height is optional, in px (default " +
+				strconv.Itoa(DefaultIframeHeight) + ").",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"src": map[string]any{
+						"type":        "string",
+						"description": "The /assets/sessions/... URL that publish_asset returned for the HTML file.",
+					},
+					"height": map[string]any{
+						"type":        "integer",
+						"description": "Optional height of the iframe in px (default " + strconv.Itoa(DefaultIframeHeight) + ").",
+					},
+				},
+				"required": []string{"src"},
 			},
 		},
 	}
