@@ -24,6 +24,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"porter/internal/api"
+	"porter/internal/asset"
 	"porter/internal/config"
 	"porter/internal/db"
 	"porter/internal/llm"
@@ -362,6 +363,9 @@ func newServer(cfg config.Config, dbPath, mcpPath string) (*Server, error) {
 	// The server opens ./porter.db from its working directory, so the root
 	// resolves to ./porter.db's directory.
 	store.SetSandboxRoot(localSandboxRoot(dbPath))
+	// Published assets (publish_asset) live beside the database too, under
+	// .porter/assets, on the same volume that persists the DB.
+	store.SetAssetRoot(localAssetRoot(dbPath))
 	if err := store.Load(client); err != nil {
 		_ = d.Close()
 		return nil, fmt.Errorf("load persisted sessions: %w", err)
@@ -384,6 +388,21 @@ func localSandboxRoot(dbPath string) string {
 	return filepath.Join(filepath.Dir(abs), ".porter", "sandboxes")
 }
 
+// localAssetRoot returns the server's asset root for a database at dbPath:
+// the database's directory plus .porter/assets. Like localSandboxRoot, a
+// database with no directory component yields no root, which disables asset
+// publishing for that server.
+func localAssetRoot(dbPath string) string {
+	if dbPath == "" || dbPath == ":memory:" {
+		return ""
+	}
+	abs, err := filepath.Abs(dbPath)
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(filepath.Dir(abs), ".porter", "assets")
+}
+
 // Close stops the session schedulers and closes the session database. It is
 // used on shutdown and by tests that simulate a restart.
 func (s *Server) Close() { s.store.Close() }
@@ -402,6 +421,12 @@ func (s *Server) Handler() http.Handler {
 	// the whole web/ directory, so markdown-it ships inside the binary; /web/*
 	// serves it with the directory prefix stripped.
 	r.Handle("/web/*", http.StripPrefix("/web/", http.FileServer(http.FS(mustSub(webFS, "web")))))
+	// Published session assets (publish_asset): files the model moved to the
+	// server so it can show them in a reply. The URL publish_asset returns is
+	// relative to this route, so <img> and <iframe> references to it work from
+	// any device that can reach the server. The store validates every segment
+	// before any file is touched.
+	r.Get("/assets/sessions/{id}/{asset_id}/{filename}", s.handleAsset)
 	r.Get(api.SessionsPath, s.handleList)
 	r.Post(api.SessionsPath, s.handleCreate)
 	r.Post(api.SessionMessagesPath, s.handleAppend)
@@ -444,6 +469,36 @@ func (f flushWriter) Write(p []byte) (int, error) {
 		}
 	}
 	return n, err
+}
+
+// handleAsset serves a published session asset: publish_asset stored the file
+// under the asset root and returned this URL, and the model embeds the URL in
+// a reply as <img src> (or, for HTML, passes it to render_iframe). The store
+// validates the session, asset id, and filename segments before any file is
+// touched, so this handler only ever serves a real published file. Headers
+// are set deliberately: a browser never sniffs past the declared type, and an
+// HTML or SVG asset gets a sandboxing CSP even when opened directly in a tab,
+// so content the model produced can never script the porter origin.
+func (s *Server) handleAsset(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	assetID := chi.URLParam(r, "asset_id")
+	filename := chi.URLParam(r, "filename")
+	path, err := s.store.AssetFilePath(id, assetID, filename)
+	if err != nil {
+		http.Error(w, "asset not found", http.StatusNotFound)
+		return
+	}
+	mime := asset.MimeType(filename)
+	h := w.Header()
+	h.Set("Content-Type", mime)
+	h.Set("X-Content-Type-Options", "nosniff")
+	h.Set("Cache-Control", "private, max-age=31536000, immutable")
+	if mime == "text/html; charset=utf-8" || mime == "image/svg+xml" {
+		// Scripts still run (allow-scripts) but the document gets an opaque
+		// origin: no same-origin cookies, storage, or access to the parent.
+		h.Set("Content-Security-Policy", "sandbox allow-scripts")
+	}
+	http.ServeFile(w, r, path)
 }
 
 // handleList returns every live session, newest first, for the web sidebar.

@@ -201,6 +201,8 @@ func (d *Dispatcher) RunDir(ctx context.Context, name string, args []byte, dir s
 		return d.runLoadSkill(args)
 	case SpoolWriteTool:
 		return runSpoolWriteDir(args, dir)
+	case AssetReadTool:
+		return runAssetReadDir(args, dir)
 	default:
 		return nil, fmt.Errorf("unknown tool: %q", name)
 	}

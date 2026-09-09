@@ -138,6 +138,12 @@ type Store struct {
 	// (whose folder must exist) from a pre-sandboxing chat (which keeps the
 	// server cwd as-is).
 	sandboxRoot string
+	// assetRoot is where published assets live (set via SetAssetRoot by the
+	// server before Load; "" disables asset publishing). Every session the
+	// store creates publishes under <assetRoot>/<session id>/; the /assets
+	// route serves those folders back. Assets are kept when a session is
+	// archived — a reload of an archived chat must still show its images.
+	assetRoot string
 }
 
 // NewStore returns an empty store backed by persist, serving MCP tools from
@@ -178,6 +184,7 @@ func (st *Store) Create(client *llm.Client) (*Session, error) {
 	}
 	id := fmt.Sprintf("session_%d", dbID)
 	s := newSession(id, client, nil, st.persist, dbID, now, 0, "", st.hub)
+	s.assetRoot = st.assetRoot
 	if err := st.createLocalSandbox(dbID, s); err != nil {
 		return nil, err
 	}
@@ -291,6 +298,7 @@ func (st *Store) Load(client *llm.Client) error {
 		}
 		id := fmt.Sprintf("session_%d", ps.ID)
 		s := newSession(id, client, nil, st.persist, ps.ID, ps.CreatedAt, ps.ArchivedAt, ps.Name, st.hub)
+		s.assetRoot = st.assetRoot
 		// A chat created since local sandboxing (the persisted flag is set)
 		// runs in its own folder; one that predates it keeps the server's
 		// working directory as-is — the flag is what tells the two apart, not
@@ -381,9 +389,14 @@ type Session struct {
 	persist Persister
 	js      tools.Provider
 	hub     *mcp.Hub
-	logSeq  uint64
-	turn    int64
-	running bool // a turn has started but its completion marker is not yet committed
+	// assetRoot is the store's asset root ("" when the store has no asset
+	// store): publish_asset stores files the model wants to show under
+	// <assetRoot>/<session id>/, set from the store when the session is
+	// created or loaded.
+	assetRoot string
+	logSeq    uint64
+	turn      int64
+	running   bool // a turn has started but its completion marker is not yet committed
 	// totalCached/totalUncached/totalOutput are the session's accumulated
 	// token usage across completed turns, kept in memory and rebuilt from
 	// the persister at startup (a restarted server has no in-flight turns,
@@ -722,7 +735,7 @@ func (s *Session) runTurn(ctx context.Context, content string, receivedAt int64)
 	onQuery := func(q agent.Query) error { return s.commitQuery(turnSeq, q) }
 	res, err := agent.RunTurn(turnCtx, s.client, s.snapshot(), s.provider(), s.emitLive, func(m llm.ChatMessage) error {
 		return s.commit(m)
-	}, agent.RunHooks{OnRunStarted: s.onRunStarted, OnQuery: onQuery})
+	}, agent.RunHooks{OnRunStarted: s.onRunStarted, OnQuery: onQuery, PublishAsset: s.publishAsset})
 	if err != nil {
 		switch {
 		case errors.Is(err, agent.ErrTurnStopped):

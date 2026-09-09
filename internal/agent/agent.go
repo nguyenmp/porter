@@ -6,16 +6,19 @@ package agent
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
 	"porter/internal/api"
+	"porter/internal/asset"
 	"porter/internal/codec"
 	"porter/internal/humanize"
 	"porter/internal/llm"
@@ -110,6 +113,12 @@ type RunHooks struct {
 	// reload instead of only living on the live bus. A returned error aborts
 	// the turn, mirroring how a failing onMessage aborts it.
 	OnQuery func(Query) error
+	// PublishAsset stores a published asset's bytes on the server and returns
+	// the asset's hosted URL (e.g. "/assets/sessions/..."), or an error when
+	// the server has no asset store. It backs the publish_asset tool: the
+	// agent reads the file through the active provider and hands the bytes
+	// here, so storage lives wherever the caller (the session) decides.
+	PublishAsset func(filename string, content []byte) (string, error)
 }
 
 // RunTurn drives one conversation turn. It reads history and extends it so the
@@ -277,7 +286,7 @@ func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage,
 		// the required porter_action_description and porter_timeout_seconds
 		// arguments — on every tool the model sees, in one place, so no tool
 		// definition site needs to know about it.
-		defs := llm.AddToolContract(append([]llm.Tool{recall.Def(), spool.Def()}, js.Defs()...))
+		defs := llm.AddToolContract(append([]llm.Tool{recall.Def(), spool.Def(), asset.Def()}, js.Defs()...))
 		// Wall-clock bounds of this model request: started just before the
 		// stream opens, finished once it closes. They are stamped on the
 		// assistant message(s) this request commits so the UI can show when
@@ -659,6 +668,172 @@ func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage,
 					continue
 				}
 				if err := finishTool(final, false, startedAt, finishedAt); err != nil {
+					return res, err
+				}
+				continue
+			}
+			// publish_asset is served by the agent like spool_output — the file
+			// read runs on the active execution provider through a private
+			// provider tool (_porter_asset_read), so publish_asset works for
+			// any provider and the bytes land wherever the caller's asset
+			// store points (the session's store, keyed by session id). The
+			// model sees only the returned URL: the file bytes ride the
+			// private channel and are never committed to history or fed back
+			// into context.
+			if c.Name == asset.PublishTool {
+				path, perr := asset.ParseArgs(c.Arguments)
+				if perr != nil {
+					// A malformed publish_asset call is a tool that failed to
+					// start: emit the terminal envelope and commit the error,
+					// then keep the turn going (same as spool_output).
+					result := "error: " + perr.Error()
+					if emit != nil {
+						emit(api.Envelope{Kind: api.KindToolResult, ToolCallID: c.ID, Name: c.Name, Arguments: c.Arguments, Result: result})
+					}
+					if err := commit(llm.ToolResult(c.ID, result)); err != nil {
+						return res, err
+					}
+					continue
+				}
+				if h.PublishAsset == nil {
+					result := "error: publish_asset: no asset store is configured on this server"
+					if emit != nil {
+						emit(api.Envelope{Kind: api.KindToolResult, ToolCallID: c.ID, Name: c.Name, Arguments: c.Arguments, Result: result})
+					}
+					if err := commit(llm.ToolResult(c.ID, result)); err != nil {
+						return res, err
+					}
+					continue
+				}
+				// Read the file through the active provider. The read is a
+				// private tool whose whole output is one JSON payload; it is
+				// never streamed to the UI or committed.
+				startedAt := time.Now().UnixMilli()
+				rstream, rerr := js.Run(runCtx, tools.AssetReadTool, asset.ReadPayload(path))
+				finishedAt := time.Now().UnixMilli()
+				if rerr != nil {
+					// The read never started (e.g. no execution client is
+					// connected, the file is missing, or it exceeds the size
+					// cap), or the deadline fired before it answered. Report
+					// it like any tool that failed to start — except a fired
+					// deadline is a timed-out result, which the model sees
+					// and can react to, not a cancel.
+					result := "error: " + rerr.Error()
+					if classifyRun(ctx, callCtx, runCtx) == runTimedOut {
+						result += "\n" + timeoutMarker(timeout)
+						if err := finishTool(result, true, 0, 0); err != nil {
+							return res, err
+						}
+						continue
+					}
+					meta := recall.Meta(result)
+					if emit != nil {
+						emit(api.Envelope{Kind: api.KindToolResult, ToolCallID: c.ID, Name: c.Name, Arguments: c.Arguments, Result: result, ToolOutput: meta})
+					}
+					m := llm.ToolResult(c.ID, result)
+					m.ToolOutput = meta
+					if err := commit(m); err != nil {
+						return res, err
+					}
+					if callCtx.Err() != nil {
+						return res, ErrToolCancelled
+					}
+					continue
+				}
+				var raw strings.Builder
+				buf := make([]byte, 32*1024)
+				for {
+					n, rerr := rstream.Read(buf)
+					if n > 0 {
+						raw.Write(buf[:n])
+					}
+					if rerr != nil {
+						break
+					}
+				}
+				_ = rstream.Close()
+				final := raw.String()
+				switch cause := classifyRun(ctx, callCtx, runCtx); cause {
+				case runStopped, runCancelled:
+					// Cancelled while the read was in flight: commit the
+					// partial (marked cancelled) and end like any cancelled
+					// tool.
+					partial := final
+					if strings.TrimSpace(partial) == "" {
+						partial = "(cancelled)"
+					}
+					if emit != nil {
+						emit(api.Envelope{Kind: api.KindToolCancelled, ToolCallID: c.ID, Name: c.Name, Arguments: c.Arguments, StartedAt: startedAt, FinishedAt: finishedAt, Result: partial, ToolOutput: recall.Meta(partial)})
+					}
+					m := llm.ToolResult(c.ID, partial)
+					m.StartedAt = startedAt
+					m.FinishedAt = finishedAt
+					m.Cancelled = true
+					m.ToolOutput = recall.Meta(partial)
+					if err := commit(m); err != nil {
+						return res, err
+					}
+					if cause == runStopped {
+						if qerr := h.reportQuery(Query{Idx: i + 1, Stopped: true}); qerr != nil {
+							return res, qerr
+						}
+						return res, ErrTurnStopped
+					}
+					return res, ErrToolCancelled
+				case runTimedOut:
+					// The deadline fired while the read was in flight: report
+					// it as a timed-out result and keep the turn going.
+					marker := timeoutMarker(timeout)
+					if strings.TrimSpace(final) == "" {
+						final = marker
+					} else {
+						final += "\n" + marker
+					}
+					if err := finishTool(final, true, startedAt, finishedAt); err != nil {
+						return res, err
+					}
+					continue
+				}
+				// All paths below funnel through finishTool on failure, so a
+				// decode or store error commits a normal (non-timed-out)
+				// result the model can read and react to.
+				var rd struct {
+					Path string `json:"path"`
+					Size int    `json:"size"`
+					Data string `json:"data"`
+				}
+				failAsset := func(format string, args ...any) error {
+					result := "error: publish_asset: " + fmt.Sprintf(format, args...)
+					return finishTool(result, false, startedAt, finishedAt)
+				}
+				if err := json.Unmarshal([]byte(final), &rd); err != nil {
+					if err := failAsset("the file could not be read (malformed provider response: %v)", err); err != nil {
+						return res, err
+					}
+					continue
+				}
+				if rd.Size < 0 || rd.Size > asset.MaxBytes {
+					if err := failAsset("file is %d bytes; the limit is %d bytes (%d MiB)", rd.Size, asset.MaxBytes, asset.MaxBytes/(1<<20)); err != nil {
+						return res, err
+					}
+					continue
+				}
+				data, err := base64.StdEncoding.DecodeString(rd.Data)
+				if err != nil || len(data) != rd.Size {
+					if err := failAsset("the file could not be decoded after upload (size mismatch)"); err != nil {
+						return res, err
+					}
+					continue
+				}
+				filename := asset.SanitizeFilename(filepath.Base(rd.Path))
+				url, aerr := h.PublishAsset(filename, data)
+				if aerr != nil {
+					if err := failAsset("%v", aerr); err != nil {
+						return res, err
+					}
+					continue
+				}
+				if err := finishTool(url, false, startedAt, finishedAt); err != nil {
 					return res, err
 				}
 				continue
