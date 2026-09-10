@@ -20,16 +20,27 @@ type Config struct {
 	BaseURL string
 	Model   string
 	APIKey  string
+	// Provider, when set, is the request's `provider` object: which endpoints
+	// of Model may answer, and in what order the gateway tries them. Nil lets
+	// the gateway decide.
+	Provider *ProviderPreferences
+	// providerErr holds a bad PORTER_PROVIDER value. Env records it and
+	// Validate reports it, so a misspelled routing field stops the server at
+	// startup rather than sending requests somewhere you did not intend.
+	providerErr error
 }
 
 // Env reads server configuration from environment variables. It does not
 // validate; callers should validate before use.
 func Env() Config {
+	provider, providerErr := ParseProvider(os.Getenv(ProviderEnv))
 	return Config{
-		Addr:    getenv("PORTER_ADDR", DefaultAddr),
-		BaseURL: getenv("PORTER_BASE_URL", DefaultBaseURL),
-		Model:   getenv("PORTER_MODEL", DefaultModel),
-		APIKey:  os.Getenv("PORTER_API_KEY"),
+		Addr:        getenv("PORTER_ADDR", DefaultAddr),
+		BaseURL:     getenv("PORTER_BASE_URL", DefaultBaseURL),
+		Model:       getenv("PORTER_MODEL", DefaultModel),
+		APIKey:      os.Getenv("PORTER_API_KEY"),
+		Provider:    provider,
+		providerErr: providerErr,
 	}
 }
 
@@ -43,6 +54,9 @@ func (c Config) Validate() error {
 	}
 	if c.APIKey == "" && c.BaseURL == DefaultBaseURL {
 		return fmt.Errorf("API key is required for the default endpoint (set PORTER_API_KEY)")
+	}
+	if c.providerErr != nil {
+		return c.providerErr
 	}
 	return nil
 }

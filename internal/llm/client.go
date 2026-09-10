@@ -24,6 +24,10 @@ type chatRequest struct {
 	// `usage` from a streaming response unless include_usage is set, so without
 	// it turn metadata can never report input/output token counts.
 	StreamOptions *streamOptions `json:"stream_options,omitempty"`
+	// Provider, when set, is the gateway's routing object: which endpoints may
+	// answer this request. Left out when unset, so the gateway keeps its own
+	// default.
+	Provider *config.ProviderPreferences `json:"provider,omitempty"`
 }
 
 // streamOptions is the Chat Completions stream_options payload. IncludeUsage
@@ -75,6 +79,7 @@ func (c *Client) Stream(ctx context.Context, messages []ChatMessage, tools []Too
 		Tools:         tools,
 		Stream:        true,
 		StreamOptions: &streamOptions{IncludeUsage: true},
+		Provider:      c.cfg.Provider,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)

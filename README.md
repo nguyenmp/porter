@@ -160,6 +160,39 @@ We build and run through Docker so the pinned Go version is used for portable de
 3. `make server` — starts the server (owns the LLM connection + tool execution) in one terminal
 4. `make repl` — starts the interactive REPL client in another, or `make run PROMPT="say hi"` for one-shot
 
+### Choosing which endpoint answers
+
+A gateway such as OpenRouter serves one model from many providers, at several
+precisions. `PORTER_PROVIDER` picks which endpoints a request may use. It is a
+server setting, like `PORTER_MODEL`, because the server owns the LLM connection.
+
+Two forms are accepted:
+
+- A provider slug, or a comma-separated list of them. This pins those endpoints
+  and turns fallbacks off, so the request fails instead of going somewhere
+  else:
+  ```
+  PORTER_PROVIDER=deepinfra/fp8
+  ```
+- A JSON object with the gateway's routing fields, for anything else:
+  ```
+  PORTER_PROVIDER='{"only":["deepinfra/fp8"],"allow_fallbacks":false,"quantizations":["fp8"]}'
+  ```
+  The fields are `order`, `only`, `ignore`, `allow_fallbacks`,
+  `require_parameters`, `quantizations`, `sort`, `data_collection`, `zdr`,
+  `enforce_distillable_text`, `preferred_min_throughput`,
+  `preferred_max_latency`, and `max_price`. `require_parameters` keeps a chat
+  that uses tools off an endpoint that cannot call them.
+
+A misspelled field stops the server at startup instead of being dropped without
+a word. An ignored routing rule would change which endpoint answers, and the run
+would still look fine.
+
+Leave it unset and the gateway routes as it did before.
+
+`evals/list_providers.py` lists the endpoints that serve a model, with their
+precision and price, and can write one eval entry per endpoint.
+
 ### Persisted sessions
 
 The server owns conversation state, and since the SQLite-backed history roadmap item it persists every session — its creation time, full committed history (including tool timing, reasoning, and tool calls), and the bus position clients resume from — to a SQLite database at `porter.db` in the working directory. When running via `make server` (which mounts the repo at `/app`) or `porter-macos` from the repo, the file lands in the repo and is gitignored, exactly like `porter.log`. Because committed state lives in the database, sessions survive server restarts: a restarted server loads them back and the sidebar, `/view`, and SSE resume all keep working.
