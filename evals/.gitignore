@@ -1,0 +1,7 @@
+# eval-local files: your keys and per-run results don't belong in git
+providers.yaml
+providers.generated.yaml
+results.jsonl
+.eval-work/
+# python bytecode from the eval scripts
+__pycache__/

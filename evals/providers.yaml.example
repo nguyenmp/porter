@@ -1,0 +1,61 @@
+# Copy to providers.yaml and fill in your keys/addresses.
+#
+# Each entry is one thing to measure: a model plus, when you pin it, the
+# endpoint and precision that answers. The driver starts one `porter server`
+# per entry with that entry's env, runs every case a few times, and shuts the
+# server down.
+#
+# Three settings matter most:
+#
+#   PORTER_BASE_URL  the gateway to talk to. Point this at your proxy, not at
+#                    OpenRouter, so the proxy holds the credentials.
+#   PORTER_MODEL     the model name as that gateway expects it. A gateway in
+#                    front of OpenRouter usually needs an "openrouter/" prefix
+#                    to route there; without it the same-looking name can go
+#                    to a different backend, where a provider pin is ignored.
+#   PORTER_PROVIDER  which endpoint of that model may answer (see below).
+#
+# Find the endpoints and usable slugs with:
+#   python3 list_providers.py <model> --probe --write providers.generated.yaml
+providers:
+  # Your proxy, unpinned: the gateway routes as it likes.
+  - name: openrouter-deepseek-v4-flash
+    env:
+      PORTER_BASE_URL: "https://litellm.href.cat/v1"
+      PORTER_MODEL: "openrouter/deepseek/deepseek-v4-flash"
+      PORTER_API_KEY: "sk-..."
+    addr: "127.0.0.1:8787"
+    trials: 5
+
+  # Same model, pinned to one endpoint with no fallback, so the run measures
+  # that endpoint and nothing else.
+  # - name: deepseek-v4-flash-deepinfra-fp8
+  #   env:
+  #     PORTER_BASE_URL: "https://litellm.href.cat/v1"
+  #     PORTER_MODEL: "openrouter/deepseek/deepseek-v4-flash"
+  #     PORTER_PROVIDER: "deepinfra/fp8"
+  #   addr: "127.0.0.1:8788"
+  #   trials: 5
+
+  # Sort instead of pin, to cut routing noise without naming an endpoint.
+  # These are model suffixes understood by OpenRouter:
+  #   ":nitro" sorts by throughput, ":floor" by price.
+  # - name: deepseek-v4-flash-nitro
+  #   env:
+  #     PORTER_BASE_URL: "https://litellm.href.cat/v1"
+  #     PORTER_MODEL: "openrouter/deepseek/deepseek-v4-flash:nitro"
+  #     PORTER_API_KEY: "sk-..."
+  #   addr: "127.0.0.1:8789"
+  #   trials: 5
+
+# Calling OpenRouter directly instead of through a proxy takes the unprefixed
+# name, OpenRouter's own address, and an OpenRouter key:
+#   python3 list_providers.py <model> --direct --write providers.openrouter.yaml
+
+# If a server is already running (its model + key set in its env) and you do
+# not want the driver to manage one, add `external: true` and point at it:
+#   - name: some-running-server
+#     external: true
+#     env:
+#       PORTER_SERVER_URL: "http://127.0.0.1:8787"
+#     trials: 3

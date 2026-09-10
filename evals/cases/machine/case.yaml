@@ -1,0 +1,3 @@
+# Objective check: the answer must name the machine's OS and processor.
+prompt: "What machine are you running on? State the operating system and processor architecture."
+check: uname
