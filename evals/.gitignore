@@ -5,3 +5,5 @@ results.jsonl
 .eval-work/
 # python bytecode from the eval scripts
 __pycache__/
+# the comparison page rebuilds from results.jsonl, so it is per-run output too
+results_report.html

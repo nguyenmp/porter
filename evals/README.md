@@ -5,6 +5,10 @@ here means one provider's server for a model, at one precision. Porter does the
 agent work; this folder scores the results. It is separate from the porter
 binary, so you can test any endpoint without a code change.
 
+After a run, `python3 report_html.py` builds the comparison page with a
+recommendation. `METHODOLOGY.md` explains what the page measures, why, and how
+to rebuild it.
+
 ## Point porter at your gateway, not at OpenRouter
 
 Porter talks to whatever `PORTER_BASE_URL` names. Point it at your LiteLLM
@@ -203,6 +207,8 @@ that calls a fixed judge model with a short rubric.
 |---|---|
 | `run_eval.py` | Runs providers x cases x trials, parses JSONL, scores, writes `results.jsonl` |
 | `report.py` | Turns `results.jsonl` into a table |
+| `report_html.py` | Turns `results.jsonl` into the comparison page with a recommendation |
+| `METHODOLOGY.md` | What the report measures, why, and how to rebuild it |
 | `list_providers.py` | Lists the endpoints that serve a model, and writes eval entries for them |
 | `providers.yaml` | Your provider list and keys (gitignored) |
 | `providers.generated.yaml` | Entries written by `list_providers.py` (gitignored) |
