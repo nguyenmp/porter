@@ -83,6 +83,22 @@ def shared_model(names):
     return prefix.rstrip("-")
 
 
+def categorize_error(message):
+    """Label an error into a failure type for the scoreboard."""
+    msg = message.lower().strip()
+    if msg == "no error text":
+        return "wrong"
+    if "429" in msg or "ratelimit" in msg or "rate limit" in msg:
+        return "rate_limit"
+    if "401" in msg or "unauthorized" in msg:
+        return "unauthorized"
+    if "timed out" in msg:
+        return "timeout"
+    if "token too long" in msg:
+        return "token_too_long"
+    return "other"
+
+
 def split_cell(rows, provider, case):
     """Turn one provider's trials for one case into the numbers the page shows."""
     group = [r for r in rows if r["provider"] == provider and r["case"] == case]
@@ -93,16 +109,20 @@ def split_cell(rows, provider, case):
     sent = sum(r["tokens"].get("input", 0) for r in group)
 
     errors = []
+    err_counts = {"wrong": 0, "timeout": 0, "rate_limit": 0,
+                  "unauthorized": 0, "token_too_long": 0, "other": 0}
     for r in bad:
         message = (r.get("error") or "no error text").strip()
         if message not in errors:
             errors.append(message)
+        err_counts[categorize_error(message)] += 1
 
     return {
         "n_all": len(group),
         "n_pass": len(good),
         "n_error": len(bad),
         "errors": errors,
+        "err_counts": err_counts,
         "first_token": spread([r.get("first_token_s") for r in good]),
         "end_to_end": spread([r.get("end_to_end_s") for r in good]),
         "gen_tps": spread([r.get("gen_tokens_per_sec") for r in good]),
@@ -235,6 +255,9 @@ def build_findings(rows, providers):
 def trials_of(rows, provider):
     """The trials that answered, which are the only ones worth ranking."""
     return [r for r in rows if r["provider"] == provider and r.get("verdict") == "pass"]
+def all_trials_of(rows, provider):
+    """All trials for a provider, including failed ones, for pass rate."""
+    return [r for r in rows if r["provider"] == provider]
 
 
 def measure(trials, key):
@@ -243,6 +266,10 @@ def measure(trials, key):
         sent = sum(r["tokens"].get("input", 0) for r in trials)
         hit = sum(r["tokens"].get("cached_input", 0) for r in trials)
         return (100.0 * hit / sent) if sent else 0.0
+    if key == "pass_rate":
+        if not trials:
+            return 0.0
+        return 100.0 * sum(1 for r in trials if r.get("verdict") == "pass") / len(trials)
     return median([r.get(key) for r in trials])
 
 
@@ -254,6 +281,8 @@ MEASURES = [
     {"key": "first_token_s", "label": "Wait (s)",
      "hint": "lower is better", "higher": False, "digits": 2},
     {"key": "cached_pct", "label": "From cache",
+     "hint": "higher is better", "higher": True, "digits": 0},
+    {"key": "pass_rate", "label": "Pass rate",
      "hint": "higher is better", "higher": True, "digits": 0},
 ]
 
@@ -269,7 +298,13 @@ def build_picks(rows, providers, rounds=2000):
     live = [p for p in providers if trials_of(rows, p)]
     cut = len(live) // 2
 
-    met = {m["key"]: {p: measure(trials_of(rows, p), m["key"]) for p in live}
+    def pick_trials(m, p):
+        """Use all trials for pass rate, passing-only trials for everything else."""
+        if m["key"] == "pass_rate":
+            return all_trials_of(rows, p)
+        return trials_of(rows, p)
+
+    met = {m["key"]: {p: measure(pick_trials(m, p), m["key"]) for p in live}
            for m in MEASURES}
     order = {m["key"]: sorted(live, key=lambda p: met[m["key"]][p],
                               reverse=m["higher"]) for m in MEASURES}
@@ -282,7 +317,7 @@ def build_picks(rows, providers, rounds=2000):
             for m in MEASURES:
                 sample = {}
                 for p in live:
-                    group = trials_of(rows, p)
+                    group = pick_trials(m, p)
                     drawn = [random.choice(group) for _ in group]
                     sample[p] = measure(drawn, m["key"])
                 for p in sorted(live, key=lambda p: sample[p],
@@ -503,6 +538,11 @@ PAGE = r"""<!doctype html>
   .note { font-size: 13.5px; color: var(--muted); }
   .note li { margin-bottom: 7px; }
   .pill { font-size: 11.5px; padding: 1px 7px; border-radius: 999px; background: #fdeceb; color: var(--bad); }
+  .pill.wrong { background: #fdeceb; color: #c2352b; }
+  .pill.timeout { background: #fef3e2; color: #a86213; }
+  .pill.rate_limit { background: #f0e6ff; color: #7a4fbf; }
+  .pill.unauthorized { background: #fee2e2; color: #b91c1c; }
+  .pill.token_too_long { background: #e0f2fe; color: #0369a1; }
   footer { margin-top: 40px; color: var(--muted); font-size: 13px; }
 </style>
 <body>
@@ -513,7 +553,7 @@ PAGE = r"""<!doctype html>
   <div class="card findings" id="findings"></div>
 
   <h2>Which endpoint should you use?</h2>
-  <p class="sub">Each endpoint is ranked on the three measures it controls. A tinted cell means it lands in the better half of the nine. A bold number means it stays there in nine resamples out of ten, so treat the plain ones as too close to call.</p>
+  <p class="sub">Each endpoint is ranked on the <span id="measureCount">four</span> measures it controls. A tinted cell means it lands in the better half. A bold number means it stays there in nine resamples out of ten, so treat the plain ones as too close to call.</p>
   <div class="card">
     <div class="headline" id="headline"></div>
     <div id="picks" class="tablewrap"></div>
@@ -591,6 +631,8 @@ document.getElementById('meta').textContent =
   `${DATA.rows_total} trials · ${DATA.cases.length} cases · run ${DATA.window} · `
   + `page built ${DATA.generated} from __TITLE__`;
 
+document.getElementById('measureCount').textContent = DATA.picks.metrics.length;
+
 document.getElementById('findings').innerHTML = DATA.findings.map(f =>
   `<div class="finding"><b>${f.head}</b><span>${f.body}</span></div>`).join('');
 
@@ -667,11 +709,14 @@ function renderScoreboard() {
   const body = rows.map(r => {
     const c = r.cell;
     const failed = c.n_pass === 0;
-    const tip = c.errors.length ? ` title="${c.errors.join(' / ').replace(/"/g, '')}"` : '';
-    return `<tr class="${failed ? 'bad' : ''}"${tip}>
+    const errs = c.err_counts || {};
+    const pills = c.n_error ? Object.entries(errs).filter(e => e[1] > 0).map(e =>
+      ` <span class="pill ${e[0]}">${e[1]} ${e[0].replace('_', ' ')}</span>`
+    ).join('') : '';
+    return `<tr class="${failed ? 'bad' : ''}">
       <td><span class="name">${r.provider.short}</span><span class="badge ${r.provider.precision}">${r.provider.precision}</span>
           <span class="badge">${r.caseLabel}</span></td>
-      <td class="${failed ? 'err' : 'pass'}">${r.passText}${c.n_error ? ` <span class="pill">${c.n_error} refused</span>` : ''}</td>
+      <td class="${failed ? 'err' : 'pass'}">${r.passText}${pills}</td>
       <td>${fmt(r.tps, 1)}</td>
       <td>${fmt(r.ft)}</td>
       <td>${fmt(r.e2e)}</td>
