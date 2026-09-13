@@ -843,8 +843,8 @@ def main():
                     help="override each provider's trial count")
     ap.add_argument("--timeout", type=int, default=300,
                     help="per-run timeout in seconds")
-    ap.add_argument("--workers", type=int, default=0,
-                    help="runs at once (default: one per provider)")
+    ap.add_argument("--workers", type=int, default=2,
+                    help="runs at once (default: 2)")
     ap.add_argument("--only", default="",
                     help="run only providers/cases matching this substring")
     ap.add_argument("--no-server", action="store_true",
