@@ -24,10 +24,12 @@ type chatRequest struct {
 	// `usage` from a streaming response unless include_usage is set, so without
 	// it turn metadata can never report input/output token counts.
 	StreamOptions *streamOptions `json:"stream_options,omitempty"`
-	// ReasoningLevel asks the provider how much chain-of-thought to return.
-	// OpenRouter's gateway uses this to decide whether to request reasoning
-	// tokens from the upstream provider. "high" means full reasoning.
-	ReasoningLevel *string `json:"reasoning_level,omitempty"`
+	// Reasoning asks the provider for chain-of-thought output. It is the
+	// gateway's reasoning control: `effort` says how much thinking to spend.
+	// OpenRouter reads this object and turns it into whatever the upstream
+	// provider wants; a model that cannot reason ignores it instead of
+	// failing the request.
+	Reasoning *reasoningConfig `json:"reasoning,omitempty"`
 	// Provider, when set, is the gateway's routing object: which endpoints may
 	// answer this request. Left out when unset, so the gateway keeps its own
 	// default.
@@ -38,6 +40,14 @@ type chatRequest struct {
 // asks the provider to send a final chunk carrying the round-trip token usage.
 type streamOptions struct {
 	IncludeUsage bool `json:"include_usage"`
+}
+
+// reasoningConfig is the `reasoning` object of a Chat Completions request.
+// Effort is the OpenRouter scale: "max", "xhigh", "high", "medium", "low",
+// "minimal", or "none". OpenRouter translates it for models that want a token
+// budget instead, and ignores it for models that cannot reason.
+type reasoningConfig struct {
+	Effort string `json:"effort,omitempty"`
 }
 
 // Client makes streaming Chat Completions requests.
@@ -83,7 +93,7 @@ func (c *Client) Stream(ctx context.Context, messages []ChatMessage, tools []Too
 		Tools:         tools,
 		Stream:        true,
 		StreamOptions: &streamOptions{IncludeUsage: true},
-		ReasoningLevel: strptr("high"),
+		Reasoning:     &reasoningConfig{Effort: "high"},
 		Provider:      c.cfg.Provider,
 	})
 	if err != nil {
@@ -119,6 +129,3 @@ func (c *Client) Stream(ctx context.Context, messages []ChatMessage, tools []Too
 	c.closer = resp.Body
 	return resp.Body, nil
 }
-// strptr returns a pointer to s, for use with json omitempty fields that
-// should be nil when unset and non-nil when set.
-func strptr(s string) *string { return &s }
