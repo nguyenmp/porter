@@ -14,11 +14,13 @@ Read providers.yaml for what a provider entry needs. No third-party packages.
 
 import argparse
 import datetime
+import ipaddress
 import json
 import os
 import platform
 import re
 import signal
+import socket
 import subprocess
 import sys
 import threading
@@ -41,7 +43,9 @@ def load_config(path):
 # ---------------------------------------------------------------------------
 # Objective checkers. Each name a case can set in its `check` field maps to two
 # functions: one builds the ground truth once per provider, and one scores a
-# single answer. The scorer takes (text, state) and returns (ok, detail).
+# single answer. The scorer takes (text, state, metrics) and returns (ok,
+# detail). Metrics is the parsed run; a checker needs it only when it scores
+# the stream rather than the wording, such as the reasoning case.
 # ---------------------------------------------------------------------------
 
 def _time_state():
@@ -108,7 +112,7 @@ def _find_times(text):
     return found
 
 
-def _time_check(text, state):
+def _time_check(text, state, metrics=None):
     now = state["now"]
     tolerance_min = 6
     tolerance = datetime.timedelta(minutes=tolerance_min)
@@ -177,7 +181,7 @@ def _uname_state():
     return {"allowed": allowed, "host": out}
 
 
-def _uname_check(text, state):
+def _uname_check(text, state, metrics=None):
     low = text.lower()
     # Pick the first word that appears at a word boundary, so "mac" does not
     # match inside "machine".
@@ -189,9 +193,141 @@ def _uname_check(text, state):
     return True, "matched %s" % found
 
 
+def _reasoning_state():
+    # Nothing to look up: this case scores the stream, not the wording.
+    return {}
+
+
+def _reasoning_check(text, state, metrics=None):
+    """Did the endpoint stream reasoning, and did an answer still land?
+
+    The count comes from the JSONL, not from the reply: an endpoint that drops
+    reasoning returns a normal-looking answer, so the text alone cannot show
+    whether any reasoning came back.
+    """
+    info = (metrics or {}).get("reasoning") or {}
+    chars = info.get("chars") or 0
+    deltas = info.get("deltas") or 0
+    if not chars:
+        return False, ("no reasoning text in the stream (%d delta(s)); the "
+                       "endpoint is dropping it or reasoning is off" % deltas)
+    if not text.strip():
+        return False, ("reasoning arrived (%d chars) but the answer is empty"
+                       % chars)
+    return True, ("%d reasoning chars in %d delta(s), then an answer"
+                  % (chars, deltas))
+
+
+# _IP_LOOKUPS name services that answer "what is my public address?". Two of
+# them, one per address family, so an answer in IPv6 is checked as closely as
+# an answer in IPv4.
+_IP_LOOKUPS = ("https://api.ipify.org", "https://api64.ipify.org")
+
+
+def _public_ips():
+    """This machine's public addresses, or an empty set when a lookup fails."""
+    import urllib.request
+
+    found = set()
+    for url in _IP_LOOKUPS:
+        try:
+            with urllib.request.urlopen(url, timeout=5) as r:
+                text = r.read(64).decode("utf-8", "replace").strip()
+        except Exception:
+            continue
+        try:
+            found.add(str(ipaddress.ip_address(text)))
+        except ValueError:
+            continue
+    return found
+
+
+def _local_ips():
+    """The addresses this machine holds, so a private-address answer is checked
+    against something real instead of a guess."""
+    out = ""
+    for cmd in (["ifconfig"], ["ip", "-o", "addr"]):
+        try:
+            out = subprocess.run(cmd, capture_output=True, text=True,
+                                 timeout=10).stdout
+        except Exception:
+            out = ""
+        if out:
+            break
+    found = set()
+    for raw in re.findall(r"\binet6?\s+(?:addr:)?([0-9A-Fa-f:.]+)", out):
+        try:
+            found.add(str(ipaddress.ip_address(raw.strip("."))))
+        except ValueError:
+            continue
+    try:  # a machine whose interface dump said nothing still knows its name
+        for info in socket.getaddrinfo(socket.gethostname(), None):
+            found.add(info[4][0])
+    except Exception:
+        pass
+    return found
+
+
+def _my_ip_state():
+    return {"public": _public_ips(), "local": _local_ips()}
+
+
+# _IP_CANDIDATE matches the two shapes an address takes: a dotted quad, or a
+# run of colon-separated groups. ipaddress decides whether a match really is an
+# address, so a version number like 25.6.0 is dropped instead of counted.
+_IP_CANDIDATE = re.compile(r"[0-9A-Fa-f]{1,4}(?::[0-9A-Fa-f]{0,4}){2,}"
+                           r"|[0-9]{1,3}(?:\.[0-9]{1,3}){3}")
+
+
+def _ips_in(text):
+    """Every address the answer names, ignoring ones that mean "no address"."""
+    out = []
+    for raw in _IP_CANDIDATE.findall(text):
+        try:
+            addr = ipaddress.ip_address(raw)
+        except ValueError:
+            continue
+        if addr.is_unspecified or addr.is_loopback:
+            continue  # 0.0.0.0 and 127.0.0.1 answer a different question
+        out.append(addr)
+    return out
+
+
+def _my_ip_check(text, state, metrics=None):
+    """Score one answer against the addresses this machine really holds.
+
+    A model can answer from memory, and a made-up address looks like a real
+    one, so the answer has to match the machine and not just look right.
+    """
+    found = _ips_in(text)
+    public = state.get("public") or set()
+    local = state.get("local") or set()
+    for addr in found:
+        if str(addr) in public:
+            return True, "answer names this machine's public address (%s)" % addr
+        if str(addr) in local:
+            return True, "answer names an address on this machine (%s)" % addr
+    if not found:
+        return False, "no IP address in the answer"
+    said = ", ".join(str(a) for a in found)
+    if not public:
+        # The lookup failed, so there is nothing to compare against. Say so
+        # rather than failing an answer that may well be right.
+        if any(not (a.is_private or a.is_link_local) for a in found):
+            return True, ("answer says %s; the public-address lookup failed, "
+                          "so this is unverified" % said)
+        return False, ("answer says %s, which this machine does not hold; its "
+                       "own addresses are %s"
+                       % (said, ", ".join(sorted(local)) or "unknown"))
+    return False, ("answer says %s; this machine's addresses are %s"
+                   % (said, ", ".join(sorted(public | local)) or "unknown"))
+
+
 CHECKERS = {
     "time": (_time_state, _time_check),
     "uname": (_uname_state, _uname_check),
+    "reasoning": (_reasoning_state, _reasoning_check),
+    "ip": (_my_ip_state, _my_ip_check),
 }
 
 
@@ -208,9 +344,15 @@ def parse_lines(timed_lines, started):
         "tokens": {"input": 0, "output": 0,
                    "cached_input": 0, "uncached_input": 0},
         "tools": [],
+        # Reasoning arrives twice: streamed as reasoning_delta events, then
+        # repeated on the assembled message. Counting both would double it, so
+        # chars is whichever of the two is larger.
+        "reasoning": {"deltas": 0, "chars": 0},
         "first_token_s": None,
         "gen_seconds": 0.0,
     }
+    streamed_reasoning = 0  # chars seen as reasoning_delta events
+    final_reasoning = 0     # chars on the assembled message event
     req_start = None  # first delta of the current model request
     req_end = None    # its last token, or the usage event that closed it
 
@@ -226,6 +368,9 @@ def parse_lines(timed_lines, started):
         kind = obj.get("kind")
 
         if typ in ("message_delta", "reasoning_delta"):
+            if typ == "reasoning_delta":
+                m["reasoning"]["deltas"] += 1
+                streamed_reasoning += len(obj.get("reasoning") or "")
             if m["first_token_s"] is None:
                 m["first_token_s"] = ts - started
             if req_start is None:
@@ -233,6 +378,7 @@ def parse_lines(timed_lines, started):
             req_end = ts
         elif typ == "message":
             m["final_text"] = obj.get("content") or ""
+            final_reasoning = len(obj.get("reasoning") or "")
             if req_start is None:
                 req_start = ts
             req_end = ts
@@ -257,6 +403,7 @@ def parse_lines(timed_lines, started):
             })
 
     close_req()
+    m["reasoning"]["chars"] = max(streamed_reasoning, final_reasoning)
     return m
 
 
@@ -575,7 +722,7 @@ def main():
                         row["verdict"] = "fail"
                     elif checker:
                         ok, detail = checker[1](metrics.get("final_text", ""),
-                                                state_cache[check])
+                                                state_cache[check], metrics)
                         row["verdict"] = "pass" if ok else "fail"
                         row["detail"] = detail
                     else:

@@ -1,0 +1,5 @@
+# Objective check: the stream must carry reasoning text, not just an answer.
+# The puzzle needs a bit of work to get right, so an endpoint that reasons
+# has a reason to emit some.
+prompt: "A bat and a ball cost $1.10 together. The bat costs $1.00 more than the ball. How much does the ball cost? Work it out step by step."
+check: reasoning

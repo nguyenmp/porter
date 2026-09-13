@@ -52,9 +52,15 @@ which endpoints answer well and quickly, then repeat for the next model.
 
 ## What it measures
 
-Each run scores five things, all read from the JSONL the one-shot CLI prints:
+Each run scores six things, all read from the JSONL the one-shot CLI prints:
 
-- **Right answer**: a check per case. Two exist today (time, machine).
+- **Right answer**: a check per case. Four exist today: `time`, `machine`,
+  `reasoning`, and `ip`. Two of them read the stream and not the answer:
+  `reasoning` counts the reasoning text, and `ip` compares the address in the
+  answer against the addresses this machine holds.
+- **Reasoning**: how much reasoning text came back, or zero when the endpoint
+  drops it. The table shows this as `reason_ch`. The stream carries text, not a
+  count of reasoning tokens, so this measures characters.
 - **Tools work**: the shell tool adds an `exit code: N` line, so the runner
   reads success without guessing. It also counts how many tools the agent
   called.
@@ -197,9 +203,13 @@ prompt: "What time is it? Give the current date and time."
 check: time
 ```
 
-`check` names a checker in `run_eval.py` (see `CHECKERS`). To score open-ended
-answers such as weather, summaries, and plain-language rewrites, add a checker
-that calls a fixed judge model with a short rubric.
+`check` names a checker in `run_eval.py` (see `CHECKERS`). A checker is a pair
+of functions: one builds the ground truth once per provider, and one scores a
+single run. The scorer takes `(text, state, metrics)` and returns
+`(passed, detail)`; `metrics` is the parsed run, which a checker needs only
+when it scores the stream rather than the wording. To score open-ended answers
+such as weather, summaries, and plain-language rewrites, add a checker that
+calls a fixed judge model with a short rubric.
 
 ## Files
 
@@ -231,6 +241,14 @@ porter's web UI for a closer look.
   get a sensible answer" instead of comparing to a saved number.
 - A wrong model name comes back as a failed turn, with `error` set in the row,
   not as a pass.
+- Two checks can fail for reasons the model does not control. The `ip` check
+  looks up this machine's public address once per provider, and when that
+  lookup fails it accepts a public address and says so in the row's `detail`.
+  The `reasoning` check passes only when reasoning text arrives, so an endpoint
+  that strips reasoning fails the case even when the model reasoned.
+- A failing row is worth reading before it is worth counting. The `detail`
+  field says why the checker said no, and it separates a wrong answer from a
+  refused request.
 - A pinned endpoint that is down fails the run too. That result is honest:
   uptime is part of what you measure. Watch the `error` column for it, so a
   provider outage does not read as a bad answer.

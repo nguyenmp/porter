@@ -1,0 +1,5 @@
+# Objective check: the answer must name an address this machine really holds.
+# The model has to go and look (a shell command such as curl ifconfig.me),
+# not recite an address from memory.
+prompt: "What's my IP address? Give the public address this machine shows to the internet."
+check: ip

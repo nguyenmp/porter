@@ -43,12 +43,88 @@ UNAME_CASES = [
     ("I cannot tell you.", False),
 ]
 
+# The machine in these cases holds 203.0.113.9 in public and a home-network
+# address plus a link-local IPv6 address of its own. The public block is the
+# one reserved for documentation, so a test can never name a real machine.
+IP_STATE = {"public": {"203.0.113.9"},
+            "local": {"192.168.1.24", "fe80::c8:1aff:fe6a:2d11"}}
 
-def check(name, checker, cases, expected_state):
+IP_CASES = [
+    ("Your public IP address is 203.0.113.9.", True, "the machine's public address"),
+    ("The machine's IP address is 192.168.1.24.", True, "its own local address"),
+    ("It looks like 203.0.113.9 (the router is 192.168.1.1).",
+     True, "right address named alongside a wrong one"),
+    ("I can't see your network, so I can't tell you.", False, "no address at all"),
+    ("Your IP address is 192.168.1.1.", False, "a made-up gateway address"),
+    ("Your public address is 198.51.100.7.", False, "plausible but not this machine"),
+    ("127.0.0.1", False, "loopback is not an answer to this question"),
+    ("0.0.0.0", False, "the unspecified address is not an answer either"),
+    ("The time is 2026-09-10 11:00:57, on version 25.6.0.",
+     False, "dotted numbers that are not addresses"),
+]
+
+# When the public lookup fails there is nothing to compare against, so a
+# global address is taken at face value and a private one is still checked
+# against the machine. The global address here is Google's public DNS, which
+# no machine in these tests can hold.
+IP_NO_LOOKUP_CASES = [
+    ("Your IP address is 8.8.8.8.", True, "unverified, so accepted"),
+    ("Your IP address is 192.168.1.1.", False, "still not an address it holds"),
+]
+
+
+# Reasoning counts are read from the JSONL, so pin the parse itself: a stream
+# where reasoning arrives as deltas and again on the assembled message (it must
+# not be counted twice), a stream where only the message carries it, and a
+# stream with none.
+def _streamed_reasoning():
+    return [
+        (0.0, {"type": "reasoning_delta", "reasoning": "think "}),
+        (0.5, {"type": "reasoning_delta", "reasoning": "again"}),
+        (0.7, {"type": "message_delta", "delta": "5 cents"}),
+        (1.0, {"type": "message", "content": "5 cents", "reasoning": "think again"}),
+        (1.2, {"type": "usage", "input_tokens": 10, "output_tokens": 2}),
+    ]
+
+
+def _message_only_reasoning():
+    return [
+        (0.0, {"type": "message", "content": "5 cents", "reasoning": "thought it"}),
+        (0.2, {"type": "usage", "input_tokens": 8, "output_tokens": 2}),
+    ]
+
+
+def _no_reasoning():
+    return [
+        (0.0, {"type": "message", "content": "5 cents"}),
+        (0.2, {"type": "usage", "input_tokens": 8, "output_tokens": 2}),
+    ]
+
+
+STREAM_CASES = [
+    (_streamed_reasoning, {"deltas": 2, "chars": 11}, "deltas and message agree"),
+    (_message_only_reasoning, {"deltas": 0, "chars": 10}, "no deltas, message only"),
+    (_no_reasoning, {"deltas": 0, "chars": 0}, "nothing to count"),
+]
+
+
+def check_stream(name, cases):
+    failures = 0
+    for build, want, why in cases:
+        got = R.parse_lines(build(), 0.0)["reasoning"]
+        if got != want:
+            failures += 1
+            print("  FAIL  want=%s got=%s (%s)" % (want, got, why))
+    print("%-8s %d/%d cases as expected"
+          % (name, len(cases) - failures, len(cases)))
+    return failures
+
+
+def check(name, checker, cases, expected_state, metrics=None):
     failures = 0
     for answer, want, *rest in cases:
         state = expected_state()
-        ok, detail = checker(answer, state)
+        ok, detail = checker(answer, state, metrics or {})
         if ok != want:
             failures += 1
             why = rest[0] if rest else ""
@@ -61,7 +137,6 @@ def check(name, checker, cases, expected_state):
 
 def main():
     bad = 0
-    time_state, uname_state = R.CHECKERS["time"][0], R.CHECKERS["uname"][0]
     # Pin the clock so the time cases are deterministic.
     bad += check("time", R.CHECKERS["time"][1], TIME_CASES,
                  lambda: {"now": NOW})
@@ -70,6 +145,34 @@ def main():
                                       "arm64", "arm", "aarch64",
                                       "apple silicon"],
                           "host": "Darwin 25.6.0 arm64"})
+    bad += check("ip", R.CHECKERS["ip"][1], IP_CASES, lambda: IP_STATE)
+    bad += check("ip-lookupdown", R.CHECKERS["ip"][1], IP_NO_LOOKUP_CASES,
+                 lambda: {"public": set(), "local": IP_STATE["local"]})
+
+    # The reasoning checker scores the stream, not the answer text, so each
+    # case carries the counts the runner parsed out of the JSONL.
+    reasoning_cases = [
+        ("The ball costs 5 cents.", {"reasoning": {"deltas": 14, "chars": 612}},
+         True, "reasoning streamed, then the answer"),
+        ("The ball costs 5 cents.", {"reasoning": {"deltas": 0, "chars": 0}},
+         False, "endpoint dropped the reasoning"),
+        ("The ball costs 5 cents.", {},
+         False, "row carries no reasoning counts"),
+        ("", {"reasoning": {"deltas": 3, "chars": 40}},
+         False, "reasoning arrived without an answer"),
+    ]
+    failures = 0
+    for answer, metrics, want, why in reasoning_cases:
+        ok, detail = R.CHECKERS["reasoning"][1](answer, {}, metrics)
+        if ok != want:
+            failures += 1
+            print("  FAIL  want=%-5s got=%-5s  %s" % (want, ok, why))
+            print("        -> %s" % detail)
+    bad += failures
+    print("%-8s %d/%d cases as expected"
+          % ("reasoning", len(reasoning_cases) - failures, len(reasoning_cases)))
+
+    bad += check_stream("stream", STREAM_CASES)
 
     # Tool success is read from the shell tool's exit-code line.
     tool_cases = [

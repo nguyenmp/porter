@@ -58,18 +58,22 @@ def _pass_rate(rs):
 def _print_group(title, groups):
     # groups: list of (key, rows)
     print(title)
-    print("  %-28s %-7s %-11s %-11s %-9s %-9s" %
-          ("case/provider", "pass", "e2e_s", "gen_tok/s", "tools", "out_tok"))
-    print("  " + "-" * 78)
+    print("  %-28s %-7s %-11s %-11s %-9s %-9s %-9s" %
+          ("case/provider", "pass", "e2e_s", "gen_tok/s", "tools", "out_tok",
+           "reason_ch"))
+    print("  " + "-" * 87)
     for key, rs in groups:
         ok, n = _pass_rate(rs)
         e2e = mean([r.get("end_to_end_s") for r in rs])
         gts = mean([r.get("gen_tokens_per_sec") for r in rs])
         calls = mean([r.get("tool_summary", {}).get("calls") for r in rs])
         out = mean([r.get("tokens", {}).get("output") for r in rs])
-        print("  %-28s %-7s %-11s %-11s %-9s %-9s" %
+        # Reasoning is counted in characters: the stream carries the text, not
+        # a count of reasoning tokens.
+        reason = mean([(r.get("reasoning") or {}).get("chars") for r in rs])
+        print("  %-28s %-7s %-11s %-11s %-9s %-9s %-9s" %
               ("%s/%d" % (key, n), "%d/%d" % (ok, n),
-               fmt(e2e), fmt(gts), fmt(calls, 1), fmt(out, 0)))
+               fmt(e2e), fmt(gts), fmt(calls, 1), fmt(out, 0), fmt(reason, 0)))
     print()
 
 

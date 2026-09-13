@@ -145,13 +145,26 @@ def build_findings(rows, providers):
     findings = []
 
     answered = [r for r in rows if r.get("verdict") == "pass"]
-    refused = [r for r in rows if r.get("verdict") != "pass"]
-    findings.append({
-        "head": "Every endpoint that answered got both cases right.",
-        "body": "%d of %d trials passed. The other %d never reached a model: the gateway "
-                "refused them. Speed is the only real difference this run shows."
-                % (len(answered), len(rows), len(refused)),
-    })
+    refused = [r for r in rows if r.get("error")]
+    wrong = [r for r in rows if r.get("verdict") != "pass" and not r.get("error")]
+    cases = sorted({r["case"] for r in rows})
+    refused_note = (" The other %d trials never reached a model: the gateway refused "
+                    "them." % len(refused)) if refused else ""
+    if wrong:
+        # A wrong answer and a refusal both count as "not passed", but they mean
+        # opposite things, so say which happened.
+        findings.append({
+            "head": "%d of %d trials answered a case wrong." % (len(wrong), len(rows)),
+            "body": "The speed numbers on this page come from the trials that passed. "
+                    "Read a wrong one against its own case, not against the speed of "
+                    "the endpoint that ran it." + refused_note,
+        })
+    else:
+        findings.append({
+            "head": "Every endpoint that answered passed all %d cases." % len(cases),
+            "body": "%d of %d trials passed.%s Speed is the only real difference this "
+                    "run shows." % (len(answered), len(rows), refused_note),
+        })
 
     def middle(provider, field):
         """The median for one endpoint across the trials that answered."""
@@ -379,7 +392,7 @@ def main():
     cases = sorted({r["case"] for r in rows})
 
     def pooled(provider, field):
-        """The median for one endpoint across both cases, used to rank the charts."""
+        """The median for one endpoint across every case, used to rank the charts."""
         good = [r for r in rows if r["provider"] == provider and r.get("verdict") == "pass"]
         return median([r.get(field) for r in good])
 
@@ -430,6 +443,8 @@ PAGE = r"""<!doctype html>
     --card: #ffffff;
     --machine: #2f6fd0;
     --whattime: #0f9b8e;
+    --reasoning: #7a4fbf;
+    --whatsmyip: #c2701a;
     --bad: #c2352b;
     --warn: #a86213;
   }
@@ -543,7 +558,7 @@ PAGE = r"""<!doctype html>
       <li>The endpoints ran one after another over about an hour, not at the same time. Load on the provider and on the gateway changed between runs, and some of the spread in these numbers is that.</li>
       <li>Tokens a second counts only the time the model spent writing. Total time adds the wait for the tool calls, so an endpoint can look quick on one chart and slow on the other.</li>
       <li>Each endpoint pinned one provider with no fallback, so every row measures that endpoint alone. No provider stood in for another.</li>
-      <li>Correctness comes down to two small cases. Every endpoint that answered passed both, so this run cannot say which one reasons better.</li>
+      <li>Correctness comes down to a few small cases, so a pass means the endpoint cleared a low bar rather than that it reasons well. A case that fails is a real difference: read it against the case, not the speed next to it.</li>
       <li>Tokens a second is a noisy number for short answers. One endpoint wrote 24 to 58 output tokens on the machine case, and its trials ran from 14 to 170 tokens a second. A fraction of a second of scheduling delay moves a tiny answer a long way.</li>
       <li>The gateway refused digitalocean ten times between 10:23 and 10:30. The same endpoint answered at 11:13. Something changed in between, so those refusals say nothing about how fast the endpoint is.</li>
     </ul>
@@ -557,8 +572,13 @@ const DATA = __DATA__;
 
 const MACHINE = getComputedStyle(document.documentElement).getPropertyValue('--machine').trim();
 const WHATTIME = getComputedStyle(document.documentElement).getPropertyValue('--whattime').trim();
+const REASONING = getComputedStyle(document.documentElement).getPropertyValue('--reasoning').trim();
+const WHATSMYIP = getComputedStyle(document.documentElement).getPropertyValue('--whatsmyip').trim();
+// One color per case, in order, so a case keeps its color on every chart.
+// A run with more cases than colors repeats the list.
+const PALETTE = [MACHINE, WHATTIME, REASONING, WHATSMYIP];
 const CASE_COLOR = {};
-DATA.cases.forEach((c, i) => CASE_COLOR[c] = i === 0 ? MACHINE : WHATTIME);
+DATA.cases.forEach((c, i) => CASE_COLOR[c] = PALETTE[i % PALETTE.length]);
 
 const fmt = (v, d = 2) => (v === null || v === undefined || Number.isNaN(v)) ? "-" : v.toFixed(d);
 const cap = s => s.replace(/[-_/]/g, " ").replace(/\b\w/g, ch => ch.toUpperCase());
@@ -734,7 +754,7 @@ function chartRows(metric, lowerIsBetter) {
   return DATA.providers.map(p => {
     const vals = {};
     DATA.cases.forEach(c => vals[c] = DATA.cells[p.name + '|' + c][metric]);
-    // Rank on the endpoint's median across both cases, so the chart leads with
+    // Rank on the endpoint's median across every case, so the chart leads with
     // the best option. An endpoint with no answered trial sorts last.
     return {label: p.short, vals, score: p.pooled[metric]};
   }).sort((a, b) => {
