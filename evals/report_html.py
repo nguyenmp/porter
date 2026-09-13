@@ -176,13 +176,13 @@ def build_findings(rows, providers):
         findings.append({
             "head": "%d of %d trials answered a case wrong." % (len(wrong), len(rows)),
             "body": "The speed numbers on this page come from the trials that passed. "
-                    "Read a wrong one against its own case, not against the speed of "
+                    "Look at a wrong answer alongside its own case, not alongside the speed of "
                     "the endpoint that ran it." + refused_note,
         })
     else:
         findings.append({
             "head": "Every endpoint that answered passed all %d cases." % len(cases),
-            "body": "%d of %d trials passed.%s Speed is the only real difference this "
+            "body": "%d of %d trials passed.%s Speed is the only difference worth noting this "
                     "run shows." % (len(answered), len(rows), refused_note),
         })
 
@@ -205,9 +205,9 @@ def build_findings(rows, providers):
             "head": "The fastest endpoint writes about %d times faster than the slowest."
                     % round(fastest[0] / slowest[0]),
             "body": "%s writes %.0f output tokens a second and finishes a task in %.1f s. "
-                    "%s writes %.0f a second and takes %.1f s. Both counts are medians, "
-                    "which means the middle trial of the five. One slow call moves a "
-                    "median less than it moves an average."
+                    "%s writes %.0f a second and takes %.1f s. Both counts are medians: "
+                    "the middle trial of the five. One slow call affects the median less "
+                    "than it affects the average."
                     % (short_name(fastest[1]), fastest[0], middle(fastest[1], "end_to_end_s"),
                        short_name(slowest[1]), slowest[0], middle(slowest[1], "end_to_end_s")),
         })
@@ -219,12 +219,12 @@ def build_findings(rows, providers):
                  if r["provider"] == worst["provider"]
                  and r.get("verdict") == "pass"
                  and r is not worst]
-        body = ("The worst is %s on the %s case: %.1f s to the first token, %.1f s in total."
+        body = ("The slowest start is %s on the %s case: %.1f s to the first token, %.1f s in total."
                 % (short_name(worst["provider"]), worst["case"],
                    worst["first_token_s"], worst["end_to_end_s"]))
         if peers:
             body += (" Its other trials all finished inside %.1f s, so count that one as a "
-                     "bad call rather than a slow endpoint." % max(peers))
+                     "bad trial rather than a slow endpoint." % max(peers))
         findings.append({
             "head": "%s %s took more than 10 s to start answering."
                     % (number_words(len(waits)),
@@ -240,7 +240,7 @@ def build_findings(rows, providers):
         names = ", ".join(short_name(p) for p in no_cache)
         size = middle_input(no_cache[0])
         body = ("Every other endpoint read most of the long prompt from its cache. %s read "
-                "none of it, so every turn sends the whole prompt again and pays for it in "
+                "none of it, so every turn sends the whole prompt again and sends it in "
                 "full." % names)
         if size:
             body += " That is %s input tokens a turn." % format_number(size)
@@ -290,7 +290,7 @@ MEASURES = [
 def build_picks(rows, providers, rounds=2000):
     """Rank the endpoints on the measures the endpoint itself controls.
 
-    An endpoint lands in the better half when its median beats the middle
+    An endpoint lands in the top half when its median beats the middle
     endpoint's median. With nine endpoints there is no exact half, so that line
     falls between fourth and fifth place and sits close to the middle of the
     crowd. Each mark therefore carries how often it survives a resample.
@@ -336,7 +336,7 @@ def build_picks(rows, providers, rounds=2000):
                 "text": ("{:,.%df}" % m["digits"]).format(met[m["key"]][p]),
                 "rank": rank,
                 "best": best,
-                # A mark worth trusting stays in the better half in nine rounds
+                # A mark worth trusting stays in the top half in 9 rounds
                 # out of ten.
                 "firm": best and share >= 0.9,
                 "share": share,
@@ -358,13 +358,13 @@ def build_picks(rows, providers, rounds=2000):
             headlines.append({
                 "label": "Use these" if len(names) > 1 else "Use this",
                 "text": " and ".join(names),
-                "why": "in the better half of %d of the %d measures" % (most, len(MEASURES)),
+                "why": "in the top half of %d of the %d measures" % (most, len(MEASURES)),
             })
         else:
             headlines.append({
                 "label": "No clear winner",
                 "text": "%d endpoints tie at %d of %d measures" % (len(names), most, len(MEASURES)),
-                "why": "read the table below for which measures each one clears",
+                "why": "read the table below for which measures each one passes",
             })
         if 1 < len(leaders) <= 3:
             missed = [(r["short"], [MEASURES[i]["label"] for i, c in enumerate(r["cells"])
@@ -382,24 +382,24 @@ def build_picks(rows, providers, rounds=2000):
                 for r in rows if r.get("verdict") == "pass" and r["tokens"].get("input", 0) < 7000]
     more_turns = [r["end_to_end_s"] - (r.get("first_token_s") or 0) - (r.get("gen_seconds") or 0)
                   for r in rows if r.get("verdict") == "pass" and r["tokens"].get("input", 0) >= 7000]
-    notes.append("Only these three measures belong to the endpoint. It sets how fast it "
+    notes.append("Only these three measures reflect what the endpoint controls: how fast it "
                  "writes, how long it takes to start, and whether it can reuse the prompt "
                  "from its cache.")
     if one_turn:
         tail = ((" When the model answers in one turn, that leftover time comes to %.2f s; "
                  "when it takes a second turn it reaches %.2f s, because the wait before "
-                 "that turn starts writing is not covered by the first-token clock.")
+                 "that turn starts writing is not included in the first-token measurement.")
                 % (median(one_turn), median(more_turns)) if more_turns else "")
-        notes.append("Total time is left out. It also carries the tool calls, the local "
-                     "startup, the wait before any later turn the model decides to take, "
-                     "and it rewards an endpoint that writes a shorter answer." + tail)
+        notes.append("Total time is not included in the ranking. It also carries the tool calls, the "
+                     "tool startup time, the wait before any later turn the model decides to take, "
+                     "and it favors an endpoint that writes a shorter answer." + tail)
 
     skipped = [r["short"] for r in out_rows if r["marks"] == 0]
     if skipped:
         headlines.append({
             "label": "Skip",
             "text": ", ".join(skipped),
-            "why": "in the better half of no measure at all",
+            "why": "never in the top half",
         })
     return {"rows": out_rows, "metrics": MEASURES, "cut": cut, "rounds": rounds,
             "headlines": headlines, "notes": notes, "count": len(live)}
@@ -553,7 +553,7 @@ PAGE = r"""<!doctype html>
   <div class="card findings" id="findings"></div>
 
   <h2>Which endpoint should you use?</h2>
-  <p class="sub">Each endpoint is ranked on the <span id="measureCount">four</span> measures it controls. A tinted cell means it lands in the better half. A bold number means it stays there in nine resamples out of ten, so treat the plain ones as too close to call.</p>
+  <p class="sub">Each endpoint is ranked on the <span id="measureCount">four</span> measures it controls. A tinted cell means the endpoint is in the top half. A bold number means it stayed in the top half in 9 out of 10 reruns, so treat plain numbers as too close to call.</p>
   <div class="card">
     <div class="headline" id="headline"></div>
     <div id="picks" class="tablewrap"></div>
@@ -561,14 +561,14 @@ PAGE = r"""<!doctype html>
   </div>
   <div class="card" style="margin-top:14px">
     <ul class="note">
-      <li>An endpoint lands in the better half when its median beats the middle endpoint's median. With nine endpoints that line falls between fourth and fifth place, and five endpoints change sides when it moves one place. Count how many measures an endpoint clears instead of trusting one mark.</li>
-      <li>To test each mark I reran the ranking two thousand times. Each round drew five trials at random from the ones that endpoint ran, repeats allowed, then recomputed the medians and the order. A bold number held its place in at least nine rounds out of ten.</li>
+      <li>An endpoint is in the top half when its median beats the middle endpoint's median. With an odd number of endpoints, the cut line sits between the two middle ranks, and several endpoints cross it if it moves by one place. Count how many measures an endpoint passes instead of looking at just one mark.</li>
+      <li>To test each mark I reran the ranking 2,000 times. Each round picked five trials at random (the same trial could be picked more than once), then recomputed the medians and the order. A bold number held its place in at least 9 out of 10 rounds.</li>
       <li>Five trials per endpoint, all inside one hour, is a small sample. Read these picks as a shortlist to test, not a verdict.</li>
     </ul>
   </div>
 
   <h2>Every endpoint side by side</h2>
-  <p class="sub">One row per endpoint and case, quickest first. Click a heading to sort by it. Speed numbers come from the trials that answered, so a refused call never counts as a fast time. Each speed number is a median: the middle trial, not the average.</p>
+  <p class="sub">One row per endpoint and case, quickest first. Click a column heading to sort by that column. Speed numbers come from the trials that answered, so a refused call never counts as a fast time. Each speed number is a median: the middle trial, not the average.</p>
   <div class="card"><div id="scoreboard" class="tablewrap"></div></div>
 
   <h2>How fast each endpoint writes</h2>
@@ -576,15 +576,15 @@ PAGE = r"""<!doctype html>
   <div class="chart" id="chart-tps"></div>
 
   <h2>How long before the answer starts</h2>
-  <p class="sub">Seconds from sending the prompt to the first output token, for the middle trial. Shorter is better. This is the wait you notice while the answer is still blank.</p>
+  <p class="sub">Seconds from sending the prompt to the first output token, for the middle trial. Shorter is better. This is the delay you see while the answer is still blank.</p>
   <div class="chart" id="chart-ft"></div>
 
   <h2>How long a whole task takes</h2>
   <p class="sub">Seconds from sending the prompt to the last token, for the middle trial. Tool calls are included. Shorter is better.</p>
   <div class="chart" id="chart-e2e"></div>
 
-  <h2>How steady each endpoint is</h2>
-  <p class="sub">One dot for each trial that answered, on a log scale so the slow ones stay on the page. Further left is faster. A wide group means you cannot tell what the next call will do. Only the trials that answered appear here.</p>
+  <h2>How consistent each endpoint is</h2>
+  <p class="sub">One dot for each trial that answered, on a log scale so the slow ones stay on the page. Farther left is faster. A wide group means you cannot tell what the next call will do. Only the trials that answered appear here.</p>
   <div class="chart" id="chart-dots"></div>
 
   <h2>Every trial in full</h2>
@@ -594,13 +594,13 @@ PAGE = r"""<!doctype html>
   <h2>What this run cannot tell you</h2>
   <div class="card">
     <ul class="note">
-      <li>Each endpoint ran five trials per case. That is enough to spot a slow endpoint, and too few to separate two endpoints that land close together.</li>
-      <li>The endpoints ran one after another over about an hour, not at the same time. Load on the provider and on the gateway changed between runs, and some of the spread in these numbers is that.</li>
+      <li>Each endpoint ran five trials per case. That is enough to spot a slow endpoint, but too few to separate two endpoints that land close together.</li>
+      <li>The endpoints ran one after another over about an hour, not at the same time. Load on the provider and on the gateway changed between runs, and that accounts for some of the spread in these numbers.</li>
       <li>Tokens a second counts only the time the model spent writing. Total time adds the wait for the tool calls, so an endpoint can look quick on one chart and slow on the other.</li>
       <li>Each endpoint pinned one provider with no fallback, so every row measures that endpoint alone. No provider stood in for another.</li>
-      <li>Correctness comes down to a few small cases, so a pass means the endpoint cleared a low bar rather than that it reasons well. A case that fails is a real difference: read it against the case, not the speed next to it.</li>
+      <li>Correctness comes down to a few small cases, so a pass means the endpoint passed a simple check rather than that it reasons well. A case that fails tells you something worth noting: look at the case instead, not the speed next to it.</li>
       <li>Tokens a second is a noisy number for short answers. One endpoint wrote 24 to 58 output tokens on the machine case, and its trials ran from 14 to 170 tokens a second. A fraction of a second of scheduling delay moves a tiny answer a long way.</li>
-      <li>The gateway refused digitalocean ten times between 10:23 and 10:30. The same endpoint answered at 11:13. Something changed in between, so those refusals say nothing about how fast the endpoint is.</li>
+      <li>The gateway refused digitalocean 10 times between 10:23 and 10:30. The same endpoint answered at 11:13. Something changed in between, so those refusals say nothing about how fast the endpoint is.</li>
     </ul>
   </div>
 
@@ -624,12 +624,12 @@ const fmt = (v, d = 2) => (v === null || v === undefined || Number.isNaN(v)) ? "
 const cap = s => s.replace(/[-_/]/g, " ").replace(/\b\w/g, ch => ch.toUpperCase());
 
 document.getElementById('title').textContent = DATA.model
-  ? `${DATA.providers.length} ${DATA.model} endpoints, compared`
+  ? `${DATA.providers.length} ${DATA.model} endpoints compared`
   : 'Endpoints compared';
 
 document.getElementById('meta').textContent =
   `${DATA.rows_total} trials · ${DATA.cases.length} cases · run ${DATA.window} · `
-  + `page built ${DATA.generated} from __TITLE__`;
+  + `page generated ${DATA.generated} from __TITLE__`;
 
 document.getElementById('measureCount').textContent = DATA.picks.metrics.length;
 
@@ -644,7 +644,7 @@ document.getElementById('findings').innerHTML = DATA.findings.map(f =>
 
   const head = '<tr><th>Endpoint</th>'
     + P.metrics.map(m => `<th>${m.label}<span class="rank">${m.hint}</span></th>`).join('')
-    + '<th>Better half</th></tr>';
+    + '<th>Top half</th></tr>';
   const body = P.rows.map(r => `<tr>
       <td>${r.short}</td>`
     + r.cells.map(c => {
