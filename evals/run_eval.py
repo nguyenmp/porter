@@ -1,15 +1,19 @@
 #!/usr/bin/env python3
 """Run evals against porter's one-shot CLI.
 
-For each provider it starts one `porter server` (or uses a running one), runs
-every case a few times, scores each run, and appends one row per run to a
-results file. Use report.py to turn the rows into a table.
+Providers run in parallel, one thread per provider. Each provider starts
+its own `porter server` (or uses a running one), runs every case a few
+times, scores each run, and writes one row per run to a per-provider
+results file. When all providers finish, the per-provider files are
+merged into the main results file. Use report.py to turn the rows into
+a table.
 
-The CLI's stdout is read line by line as the run happens, so token and timing
-numbers reflect when the model actually produced output. Reading it after the
-process exits would stamp every line with the same time.
+The CLI's stdout is read line by line as the run happens, so token and
+timing numbers reflect when the model actually produced output. Reading
+it after the process exits would stamp every line with the same time.
 
-Read providers.yaml for what a provider entry needs. No third-party packages.
+Read providers.yaml for what a provider entry needs. No third-party
+packages.
 """
 
 import argparse
@@ -25,6 +29,10 @@ import subprocess
 import sys
 import threading
 import time
+import concurrent.futures
+import shutil
+import tempfile
+import traceback
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -644,6 +652,154 @@ def _clean_error(stderr):
     return lines[-1] if lines else stderr.strip()
 
 
+def _run_one_provider(porter, provider, case_names, args, out_f):
+    """Run all cases x trials for one provider, writing rows to out_f.
+
+    Returns True on success, False on failure (so parallel callers can
+    continue without aborting other providers). Raises on unexpected
+    errors.
+    """
+    name = provider["name"]
+    trials = args.trials or provider.get("trials", 3)
+    state_cache = {}  # check name -> ground truth, built once per provider
+    server_url = env_of(provider).get("PORTER_SERVER_URL")
+    proc = None
+    work_dir = os.path.join(HERE, ".eval-work", name)
+    os.makedirs(work_dir, exist_ok=True)
+
+    try:
+        if provider.get("external") or args.no_server:
+            if not server_url:
+                print("  provider %s: external mode needs env.PORTER_SERVER_URL"
+                      % name, file=sys.stderr)
+                return False
+            print("== %s  (using running server %s)" % (name, server_url))
+        else:
+            env = env_of(provider)
+            auth = ("key from %s" % ("env block" if env.get("PORTER_API_KEY")
+                                     else "PORTER_API_KEY"))
+            if not needs_key(base_url_of(env)):
+                auth = "no key needed (local address)"
+            print("== %s  (starting server on %s; %s)"
+                  % (name, provider["addr"], auth))
+            proc = start_server(porter, provider, work_dir)
+            server_url = "http://%s" % provider["addr"]
+
+        for case in case_names:
+            if args.only and args.only not in case:
+                continue
+            case_cfg = load_config(
+                os.path.join(args.cases_dir, case, "case.yaml"))
+            prompt = case_cfg["prompt"]
+            check = case_cfg.get("check")
+            checker = CHECKERS.get(check)
+            if checker and check not in state_cache:
+                state_cache[check] = checker[0]()
+
+            for trial in range(1, trials + 1):
+                metrics = run_one(porter, server_url, work_dir, prompt,
+                                  args.timeout)
+                row = {
+                    "provider": name,
+                    "case": case,
+                    "trial": trial,
+                    "ts": datetime.datetime.now().isoformat(),
+                }
+                row.update(metrics)
+
+                if "error" in metrics:
+                    row["verdict"] = "fail"
+                elif checker:
+                    ok, detail = checker[1](metrics.get("final_text", ""),
+                                            state_cache[check], metrics)
+                    row["verdict"] = "pass" if ok else "fail"
+                    row["detail"] = detail
+                else:
+                    row["verdict"] = "pass"
+                    row["detail"] = "no checker"
+
+                tools = metrics.get("tools", [])
+                row["tool_summary"] = {
+                    "calls": len(tools),
+                    "ok": sum(1 for t in tools if t["ok"]),
+                }
+                out_f.write(json.dumps(row) + "\n")
+                out_f.flush()
+                print("  %-22s t%-2d %-4s %7.1fs e2e  %6s tok/s  %d tool(s)"
+                      % (case, trial, row["verdict"].upper(),
+                         metrics.get("end_to_end_s") or 0,
+                         _fmt(metrics.get("gen_tokens_per_sec")),
+                         len(tools)))
+    except Exception:
+        print("  provider %s: %s" % (name, traceback.format_exc()),
+              file=sys.stderr)
+        return False
+    finally:
+        stop_server(proc)
+
+    return True
+
+
+def _run_parallel(porter, providers, case_names, args):
+    """Run providers in parallel, one thread per provider.
+
+    Each provider writes its own temp file. After all threads finish,
+    merge the per-provider files into the main output file.
+    """
+    def _one(provider, out_path):
+        with open(out_path, "w") as f:
+            return _run_one_provider(porter, provider, case_names, args, f)
+
+    tmp_dir = tempfile.mkdtemp(prefix="porter-eval-")
+    n_ok = 0
+    n_fail = 0
+    row_count = 0
+    try:
+        with concurrent.futures.ThreadPoolExecutor(
+                max_workers=len(providers)) as pool:
+            futures = {}
+            for provider in providers:
+                if args.only and args.only not in provider["name"]:
+                    continue
+                out_path = os.path.join(tmp_dir, provider["name"] + ".jsonl")
+                future = pool.submit(_one, provider, out_path)
+                futures[future] = provider["name"]
+
+            for future in concurrent.futures.as_completed(futures):
+                name = futures[future]
+                try:
+                    ok = future.result()
+                    if ok:
+                        n_ok += 1
+                    else:
+                        n_fail += 1
+                        print("  provider %s failed" % name,
+                              file=sys.stderr)
+                except Exception as e:
+                    n_fail += 1
+                    print("  provider %s raised: %s" % (name, e),
+                          file=sys.stderr)
+
+        # Merge per-provider files into the main output file
+        with open(args.out, "w") as combined:
+            for provider in providers:
+                if args.only and args.only not in provider["name"]:
+                    continue
+                out_path = os.path.join(tmp_dir, provider["name"] + ".jsonl")
+                if os.path.exists(out_path):
+                    with open(out_path) as f:
+                        for line in f:
+                            combined.write(line)
+                            row_count += 1
+                    os.remove(out_path)
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    print("%d provider(s) ok, %d failed; %d row(s) in %s"
+          % (n_ok, n_fail, row_count, args.out))
+    if n_fail:
+        sys.exit(1)
+
 # ---------------------------------------------------------------------------
 # Main loop.
 # ---------------------------------------------------------------------------
@@ -691,85 +847,8 @@ def main():
     if problems:
         sys.exit("\n".join(problems))
 
-    out_f = open(args.out, "a")
+    _run_parallel(porter, providers, case_names, args)
 
-    for provider in providers:
-        name = provider["name"]
-        if args.only and args.only not in name:
-            continue
-        trials = args.trials or provider.get("trials", 3)
-        state_cache = {}  # check name -> ground truth, built once per provider
-        server_url = env_of(provider).get("PORTER_SERVER_URL")
-        proc = None
-        work_dir = os.path.join(HERE, ".eval-work", name)
-        os.makedirs(work_dir, exist_ok=True)
-
-        if provider.get("external") or args.no_server:
-            if not server_url:
-                sys.exit("provider %s: external mode needs env.PORTER_SERVER_URL"
-                         % name)
-            print("== %s  (using running server %s)" % (name, server_url))
-        else:
-            env = env_of(provider)
-            auth = ("key from %s" % ("env block" if env.get("PORTER_API_KEY")
-                                     else "PORTER_API_KEY"))
-            if not needs_key(base_url_of(env)):
-                auth = "no key needed (local address)"
-            print("== %s  (starting server on %s; %s)"
-                  % (name, provider["addr"], auth))
-            proc = start_server(porter, provider, work_dir)
-            server_url = "http://%s" % provider["addr"]
-
-        try:
-            for case in case_names:
-                if args.only and args.only not in case:
-                    continue
-                case_cfg = load_config(
-                    os.path.join(args.cases_dir, case, "case.yaml"))
-                prompt = case_cfg["prompt"]
-                check = case_cfg.get("check")
-                checker = CHECKERS.get(check)
-                if checker and check not in state_cache:
-                    state_cache[check] = checker[0]()
-
-                for trial in range(1, trials + 1):
-                    metrics = run_one(porter, server_url, work_dir, prompt,
-                                      args.timeout)
-                    row = {
-                        "provider": name,
-                        "case": case,
-                        "trial": trial,
-                        "ts": datetime.datetime.now().isoformat(),
-                    }
-                    row.update(metrics)
-
-                    if "error" in metrics:
-                        row["verdict"] = "fail"
-                    elif checker:
-                        ok, detail = checker[1](metrics.get("final_text", ""),
-                                                state_cache[check], metrics)
-                        row["verdict"] = "pass" if ok else "fail"
-                        row["detail"] = detail
-                    else:
-                        row["verdict"] = "pass"
-                        row["detail"] = "no checker"
-
-                    tools = metrics.get("tools", [])
-                    row["tool_summary"] = {
-                        "calls": len(tools),
-                        "ok": sum(1 for t in tools if t["ok"]),
-                    }
-                    out_f.write(json.dumps(row) + "\n")
-                    out_f.flush()
-                    print("  %-22s t%-2d %-4s %7.1fs e2e  %6s tok/s  %d tool(s)"
-                          % (case, trial, row["verdict"].upper(),
-                             metrics.get("end_to_end_s") or 0,
-                             _fmt(metrics.get("gen_tokens_per_sec")),
-                             len(tools)))
-        finally:
-            stop_server(proc)
-
-    out_f.close()
     print("done; rows in %s" % args.out)
 
 
