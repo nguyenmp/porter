@@ -1,0 +1,5 @@
+# Objective check: the answer must name Docker and Ansible, the two core
+# technologies of this project. A model needs to discover the repo, read its
+# contents, and write a summary that correctly identifies both.
+prompt: "Write a plain-language summary of the nguyenmp/vps-management GitHub project."
+check: tech-keywords

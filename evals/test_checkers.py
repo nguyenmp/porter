@@ -71,6 +71,17 @@ IP_NO_LOOKUP_CASES = [
     ("Your IP address is 8.8.8.8.", True, "unverified, so accepted"),
     ("Your IP address is 192.168.1.1.", False, "still not an address it holds"),
 ]
+TECH_KEYWORDS_CASES = [
+    ("This project uses Docker containers and Ansible for provisioning.",
+     True, "has both keywords"),
+    ("The VPS runs docker for all its services.",
+     False, "missing ansible"),
+    ("Ansible handles the initial machine setup.",
+     False, "missing docker"),
+    ("I don't know.", False, "neither keyword"),
+    ("Docker. Ansible. " * 20, True, "both keywords, long enough"),
+    ("docker and ansible", False, "both but too short (under 50 chars)"),
+]
 
 
 # Reasoning counts are read from the JSONL, so pin the parse itself: a stream
@@ -171,6 +182,9 @@ def main():
     bad += failures
     print("%-8s %d/%d cases as expected"
           % ("reasoning", len(reasoning_cases) - failures, len(reasoning_cases)))
+    bad += check("tech-keywords", R.CHECKERS["tech-keywords"][1],
+                   TECH_KEYWORDS_CASES,
+                   lambda: {"must_have": ["docker", "ansible"], "min_chars": 50})
 
     bad += check_stream("stream", STREAM_CASES)
 

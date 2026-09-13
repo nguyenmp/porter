@@ -323,11 +323,36 @@ def _my_ip_check(text, state, metrics=None):
                    % (said, ", ".join(sorted(public | local)) or "unknown"))
 
 
+# tech-keywords: check that certain terms appear in the answer.
+# The state holds the keywords to find and a minimum character count.
+_TECH_KEYWORDS = {
+    "must_have": ["docker", "ansible"],
+    "min_chars": 50,
+}
+
+
+def _tech_keywords_state():
+    return dict(_TECH_KEYWORDS)
+
+
+def _tech_keywords_check(text, state, metrics=None):
+    low = text.lower()
+    missing = []
+    for kw in state["must_have"]:
+        if not re.search(r"\b" + re.escape(kw) + r"\b", low):
+            missing.append(kw)
+    if missing:
+        return False, "missing keywords: %s" % ", ".join(missing)
+    if len(text) < state["min_chars"]:
+        return False, "answer too short (%d chars, need %d)" % (
+            len(text), state["min_chars"])
+    return True, "found all keywords (%s)" % ", ".join(state["must_have"])
 CHECKERS = {
     "time": (_time_state, _time_check),
     "uname": (_uname_state, _uname_check),
     "reasoning": (_reasoning_state, _reasoning_check),
     "ip": (_my_ip_state, _my_ip_check),
+    "tech-keywords": (_tech_keywords_state, _tech_keywords_check),
 }
 
 
