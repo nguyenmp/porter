@@ -105,6 +105,19 @@
 			</button>
 			<div id="exec-picker" class="exec-picker" role="listbox" hidden></div>
 		</div>
+{{/* Sandbox path bar: shows the directory where this session's commands
+     run and lets the user copy the path or open it in Finder (when the
+     provider is local). Hidden until the exec status reports a CWD. */}}
+<div id="sandbox-bar" class="sandbox-bar" hidden>
+    <span class="sandbox-label">Sandbox</span>
+    <span id="sandbox-path" class="sandbox-path" title="Session working directory"></span>
+    <button type="button" id="sandbox-copy-btn" class="sandbox-btn" title="Copy sandbox path" aria-label="Copy sandbox path">
+        <span id="sandbox-copy-icon">&#x2398;</span>
+    </button>
+    <button type="button" id="sandbox-finder-btn" class="sandbox-btn" title="Open in Finder" aria-label="Open sandbox folder in Finder" hidden>
+        <span>&#x1F4C2;</span>
+    </button>
+</div>
 		<div id="sse-processor"
 		     hx-ext="sse"
 		     sse-connect="/api/sessions/{{.Session}}/stream?since={{.Seq}}"
@@ -517,6 +530,11 @@
   const execPickerBtn = document.getElementById('exec-picker-btn');
   const execPickerName = document.getElementById('exec-picker-name');
   const execPicker = document.getElementById('exec-picker');
+  const sandboxBar = document.getElementById('sandbox-bar');
+  const sandboxPath = document.getElementById('sandbox-path');
+  const sandboxCopyBtn = document.getElementById('sandbox-copy-btn');
+  const sandboxCopyIcon = document.getElementById('sandbox-copy-icon');
+  const sandboxFinderBtn = document.getElementById('sandbox-finder-btn');
 
   // execSystemShort trims the parenthetical detail off a reported system
   // ("darwin/arm64 (macOS — BSD userland…)" -> "darwin/arm64").
@@ -580,10 +598,70 @@
       row.addEventListener('click', function() { selectExec(c.id); });
       execPicker.appendChild(row);
     }
+    updateSandboxPath(status);
+  }
+  // updateSandboxPath shows or hides the sandbox path bar below the exec
+  // bar and fills in the path from the active provider's CWD. For local
+  // providers it also shows the "Open in Finder" button; for remote ones
+  // the button is hidden (you can't open Finder on another machine).
+  function updateSandboxPath(status) {
+    if (!sandboxBar) return;
+    const clients = Array.isArray(status.clients) ? status.clients : [];
+    const activeId = status.active_id || 'local';
+    const active = clients.find(function(c) { return c.id === activeId; });
+    const ctx = active && active.context;
+    const cwd = ctx && ctx.cwd;
+    if (cwd) {
+      sandboxPath.textContent = cwd;
+      sandboxBar.classList.add('show');
+      sandboxBar.hidden = false;
+      // Show the Finder button only when the active provider is local (the
+      // server process), since we can only open folders on this machine.
+      sandboxFinderBtn.hidden = (active && active.kind !== 'local') || !cwd;
+    } else {
+      sandboxBar.classList.remove('show');
+      sandboxBar.hidden = true;
+    }
   }
 
-  // selectExec posts the user's choice to /exec/select and closes the popover.
-  // The server's exec_status broadcast re-renders the picker authoritatively.
+  // copySandboxPath copies the current sandbox path to the clipboard and
+  // briefly flashes a confirmation on the copy button.
+  function copySandboxPath() {
+    const path = sandboxPath.textContent;
+    if (!path) return;
+    navigator.clipboard.writeText(path).then(function() {
+      sandboxCopyBtn.classList.add('sandbox-btn-copied');
+      sandboxCopyIcon.textContent = '✓';
+      setTimeout(function() {
+        sandboxCopyBtn.classList.remove('sandbox-btn-copied');
+        sandboxCopyIcon.textContent = '\u2398';
+      }, 1500);
+    }).catch(function() {
+      // Fallback for older browsers or non-HTTPS contexts: select the text.
+      try {
+        const range = document.createRange();
+        range.selectNodeContents(sandboxPath);
+        const sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+      } catch (e) { /* ignore */ }
+    });
+  }
+
+  // openSandboxInFinder opens the sandbox folder in the macOS Finder.
+  // Only available for local sandboxes; the button is hidden for remote ones.
+  function openSandboxInFinder() {
+    const path = sandboxPath.textContent;
+    if (!path) return;
+    // Open a file:// URL in a new tab/window. Browsers may block file:// URLs
+    // from http pages depending on the browser and settings; if it fails the
+    // Copy button still works as a fallback.
+    try {
+      window.open('file://' + path, '_blank');
+    } catch (e) {
+      console.warn('Could not open Finder; copy the path instead.', e);
+    }
+  }
   function selectExec(id) {
     const sess = app ? app.dataset.session : null;
     if (!sess) return;
@@ -631,6 +709,13 @@
       .then(function(resp) { return resp.ok ? resp.json() : null; })
       .then(function(status) { if (status) renderExecPicker(status); })
       .catch(function() {});
+  }
+  // Sandbox path buttons: copy to clipboard and open in Finder.
+  if (sandboxCopyBtn) {
+    sandboxCopyBtn.addEventListener('click', copySandboxPath);
+  }
+  if (sandboxFinderBtn) {
+    sandboxFinderBtn.addEventListener('click', openSandboxInFinder);
   }
 
   // Stop button: POST to the session's stop endpoint to abort the running

@@ -343,6 +343,19 @@
 		.exec-picker-row .row-check { margin-left: auto; color: #2e8b57; font-size: 0.9em; }
 		.exec-picker-row .row-detail { font-size: 0.8em; color: #888; font-weight: normal; margin-top: 0.15rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 		.empty-state { text-align: center; color: #666; margin-top: 4rem; }
+/* Sandbox path bar: shows the session's working directory below the
+		   exec bar, with buttons to copy the path or open it in Finder (local
+		   sandboxes only). Hidden by default; JS shows it when the exec status
+		   reports a CWD. */
+		.sandbox-bar { display: none; align-items: center; gap: 0.3rem; width: 100%; max-width: 1000px; margin: 0 auto; padding: 0.1rem 0.5rem; box-sizing: border-box; font-size: 0.75em; color: #999; }
+		.sandbox-bar.show { display: flex; }
+		.sandbox-label { flex-shrink: 0; color: #aaa; }
+		.sandbox-path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: default; }
+		.sandbox-btn { display: inline-flex; align-items: center; justify-content: center; border: none; background: none; color: #999; cursor: pointer; padding: 0.15rem 0.3rem; border-radius: 3px; font-size: 1em; line-height: 1; }
+		.sandbox-btn:hover { background: #f0f0f0; color: #333; }
+		.sandbox-btn:active { background: #e0e0e0; }
+		.sandbox-btn-copied { color: #2e8b57; }
+		.sandbox-btn-copied:hover { color: #2e8b57; background: #e8f5e9; }
 		/* Hamburger that toggles the sidebar drawer on small screens. Hidden on
 		   desktop, where the sidebar is always visible. */
 		#menu-btn {
@@ -431,6 +444,8 @@
 			.exec-picker-btn { padding: 0.5rem 0.75rem; font-size: 0.95rem; }
 			.exec-picker { min-width: min(280px, calc(100vw - 1rem)); max-width: calc(100vw - 1rem); }
 			.exec-picker-row { padding: 0.7rem 0.6rem; font-size: 1rem; }
+.sandbox-bar { padding: 0.2rem 0.6rem; font-size: 0.85rem; }
+			.sandbox-btn { padding: 0.4rem 0.5rem; font-size: 0.9rem; }
 		}
 		/* Transient status toast (session-create warnings): fixed to the
 		   bottom center, above everything, auto-dismissed by JS. */
