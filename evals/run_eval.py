@@ -750,8 +750,11 @@ def _run_task(porter, provider_name, server_url, work_dir, case_cfg, case,
     with lock:
         out_f.write(json.dumps(row) + "\n")
         out_f.flush()
-    print("  %-22s t%-2d %-4s %7.1fs e2e  %6s tok/s  %d tool(s)"
-          % (case, trial, row["verdict"].upper(),
+    # Name the provider on every line. The pool runs several providers at the
+    # same time, so the lines arrive interleaved and a case name alone does not
+    # say who answered.
+    print("  %-30s %-20s t%-2d %-4s %7.1fs e2e  %6s tok/s  %d tool(s)"
+          % (provider_name, case, trial, row["verdict"].upper(),
              metrics.get("end_to_end_s") or 0,
              _fmt(metrics.get("gen_tokens_per_sec")),
              len(tools)))
