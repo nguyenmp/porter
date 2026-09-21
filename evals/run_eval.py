@@ -363,6 +363,37 @@ CHECKERS = {
     "tech-keywords": (_tech_keywords_state, _tech_keywords_check),
 }
 
+# Each case.yaml has an `order` number, and every case must have one. Lower
+# numbers run first, so cheap cases run before expensive ones. That way you get
+# a row for every provider early, and the slow case can't hold up the rest. The
+# numbers come from a one-trial probe; see README.md, "Adding a case".
+def case_order(cases):
+    """Return the case names in the order they should run.
+
+    You must give every case an `order`. A case without one stops the run, so
+    the order is always a choice you made, not something the folder names
+    decide. Two cases with the same number stop the run too, because the run
+    would then pick between them by folder name.
+    """
+    missing = sorted(n for n, spec in cases.items()
+                     if not isinstance(spec, dict) or spec.get("order") is None)
+    if missing:
+        sys.exit("case(s) %s: no `order` in case.yaml. Add one so the run "
+                 "order is a choice, not an accident; see README.md, "
+                 "\"Adding a case\"." % ", ".join(missing))
+
+    taken = {}
+    for name in sorted(cases):
+        order = cases[name]["order"]
+        if isinstance(order, bool) or not isinstance(order, int):
+            sys.exit("case %s: order must be a whole number, got %s (%r)"
+                     % (name, type(order).__name__, order))
+        if order in taken:
+            sys.exit("cases %s and %s both have order %d; give each case its "
+                     "own number" % (taken[order], name, order))
+        taken[order] = name
+    return sorted(cases, key=lambda name: cases[name]["order"])
+
 
 # ---------------------------------------------------------------------------
 # JSONL parsing: turns the CLI's stdout, with the time each line arrived, into
@@ -726,7 +757,7 @@ def _run_task(porter, provider_name, server_url, work_dir, case_cfg, case,
              len(tools)))
 
 
-def _run_parallel(porter, providers, case_names, args):
+def _run_parallel(porter, providers, case_names, cases, args):
     """Run every (provider, case, trial) as its own task in a shared pool.
 
     One thread per provider was only as fast as its slowest provider,
@@ -734,6 +765,13 @@ def _run_parallel(porter, providers, case_names, args):
     run pinned the whole thread for minutes. Now each run is an independent
     task, so the pool drains slow runs across all threads and wall time
     approaches total work / workers instead of the slowest chain.
+
+    The queue runs case by case, in each case's `order`: every provider runs
+    the current case before the runner moves to the next one. So you get a row
+    for every provider within seconds of the first case, which is enough to
+    drop a slow or broken endpoint before the expensive case runs. Inside a
+    case, every provider runs one trial before any provider runs a second, so
+    no provider waits while another repeats.
     """
     considered = [p for p in providers
                   if not args.only or args.only in p["name"]]
@@ -754,14 +792,14 @@ def _run_parallel(porter, providers, case_names, args):
     write_lock = threading.Lock()
     try:
         by_name = {p["name"]: p for p in providers}
-        cases = {c: load_config(os.path.join(args.cases_dir, c, "case.yaml"))
-                 for c in case_names}
-        tasks = []
+        trial_cap = {}
+        work_dir_of = {}
+        states_of = {}
         out_files = {}
         for name, server_url, proc in servers:
             provider = by_name[name]
-            trials = args.trials or provider.get("trials", 3)
-            work_dir = os.path.join(HERE, ".eval-work", name)
+            trial_cap[name] = args.trials or provider.get("trials", 3)
+            work_dir_of[name] = os.path.join(HERE, ".eval-work", name)
             out_files[name] = open(
                 os.path.join(tmp_dir, name + ".jsonl"), "w")
             # Ground truth per checker, built once per provider as before.
@@ -772,12 +810,19 @@ def _run_parallel(porter, providers, case_names, args):
                 check = cases[case].get("check")
                 if check and check in CHECKERS and check not in check_states:
                     check_states[check] = CHECKERS[check][0]()
-            for case in case_names:
-                if args.only and args.only not in case:
-                    continue
-                for trial in range(1, trials + 1):
-                    tasks.append((name, server_url, work_dir, cases[case],
-                                  case, trial, check_states))
+            states_of[name] = check_states
+
+        live = [c for c in case_names
+                if not args.only or args.only in c]
+        rounds = max(trial_cap.values()) if trial_cap else 0
+        tasks = []
+        for case in live:
+            for trial in range(1, rounds + 1):
+                for name, server_url, proc in servers:
+                    if trial > trial_cap[name]:
+                        continue
+                    tasks.append((name, server_url, work_dir_of[name],
+                                  cases[case], case, trial, states_of[name]))
 
         workers = max(1, args.workers or len(servers))
         with concurrent.futures.ThreadPoolExecutor(
@@ -863,6 +908,12 @@ def main():
     if not case_names:
         sys.exit("no cases (folders with case.yaml) in %s" % args.cases_dir)
 
+    # Read every case here, so a bad `order` stops the run before any server
+    # starts, not after.
+    cases = {c: load_config(os.path.join(args.cases_dir, c, "case.yaml"))
+             for c in case_names}
+    case_names = case_order(cases)
+
     porter = find_porter(args.porter)
 
     # Check every provider's auth before running anything. One missing key
@@ -878,7 +929,7 @@ def main():
     if problems:
         sys.exit("\n".join(problems))
 
-    _run_parallel(porter, providers, case_names, args)
+    _run_parallel(porter, providers, case_names, cases, args)
 
     print("done; rows in %s" % args.out)
 

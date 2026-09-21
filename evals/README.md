@@ -201,7 +201,14 @@ Make a folder under `cases/` with a `case.yaml`:
 ```yaml
 prompt: "What time is it? Give the current date and time."
 check: time
+order: 2
 ```
+
+`order` says when the case runs. Lower numbers run first, so cheap cases run
+before expensive ones and you get a row for every provider early. Every case
+must have its own `order`, and the run stops before any server starts if one is
+missing or two cases share a number. To change the order, change these numbers;
+`case_order` in `run_eval.py` reads them.
 
 `check` names a checker in `run_eval.py` (see `CHECKERS`). A checker is a pair
 of functions: one builds the ground truth once per provider, and one scores a

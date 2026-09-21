@@ -1,3 +1,5 @@
 # Objective check: the answer must name a real date/time close to now.
 prompt: "What time is it? Give the current date and time."
 check: time
+# Runs second: one shell call, quick in a one-trial probe.
+order: 2

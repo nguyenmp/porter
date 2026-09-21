@@ -3,3 +3,5 @@
 # contents, and write a summary that correctly identifies both.
 prompt: "Write a plain-language summary of the nguyenmp/vps-management GitHub project."
 check: tech-keywords
+# Runs last: reads a whole repo, and has run past the 60s timeout.
+order: 5

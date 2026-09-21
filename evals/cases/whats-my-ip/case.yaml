@@ -3,3 +3,5 @@
 # not recite an address from memory.
 prompt: "What's my IP address? Give the public address this machine shows to the internet."
 check: ip
+# Runs first: one shell call, no repo to read.
+order: 1

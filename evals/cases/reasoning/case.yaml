@@ -3,3 +3,5 @@
 # has a reason to emit some.
 prompt: "A bat and a ball cost $1.10 together. The bat costs $1.00 more than the ball. How much does the ball cost? Work it out step by step."
 check: reasoning
+# Runs fourth: no tools, but a long answer to generate.
+order: 4
