@@ -19,6 +19,7 @@ import (
 	"sync"
 
 	"porter/internal/api"
+	"porter/internal/handoff"
 	"porter/internal/humanize"
 	"porter/internal/llm"
 	"porter/internal/remoteedit"
@@ -211,8 +212,8 @@ func (d *Dispatcher) RunDir(ctx context.Context, name string, args []byte, dir s
 // runLoadSkill returns a skill's body as a stream (with the conventional
 // trailing exit-status line so the agent's tool handling is uniform). A
 // filesystem skill is read from its SKILL.md; a built-in skill (sentinel Path
-// under api.BuiltinPrefix, e.g. the plain-language and editing-remote-files
-// prompts) is served from
+// under api.BuiltinPrefix, e.g. the plain-language, editing-remote-files, and
+// handoff prompts) is served from
 // memory, because the server is a single binary with no skill files in its
 // build. It returns an error only when the skill is unknown or unreadable.
 func (d *Dispatcher) runLoadSkill(args []byte) (io.ReadCloser, error) {
@@ -254,6 +255,8 @@ func builtinBody(name string) (string, bool) {
 		return humanize.Prompt(), true
 	case remoteedit.SkillName:
 		return remoteedit.Prompt(), true
+	case handoff.SkillName:
+		return handoff.Prompt(), true
 	}
 	return "", false
 }

@@ -476,9 +476,9 @@ type SessionsResponse struct {
 // than read from a SKILL.md on disk. The server ships as a single binary with
 // no skill files in its build, so built-in skills use Path = BuiltinPrefix +
 // Name and the dispatcher resolves the body from memory. It lives here — the
-// package every skill owner and consumer already imports — so a built-in skill
-// package (humanize's plain-language, remoteedit's editing-remote-files) and
-// the exec/tools plumbing share one sentinel.
+// package every skill owner and consumer already imports — so the built-in
+// skill packages (plain-language, editing-remote-files, handoff) and the
+// exec/tools plumbing share one sentinel.
 const BuiltinPrefix = "builtin:"
 
 // Skill is the metadata for one discovered skill, as reported by an execution

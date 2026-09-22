@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"porter/internal/api"
+	"porter/internal/handoff"
 	"porter/internal/humanize"
 	"porter/internal/remoteedit"
 )
@@ -264,6 +265,32 @@ func TestLoadSkillReturnsRemoteEditBuiltinBody(t *testing.T) {
 		t.Errorf("built-in load_skill result mismatch:\n got %q\nwant prompt body with exit line", res)
 	}
 	if !strings.Contains(res, "How to edit files on a remote host") {
+		t.Errorf("built-in load_skill result missing prompt body: %q", res)
+	}
+	if !strings.Contains(res, "exit code: 0") {
+		t.Errorf("built-in load_skill result missing exit-status line: %q", res)
+	}
+}
+
+// TestLoadSkillReturnsHandoffBuiltinBody verifies the built-in handoff skill
+// (a third compiled-in skill, like plain-language and editing-remote-files) is
+// served from memory with no file on disk.
+func TestLoadSkillReturnsHandoffBuiltinBody(t *testing.T) {
+	d := NewDispatcherWithSkills([]api.Skill{handoff.BuiltinSkill()})
+
+	// The sentinel path is not a real file: resolution must come from memory.
+	if _, err := os.Stat(handoff.BuiltinSkill().Path); !os.IsNotExist(err) {
+		t.Fatalf("built-in sentinel path %q unexpectedly exists on disk", handoff.BuiltinSkill().Path)
+	}
+
+	res, err := run(context.Background(), d, "load_skill", []byte(`{"name":"`+handoff.SkillName+`"}`))
+	if err != nil {
+		t.Fatalf("Run load_skill (built-in): %v", err)
+	}
+	if res != handoff.Prompt()+"\nexit code: 0\n" {
+		t.Errorf("built-in load_skill result mismatch:\n got %q\nwant prompt body with exit line", res)
+	}
+	if !strings.Contains(res, "Could you write a summary using plain-language?") {
 		t.Errorf("built-in load_skill result missing prompt body: %q", res)
 	}
 	if !strings.Contains(res, "exit code: 0") {

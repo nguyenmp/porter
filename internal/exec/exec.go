@@ -17,6 +17,7 @@ import (
 	"strings"
 
 	"porter/internal/api"
+	"porter/internal/handoff"
 	"porter/internal/humanize"
 	"porter/internal/remoteedit"
 )
@@ -230,6 +231,7 @@ func builtinSkills() []api.Skill {
 	return []api.Skill{
 		humanize.BuiltinSkill(),
 		remoteedit.BuiltinSkill(),
+		handoff.BuiltinSkill(),
 	}
 }
 

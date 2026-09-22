@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"porter/internal/api"
+	"porter/internal/handoff"
 	"porter/internal/humanize"
 	"porter/internal/remoteedit"
 )
@@ -316,7 +317,7 @@ func TestFindSkillsInOrdering(t *testing.T) {
 	// Two roots (e.g. two worktrees in one sandbox) both define the same
 	// skill name: the first root wins, mirroring FindSkills' repo-over-global
 	// preference. Built-in names don't collide here, so the result is the
-	// deduped filesystem skill plus both built-ins.
+	// deduped filesystem skill plus every built-in.
 	root1 := t.TempDir()
 	root2 := t.TempDir()
 	writeSkill(t, root1, ".agents", "dup", "# first\n\nfirst version\n")
@@ -327,8 +328,8 @@ func TestFindSkillsInOrdering(t *testing.T) {
 	for _, s := range skills {
 		byName[s.Name] = s
 	}
-	if len(byName) != 3 {
-		t.Fatalf("FindSkillsIn = %d unique skills, want 3 (filesystem dup + both built-ins)", len(byName))
+	if len(byName) != 4 {
+		t.Fatalf("FindSkillsIn = %d unique skills, want 4 (filesystem dup + every built-in)", len(byName))
 	}
 	want := filepath.Join(root1, ".agents", "skills", "dup", "SKILL.md")
 	if got := byName["dup"].Path; got != want {
@@ -344,8 +345,8 @@ func TestFindSkillsInOrdering(t *testing.T) {
 	for _, s := range skills {
 		byName[s.Name] = s
 	}
-	if len(skills) != 2 {
-		t.Fatalf("FindSkillsIn with colliding skill = %d skills, want 2 (built-in plain-language + built-in editing-remote-files)", len(skills))
+	if len(skills) != 3 {
+		t.Fatalf("FindSkillsIn with colliding skill = %d skills, want 3 (the three built-ins)", len(skills))
 	}
 	if got := byName[humanize.SkillName].Path; got != api.BuiltinPrefix+humanize.SkillName {
 		t.Errorf("filesystem skill shadowed the built-in; path = %q, want %q", got, api.BuiltinPrefix+humanize.SkillName)
@@ -353,22 +354,25 @@ func TestFindSkillsInOrdering(t *testing.T) {
 	if _, ok := byName[remoteedit.SkillName]; !ok {
 		t.Errorf("FindSkillsIn must still include the other built-in %q; got %v", remoteedit.SkillName, skills)
 	}
+	if _, ok := byName[handoff.SkillName]; !ok {
+		t.Errorf("FindSkillsIn must still include the other built-in %q; got %v", handoff.SkillName, skills)
+	}
 }
 
 func TestFindSkillsIncludesBuiltin(t *testing.T) {
-	// With no skills anywhere, the binary's built-in skills (plain-language
-	// and editing-remote-files) are still discovered: the server is a single
-	// binary with no SKILL.md files, so they are hard-coded and served from
-	// memory (sentinel path).
+	// With no skills anywhere, the binary's built-in skills (plain-language,
+	// editing-remote-files, and handoff) are still discovered: the server is a
+	// single binary with no SKILL.md files, so they are hard-coded and served
+	// from memory (sentinel path).
 	skills := FindSkillsIn(nil)
-	if len(skills) != 2 {
-		t.Fatalf("FindSkillsIn(nil) = %d skills, want 2 (built-in plain-language + editing-remote-files)", len(skills))
+	if len(skills) != 3 {
+		t.Fatalf("FindSkillsIn(nil) = %d skills, want 3 (every built-in)", len(skills))
 	}
 	byName := make(map[string]api.Skill, len(skills))
 	for _, s := range skills {
 		byName[s.Name] = s
 	}
-	for _, name := range []string{humanize.SkillName, remoteedit.SkillName} {
+	for _, name := range []string{humanize.SkillName, remoteedit.SkillName, handoff.SkillName} {
 		s, ok := byName[name]
 		if !ok {
 			t.Errorf("missing built-in skill %q in %v", name, skills)

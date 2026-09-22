@@ -58,13 +58,16 @@ I can also use the server as my execution environment in case my laptop is unava
   SKILL.md files (the server is a single binary with no skill files in its
   build). They always win: built-in names are reserved during discovery, so a
   filesystem skill of the same name is skipped and can never shadow the
-  shipped guidance. `load_skill` serves their bodies from memory. Two ship
+  shipped guidance. `load_skill` serves their bodies from memory. Three ship
   today: the plain-language prompt behind Humanized variants
   (`internal/humanize` exposes it via `Prompt()`; editing the prompt edits
-  the skill, so the two cannot drift) and remote-file editing guidance
+  the skill, so the two cannot drift), remote-file editing guidance
   (`internal/remoteedit`, which tells
   the model to pull a file off a remote host, edit the local copy with the
-  file editing tools, and push it back instead of driving sed/perl over ssh).
+  file editing tools, and push it back instead of driving sed/perl over ssh),
+  and handoff summary guidance (`internal/handoff`: write the summary for the
+  person who picks the work up next, in plain language, covering what the work
+  was, where it stands, where it lives, the next step, and the traps).
 - CLI tools the provider declares available ride along the environment: a
   curated manifest at `~/.porter/clis.json` (`{"clis": {"gt": "Graphite stack
   management (submit, split, restack, up/down)"}}`) lists what the model can
