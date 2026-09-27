@@ -221,6 +221,17 @@ func tokenLine(cached, uncached, output int) string {
 	return fmt.Sprintf("(%d in, %d out tokens)", uncached, output)
 }
 
+// contextMeta is the history-size fragment the REPL appends to a turn's token
+// line: " · context 8423 tokens", the token count of the conversation as of
+// the turn's last request. "" when the turn reported no usage. Mirrors the
+// server's contextMeta so the REPL and web UI agree.
+func contextMeta(n int) string {
+	if n <= 0 {
+		return ""
+	}
+	return fmt.Sprintf(" · context %d tokens", n)
+}
+
 // emit handles one envelope from the session's event bus.
 func (v *liveView) emit(env api.Envelope) {
 	if env.Seq > v.seq {
@@ -240,14 +251,14 @@ func (v *liveView) emit(env api.Envelope) {
 		// instead of a token line — or both, when partial usage was recorded.
 		if env.Stopped {
 			if env.CachedInput > 0 || env.UncachedInput > 0 || env.Output > 0 {
-				fmt.Fprintf(v.out, "stopped · %s\n", tokenLine(env.CachedInput, env.UncachedInput, env.Output))
+				fmt.Fprintf(v.out, "stopped · %s%s\n", tokenLine(env.CachedInput, env.UncachedInput, env.Output), contextMeta(env.ContextTokens))
 			} else {
 				fmt.Fprintln(v.out, "stopped")
 			}
 			return
 		}
 		if env.CachedInput > 0 || env.UncachedInput > 0 || env.Output > 0 {
-			fmt.Fprintln(v.out, tokenLine(env.CachedInput, env.UncachedInput, env.Output))
+			fmt.Fprintln(v.out, tokenLine(env.CachedInput, env.UncachedInput, env.Output)+contextMeta(env.ContextTokens))
 		}
 	case api.KindToolResult, api.KindToolResultDelta, api.KindToolStarted, api.KindToolCancelled:
 		// Streaming deltas, the start marker, and a user cancellation are

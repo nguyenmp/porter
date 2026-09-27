@@ -616,16 +616,90 @@ func TestDeriveTurnsAggregatesQueries(t *testing.T) {
 	if len(turns) != 2 {
 		t.Fatalf("turns = %+v, want 2", turns)
 	}
-	// Turn 1: usage sums across its two queries; the failed query marks it.
+	// Turn 1: usage sums across its two queries; the failed query marks it. Its
+	// context is the last request's prompt+completion (0/4/5 = 9), not the sum.
 	if turns[0].UserSeq != turn1 || turns[0].UncachedInput != 6 || turns[0].CachedInput != 0 || turns[0].Output != 8 {
 		t.Errorf("turn 1 = %+v, want user %d, usage 6/8 (all uncached)", turns[0], turn1)
+	}
+	if turns[0].ContextTokens != 9 {
+		t.Errorf("turn 1 ContextTokens = %d, want 9 (last request: 4 in + 5 out), not the summed 14", turns[0].ContextTokens)
 	}
 	if !strings.Contains(turns[0].Error, "rate limit") {
 		t.Errorf("turn 1 error = %q, want the failed query's error", turns[0].Error)
 	}
-	// Turn 2: just its one query's usage, no error.
+	// Turn 2: just its one query's usage, no error. Context is that query's
+	// 3 cached + 5 miss in, 13 out = 21.
 	if turns[1].UserSeq != turn2 || turns[1].CachedInput != 3 || turns[1].UncachedInput != 5 || turns[1].Output != 13 || turns[1].Error != "" {
 		t.Errorf("turn 2 = %+v, want user %d, usage 3 cached + 5 miss / 13 out, no error", turns[1], turn2)
+	}
+	if turns[1].ContextTokens != 21 {
+		t.Errorf("turn 2 ContextTokens = %d, want 21 (8 in + 13 out)", turns[1].ContextTokens)
+	}
+}
+
+// TestDeriveTurnsContextIsLastRequest pins the context-token derivation: a
+// turn's context size is its last request's prompt plus that request's
+// completion, not the sum across its requests. Each request re-sends the whole
+// conversation, so the sum counts the shared prefix once per request and runs
+// many times too big on a tool-heavy turn.
+func TestDeriveTurnsContextIsLastRequest(t *testing.T) {
+	s := newTestSession(t, "s")
+	commitN(t, s, "turn", 1)
+	ps, err := s.Persisted()
+	if err != nil {
+		t.Fatalf("Persisted: %v", err)
+	}
+	turn := ps.Messages[0].Seq
+	// Three requests whose prompts grow with the turn's tool results: 100, 250,
+	// then 400 prompt tokens, with completions 10, 20, 30.
+	for i, q := range []struct{ in, out int }{{100, 10}, {250, 20}, {400, 30}} {
+		if err := s.commitQuery(turn, agentQuery(i, 0, q.in, q.out, nil)); err != nil {
+			t.Fatalf("commitQuery q%d: %v", i, err)
+		}
+	}
+	ps, err = s.Persisted()
+	if err != nil {
+		t.Fatalf("Persisted: %v", err)
+	}
+	turns := DeriveTurns(ps)
+	if len(turns) != 1 {
+		t.Fatalf("turns = %+v, want 1", turns)
+	}
+	if got := turns[0].UncachedInput; got != 750 {
+		t.Errorf("summed input = %d, want 750 (100+250+400)", got)
+	}
+	if got := turns[0].ContextTokens; got != 430 {
+		t.Errorf("ContextTokens = %d, want 430 (last request: 400 in + 30 out), not the 810 sum", got)
+	}
+}
+
+// TestDeriveTurnsContextIgnoresZeroUsageRequest verifies a trailing request
+// that reported no usage (e.g. it failed before running) leaves the turn's
+// context at the last request that did report usage, rather than zeroing it.
+func TestDeriveTurnsContextIgnoresZeroUsageRequest(t *testing.T) {
+	s := newTestSession(t, "s")
+	commitN(t, s, "turn", 1)
+	ps, err := s.Persisted()
+	if err != nil {
+		t.Fatalf("Persisted: %v", err)
+	}
+	turn := ps.Messages[0].Seq
+	if err := s.commitQuery(turn, agentQuery(0, 0, 100, 10, nil)); err != nil {
+		t.Fatalf("commitQuery q0: %v", err)
+	}
+	if err := s.commitQuery(turn, agentQuery(1, 0, 0, 0, fmt.Errorf("boom"))); err != nil {
+		t.Fatalf("commitQuery q1: %v", err)
+	}
+	ps, err = s.Persisted()
+	if err != nil {
+		t.Fatalf("Persisted: %v", err)
+	}
+	turns := DeriveTurns(ps)
+	if len(turns) != 1 {
+		t.Fatalf("turns = %+v, want 1", turns)
+	}
+	if got := turns[0].ContextTokens; got != 110 {
+		t.Errorf("ContextTokens = %d, want 110 (the last request that reported usage)", got)
 	}
 }
 

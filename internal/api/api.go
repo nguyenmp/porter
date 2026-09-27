@@ -393,6 +393,14 @@ type Envelope struct {
 	// they closed, excluding queue wait and tool execution. Paired with Output
 	// it yields the turn's tokens/second. KindTurnDone.
 	GenerationMs int64 `json:"generation_ms,omitempty"` // KindTurnDone
+	// ContextTokens is the token count of the history at the end of the turn:
+	// the prompt of the turn's last request plus that request's completion
+	// tokens. It is not the turn's usage — each request re-sends the whole
+	// conversation, so summing the turn's input would count the shared prefix
+	// once per request. The last request's prompt already contains every prior
+	// message and tool result, so this is the context size a following turn
+	// starts from. KindTurnDone.
+	ContextTokens int `json:"context_tokens,omitempty"`
 	// TotalCachedInput/TotalUncachedInput/TotalOutput are the session's running
 	// token totals — the sum over every completed turn, not just this one — so
 	// a client can show a session total below the input box without re-deriving

@@ -730,9 +730,21 @@ func (s *Session) runTurn(ctx context.Context, content string, receivedAt int64)
 		s.endTurn(done)
 		return
 	}
+	// lastQueryCtx is the token count of the turn's history as of its last
+	// request — that request's prompt plus its completion. Requests run
+	// sequentially and each re-sends the whole prefix, so the last one to
+	// report usage is the largest; taking the turn's summed input instead would
+	// count the shared prefix once per request. Kept alongside the per-request
+	// commit so both the persisted record and the live marker agree.
+	var lastQueryCtx int
 	// Persist each request's usage/error as the agent produces it (the query's
 	// origin), so turns are rebuildable from the database on a reload.
-	onQuery := func(q agent.Query) error { return s.commitQuery(turnSeq, q) }
+	onQuery := func(q agent.Query) error {
+		if n := q.CachedInput + q.UncachedInput + q.Output; n > 0 {
+			lastQueryCtx = n
+		}
+		return s.commitQuery(turnSeq, q)
+	}
 	res, err := agent.RunTurn(turnCtx, s.client, s.snapshot(), s.provider(), s.emitLive, func(m llm.ChatMessage) error {
 		return s.commit(m)
 	}, agent.RunHooks{OnRunStarted: s.onRunStarted, OnQuery: onQuery, PublishAsset: s.publishAsset})
@@ -759,6 +771,7 @@ func (s *Session) runTurn(ctx context.Context, content string, receivedAt int64)
 	done.CachedInput = res.Usage.CachedInput
 	done.UncachedInput = res.Usage.UncachedInput
 	done.Output = res.Usage.Output
+	done.ContextTokens = lastQueryCtx
 	for _, m := range res.History {
 		if m.Role == "assistant" && m.StartedAt > 0 && m.FinishedAt >= m.StartedAt {
 			done.GenerationMs += m.FinishedAt - m.StartedAt
@@ -896,6 +909,13 @@ type Turn struct {
 	CachedInput   int    // prompt tokens served from cache, summed across the turn's queries
 	UncachedInput int    // prompt tokens read fresh (cache misses), summed across the turn's queries
 	Output        int    // completion tokens, summed across the turn's queries
+	// ContextTokens is the history size at the end of the turn: the prompt of
+	// the turn's last request plus that request's completion. Each request in a
+	// turn re-sends the whole conversation, so the turn's summed input counts
+	// the shared prefix once per request; the last request's prompt is the real
+	// context size, and it is the largest, since the prefix only grows within a
+	// turn. 0 when no request reported usage (e.g. a turn that failed first).
+	ContextTokens int
 	// GenMs is the turn's total model "busy" time in milliseconds — the sum
 	// over the turn's assistant messages of FinishedAt-StartedAt. It excludes
 	// queue wait and tool execution, so paired with Output it yields the
@@ -905,6 +925,11 @@ type Turn struct {
 	// Stopped reports that the user aborted the turn (the Stop button): any of
 	// its queries is marked stopped. A stopped turn is not an error.
 	Stopped bool
+	// lastQueryIdx and hasQuery are scratch state for DeriveTurns: they track
+	// the highest Idx among the turn's queries that reported usage, so
+	// ContextTokens can be set from that last request rather than accumulated.
+	lastQueryIdx int
+	hasQuery     bool
 }
 
 // Input returns the turn's total input tokens (cached + uncached).
@@ -920,7 +945,8 @@ func (s *Session) Persisted() (db.Session, error) {
 // DeriveTurns partitions a persisted session into its turns, in stream order.
 // Each turn begins at a user message and runs to the next user message;
 // usage is summed across the turn's queries and the first failed query's error
-// marks the turn. A user message with no queries still opens a turn (e.g. one
+// marks the turn. ContextTokens is set from the turn's last request instead
+// (see Turn). A user message with no queries still opens a turn (e.g. one
 // that failed before any request ran), so callers can place a footer — the
 // turn simply has nothing to show.
 func DeriveTurns(ps db.Session) []Turn {
@@ -934,6 +960,16 @@ func DeriveTurns(ps db.Session) []Turn {
 		t.CachedInput += q.CachedInput
 		t.UncachedInput += q.UncachedInput
 		t.Output += q.Output
+		// The turn's context size is its last request's prompt plus that
+		// request's completion, not a sum: every request re-sends the whole
+		// history, so adding them would count the shared prefix once per
+		// request. Take the highest Idx that reported usage (a request that
+		// failed before running reports none, so it must not zero the value).
+		if n := q.CachedInput + q.UncachedInput + q.Output; n > 0 && (!t.hasQuery || q.Idx >= t.lastQueryIdx) {
+			t.hasQuery = true
+			t.lastQueryIdx = q.Idx
+			t.ContextTokens = n
+		}
 		if q.Stopped {
 			t.Stopped = true
 		}

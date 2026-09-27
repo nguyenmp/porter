@@ -110,6 +110,18 @@ func genMeta(ms int64, out int) string {
 	return " · " + fmtMs(ms) + " · " + fmtRate(out, ms)
 }
 
+// contextMeta is the history-size fragment appended to a turn footer:
+// " · context 8423 tokens", the token count of the conversation as of the
+// turn's last request (its prompt plus its completion). "" when the turn
+// reported no usage, so partial or old footers render unchanged. Mirrored by
+// contextMeta in the web client for live parity.
+func contextMeta(n int) string {
+	if n <= 0 {
+		return ""
+	}
+	return fmt.Sprintf(" · context %d tokens", n)
+}
+
 // fmtClock renders a server epoch-ms timestamp as local wall-clock time for the
 // view's reload summary tooltip.
 func fmtClock(ms int64) string {
@@ -230,6 +242,7 @@ var templates = template.Must(template.New("").Funcs(template.FuncMap{
 	"prettyJSON":     prettyJSON,
 	"toolPurpose":    toolPurpose,
 	"tokenLine":      tokenLine,
+	"contextMeta":    contextMeta,
 	"fmtBytes":       fmtBytes,
 	"genMeta":        genMeta,
 	"add1":           func(n int) int { return n + 1 },
@@ -287,9 +300,13 @@ type viewFooter struct {
 	// GenMs is the turn's total model "busy" time (sum over its assistant
 	// messages of FinishedAt-StartedAt); with Output it renders the turn's
 	// tokens/second meta on the footer.
-	GenMs   int64
-	Error   string
-	Stopped bool
+	GenMs int64
+	// ContextTokens is the history size at the end of the turn — the turn's
+	// last request's prompt plus its completion — rendered as the footer's
+	// "context N tokens" fragment.
+	ContextTokens int
+	Error         string
+	Stopped       bool
 }
 
 // viewItem is one element of the rendered history: either a committed message
@@ -1069,6 +1086,7 @@ func (s *Server) handleView(w http.ResponseWriter, r *http.Request) {
 					UncachedInput: t.UncachedInput,
 					Output:        t.Output,
 					GenMs:         t.GenMs,
+					ContextTokens: t.ContextTokens,
 					Error:         t.Error,
 					Stopped:       t.Stopped,
 				}})

@@ -131,6 +131,11 @@ func TestSessionCommitsHistory(t *testing.T) {
 			if env.CachedInput != 0 || env.UncachedInput != 1 || env.Output != 2 {
 				t.Errorf("turn done usage = %d cached/%d miss/%d out, want 0/1/2", env.CachedInput, env.UncachedInput, env.Output)
 			}
+			// One request, so the turn's context is its prompt (1) plus its
+			// completion (2).
+			if env.ContextTokens != 3 {
+				t.Errorf("turn done context = %d, want 3 (1 in + 2 out)", env.ContextTokens)
+			}
 		}
 	}
 	if !userCommit {
@@ -2296,6 +2301,13 @@ func TestTurnUsageSurvivesRestartViaView(t *testing.T) {
 	if done.TurnSeq == 0 {
 		t.Errorf("turn_completed turn_seq = 0, want the user message's seq")
 	}
+	// Context is the turn's last request (the final reply: 1 in + 1 out = 2),
+	// not the summed usage of its two requests, which would be 1 in + 1 out
+	// across the tool call and the reply counted together with the re-sent
+	// prefix.
+	if done.ContextTokens != 2 {
+		t.Errorf("turn_completed context = %d, want 2 (the last request: 1 in + 1 out)", done.ContextTokens)
+	}
 	srv1.Close() // stop schedulers + close the database: the process "restarts"
 
 	// Server 2 on the same database: /view must derive the token line from the
@@ -2311,6 +2323,7 @@ func TestTurnUsageSurvivesRestartViaView(t *testing.T) {
 	view := string(body)
 	for _, want := range []string{
 		`(1 in, 1 out tokens)`, // the turn's aggregated usage
+		`context 2 tokens`,     // the turn's end-of-turn history size
 		`token-line`,           // the metadata class
 		`data-turn-seq="`,      // the dedup identity the live client checks
 	} {
@@ -2407,6 +2420,9 @@ func TestTurnCacheSplitRendersInView(t *testing.T) {
 	if done.CachedInput != 7 || done.UncachedInput != 3 || done.Output != 3 {
 		t.Fatalf("turn_completed usage = %d cached/%d miss/%d out, want 7/3/3", done.CachedInput, done.UncachedInput, done.Output)
 	}
+	if done.ContextTokens != 13 {
+		t.Fatalf("turn_completed context = %d, want 13 (10 in + 3 out)", done.ContextTokens)
+	}
 
 	resp, err := http.Get(ts.URL + "/api/sessions/" + info.ID + "/view")
 	if err != nil {
@@ -2418,6 +2434,7 @@ func TestTurnCacheSplitRendersInView(t *testing.T) {
 	// still renders as '+' in the browser).
 	for _, want := range []string{
 		`(7 cached &#43; 3 miss in, 3 out tokens)`,
+		`context 13 tokens`, // the turn's end-of-turn history size
 		`token-line`,
 	} {
 		if !strings.Contains(string(body), want) {

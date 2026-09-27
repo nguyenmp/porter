@@ -1146,6 +1146,14 @@
   function genMeta(ms, out) {
     if (!ms || ms <= 0 || !out || out <= 0) return '';
     return ' · ' + fmtDur(ms) + ' · ' + fmtRate(out, ms);
+
+  // contextMeta is the " · context 8423 tokens" fragment appended to a turn
+  // footer: the token count of the conversation as of the turn's last request.
+  // "" when the turn reported no usage. Mirrors server contextMeta so live and
+  // reload render identically.
+  function contextMeta(n) {
+    if (!n || n <= 0) return '';
+    return ' · context ' + n + ' tokens';
   }
 
   // fmtBytes mirrors the server's reload rendering of a byte count as a short
@@ -2633,6 +2641,7 @@
           let label = 'stopped';
           if (env.cached_input > 0 || env.uncached_input > 0 || env.output > 0) {
             label += ' · ' + tokenLine(env.cached_input || 0, env.uncached_input || 0, env.output || 0);
+            label += contextMeta(env.context_tokens || 0);
             label += genMeta(env.generation_ms, env.output || 0);
           }
           stopDiv.textContent = label;
@@ -2651,6 +2660,7 @@
           tokDiv.className = 'token-line';
           if (tseq) tokDiv.dataset.turnSeq = tseq;
           tokDiv.textContent = tokenLine(env.cached_input || 0, env.uncached_input || 0, env.output || 0) +
+            contextMeta(env.context_tokens || 0) +
             genMeta(env.generation_ms, env.output || 0);
           chat.appendChild(tokDiv);
         }
