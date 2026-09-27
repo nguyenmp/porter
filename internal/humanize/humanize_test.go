@@ -150,3 +150,28 @@ func TestDirectiveNamesSurfaces(t *testing.T) {
 		}
 	}
 }
+
+// TestPlainRulesEmbedded covers the embedded rule body and the way the prompts
+// join it: the rules must load from plain_rules.md (so that file is the one
+// copy a reader can link to), and the text each prompt adds after the rules
+// must start on its own line rather than glue onto the last rule.
+func TestPlainRulesEmbedded(t *testing.T) {
+	if !strings.Contains(plainRules, "Plain language means an average reader") {
+		t.Fatalf("embedded rules are missing the definition:\n%s", plainRules)
+	}
+	if strings.HasSuffix(plainRules, "\n") {
+		t.Errorf("plainRules kept the file's trailing newline; the framing strings set the spacing")
+	}
+	for name, prompt := range map[string]string{
+		"humanizePrompt": humanizePrompt(),
+		"Prompt":         Prompt(),
+		"Directive":      Directive(),
+	} {
+		if strings.Contains(prompt, "goals?-") {
+			t.Errorf("%s glued the text after the rules onto the last rule:\n%s", name, prompt)
+		}
+		if !strings.Contains(prompt, "meet their goals?") {
+			t.Errorf("%s does not carry the end of the rule body", name)
+		}
+	}
+}

@@ -3,12 +3,13 @@
 // web UI without interrupting the turn. The pass is deliberately light: one
 // LLM request carrying the text plus a full transcript of the conversation
 // leading up to it (grounding for the rewrite, prefix-stable so provider
-// prompt caching makes repeat passes cheap), driven by a hard-coded
-// prompt distilled from the plain-language skill — a silent background step
-// must be fast, deterministic, and cheap, not a skill-loading multi-fetch
-// ritual. The same rewrite rules are also exposed as a built-in skill (BuiltinSkill /
-// Prompt): the server is a single binary with no skill files in its build, so
-// the skill is hard-coded in Go and load_skill serves it from memory. A shared
+// prompt caching makes repeat passes cheap), driven by a prompt built from the
+// plain-language rules this package embeds — a silent background step must be
+// fast, deterministic, and cheap, not a skill-loading multi-fetch ritual. The
+// same rewrite rules are also exposed as a built-in skill (BuiltinSkill /
+// Prompt): the server ships as a single binary with no skill files on disk, so
+// the skill body is compiled in (the embedded plain_rules.md) and load_skill
+// serves it from memory. A shared
 // rule base means the background pass and the loadable skill can never drift apart;
 // each mode appends only the behavior its own job needs. The same rule body
 // is the standing style the agent injects into every request (Directive):
@@ -19,6 +20,7 @@ package humanize
 
 import (
 	"context"
+	_ "embed"
 	"fmt"
 	"strings"
 
@@ -31,7 +33,7 @@ import (
 // PromptVersion identifies the prompt revision that produced a variant. It is
 // stamped on every pass so the UI can explain why a tab reads the way it does,
 // and should be bumped whenever the prompt below changes.
-const PromptVersion = "plain-language-v7"
+const PromptVersion = "plain-language-v8"
 
 // SkillName is the name the built-in plain-language skill is exposed under,
 // both in the load_skill listing and as the sentinel path (api.BuiltinPrefix +
@@ -77,30 +79,28 @@ const (
 
 // plainRules is the plain-language rule body both prompts share: the
 // definition, the rule that decides where to spend effort, and the writing
-// rules. systemPrompt (rewriting) and
-// systemDirective (fresh writing) wrap it with their own framing — a rewrite
-// pass must preserve the given text, while fresh writing just follows the
-// rules as it goes — so the shared guidance can never drift between the two.
-// It is distilled from the markdown files of the gsa/plainlanguage.gov git
-// repository (https://github.com/gsa/plainlanguage.gov;the guidelines live
-// under _pages/guidelines/,covering audience,words,concise,conversational,voice,
-// organization,design,web,and test),so prompt edits stay anchored in the source
-// material rather than in memory. It condenses the guidance into one
+// rules. systemPrompt (rewriting) and systemDirective (fresh writing) wrap it
+// with their own framing — a rewrite pass must preserve the given text, while
+// fresh writing just follows the rules as it goes — so the shared guidance can
+// never drift between the two.
+//
+// The rules live in plain_rules.md rather than in Go source, so anyone can read
+// them as prose and link to the file. The build embeds that file, so the binary
+// still carries its own copy and the server needs no skill files on disk. The
+// text is distilled from the markdown files of the gsa/plainlanguage.gov git
+// repository (https://github.com/gsa/plainlanguage.gov; the guidelines live
+// under _pages/guidelines/, covering audience, words, concise, conversational,
+// voice, organization, design, web, and test), so prompt edits stay anchored in
+// the source material rather than in memory. It condenses the guidance into one
 // LLM-request-sized block with no web fetches.
-const plainRules = `Plain language means an average reader of the intended audience understands the text on the first read. It is simple and direct, not simplistic or patronizing: do not talk down to the reader. Follow these rules:
-- Focus on the biggest improvements. Spend your effort where a reader notices — the main point, the structure, a sentence that stops them — and leave text that already reads well alone.
-- Speak directly to the reader: use you, and prefer the present tense. Use contractions where they sound natural.
-- Choose simple, concrete, familiar words. Replace jargon, vague words, and filler (load-bearing, survived, rides, nobody, genuinely, outright, owed, rests, asymmetry, died, buys, settles, lever, byte-identical, delve, real) with everyday words. Cut unnecessary words: challenge every word, omit padding, and compress wordy phrases (in order to becomes to, at this point in time becomes now, is able to becomes can). Use must, not shall: must for an obligation, must not for a prohibition, may for a choice, should for a recommendation. Avoid and/or; write either, or, or both as intended. Also avoid slashes in constructions like he/she or his/her — rephrase instead. Keep technical terms the audience needs, like API names and legal terms, and define each one the first time you use it. Avoid abbreviations unless they are widely known; never redefine a common word to mean something other than its usual meaning.
-- Use the active voice and the strongest, most direct form of each verb. Make the actor the subject: say we manage the program, not we are responsible for management of the program; say apply, not make an application. Avoid hidden verbs (nominalizations) — verbs turned into nouns with endings like -tion, -ment, -sion, or -ance. Instead of "make a payment" say "pay." Instead of "conduct a review" say "review." Avoid noun strings: say developing procedures to protect workers, not underground mine worker safety protection procedures development. Keep the subject, verb, and object close together, and put modifiers next to the words they modify: say you are required to provide only the following, not you are only required to provide the following. Put long conditions and exceptions after the main clause.
-- Prefer short sentences carrying one clear idea each and short paragraphs covering one topic each. Start each paragraph with a topic sentence that tells the reader what that paragraph is about. Use positive language: say what is true rather than what is not, and avoid double negatives and exceptions piled on exceptions. Use the same term for the same thing throughout; do not reach for synonyms just to sound varied.
-- Lead with the main point. For any surface — reply, report, web page, UI text — put the most important information first. Start with the answer and the top task for the reader, then the reasoning, exceptions, and details, and say why it matters to the reader. For web pages, apply the inverted pyramid: the first paragraph must stand alone because many users will not read further. Users often scan pages in an F-pattern, fixating on headings and the first few words of each line, and they spend about 5 seconds deciding whether the page is useful. On average they read only about 18% of what is on a page, so every word must earn its place. When repurposing print material for the web, treat the web as action-oriented, not narrative: cut text by roughly half, keep only what helps the user complete a task, and reorganize into scannable chunks.
-- Make the structure skimmable. Break content into logical chunks, each with an informative heading. Use useful headings, preferring question-form or specific headings over vague noun headings. Use lists, and put steps in the order they happen. Always introduce a list with a lead-in sentence, and use parallel construction so every item completes that sentence. Add simple visuals or tables (an if-then table suits conditional rules) where they help. Avoid nesting lists more than one level deep, and nest headings no more than three levels deep. For longer, report-style writing, give the bottom line up front and keep related material together rather than referring readers elsewhere. When you must refer readers elsewhere, describe the referenced material clearly enough that they can decide whether to follow the reference.
-- Hyperlink liberally. When the text names a tool, library, standard, project, or source and you know its web address, link it, so the reader can follow up without searching. Never invent an address: link only addresses you know.
-- Write link text that says exactly where the link leads. A link is both content and navigation: the link text is a promise about what the user will find. Make the link name match the page it points to. Be as explicit as possible — too long is better than too short. Do not use "click here" or "read more." Add a short description when the link needs clarification. Good link text helps everyone, including screen reader users who navigate by links.
-- Use bold sparingly for emphasis. Do not use ALL CAPS or underlining for emphasis. On the web, ALL CAPS reads as shouting, and underlined text looks like a broken link. Use italics for parenthetical information like citations or titles, not for emphasis.
-- Design the page for reading. Use ragged right margins — avoid fully justified or centered text. Set line spacing slightly larger than the font size (for example, 2 extra points). Choose a serif font for body text and a sans-serif font for headings. Do not mix fonts within the body, and limit the page to two or three typefaces total. Use shading and borders only to accent graphs or charts, not as decoration. Make headings bold and left-justified; use uppercase and lowercase, not all caps. For bullet lists, use standard round or square bullets, use at most two styles, and use numbers only when the items follow a sequence. Before you finish, check the page for visual clutter: don't overuse layout devices, and look for odd shapes or gaps that may have formed unintentionally.
-- Use transition words sparingly, and write out "for example" or "such as" instead of "e.g." or "i.e."
-- Self-review before finishing. Read your text as if you were the reader and apply every rule above again. Each fresh pass catches what the last one missed, so keep iterating until a further pass would change nothing. For web pages and longer documents, also test the content with real users: can they find what they need, understand it, and use it to meet their goals?`
+//
+//go:embed plain_rules.md
+var plainRulesFile string
+
+// plainRules is plainRulesFile with the file's trailing newline removed, so the
+// framing strings that wrap it (systemPrompt, systemDirective) control their
+// own spacing.
+var plainRules = strings.TrimSuffix(plainRulesFile, "\n")
 
 // systemPrompt is the plain-language prompt for rewriting: the shared rule
 // body (plainRules) plus the rewrite-only rules — example use and preserving
@@ -111,8 +111,9 @@ const plainRules = `Plain language means an average reader of the intended audie
 // Output behavior, silent for the background pass and reporting for
 // interactive use, is added by the suffix each mode uses (humanizePrompt vs
 // Prompt).
-const systemPrompt = `Can you apply plain language to the text that follows, focusing on the biggest improvements?
-` + plainRules + `- Use an example only when the original already gives you the material for one, and expand it from the original; do not invent new facts.
+var systemPrompt = `Can you apply plain language to the text that follows, focusing on the biggest improvements?
+` + plainRules + `
+- Use an example only when the original already gives you the material for one, and expand it from the original; do not invent new facts.
 - Preserve the message. You are free to reformat, rephrase, and reorganize, and to add headings, lists, or simple visuals, to improve clarity, but do not change what the original conveys. Keep every fact, name, number, and date as given: do not add, drop, or alter anything in the original. Keep code, URLs, and quoted text exact.
 `
 
@@ -138,7 +139,7 @@ func Directive() string { return systemDirective }
 // writing style for generation — the shared rule body (plainRules) plus the
 // generation-only framing. See Directive for why it wraps plainRules like
 // systemPrompt does.
-const systemDirective = `Always speak in plain language. Before replying, reflect on what you are about to say and revise it. Apply this style to everything you write, including replies to the user, reports and documents you draft, code comments you write or edit, web pages you build, UI text you write, and documentation you create.
+var systemDirective = `Always speak in plain language. Before replying, reflect on what you are about to say and revise it. Apply this style to everything you write, including replies to the user, reports and documents you draft, code comments you write or edit, web pages you build, UI text you write, and documentation you create.
 ` + plainRules + `
 Audience: replies and UI text go to the user, a working developer, so keep the technical terms they already know — do not define them, and do not pad to fill space. Text you draft for other readers, like a report, web page, or update, fits that audience instead: keep the technical terms they need and define each one the first time you use it. Code comments are prose too: short, direct, and about the code they sit in.
 `
