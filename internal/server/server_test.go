@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -4033,5 +4034,54 @@ func TestSandboxedChatPausesAndOfferEndpoint(t *testing.T) {
 	ses.RegisterExec(make(chan api.ExecRequest, 8), providerID, "macbook", "host")
 	if err := c.Append(ctx, info.ID, "hi"); err != nil {
 		t.Fatalf("Append after reconnect: %v", err)
+	}
+}
+
+// TestIndexPageScriptParses guards the chat page's inline JavaScript. The
+// client's whole behavior lives in one big script inside index.tmpl, so a
+// broken brace or a stray expression there ships a page that throws a syntax
+// error and disables every button — invisible to the Go tests, which only ever
+// assert on HTML strings. This renders the page, pulls out each inline script,
+// and asks node to parse it. It skips when node is not on PATH, so it never
+// blocks a machine without a JavaScript toolchain.
+func TestIndexPageScriptParses(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node not found; skipping the inline-script syntax check")
+	}
+	srv := newTestServer(t, plainLLM())
+	c := client.New(srv.URL)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	info, err := c.Create(ctx)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	resp, err := http.Get(srv.URL + "/?session=" + info.ID)
+	if err != nil {
+		t.Fatalf("GET /: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+
+	// <script src=...> tags carry no inline body; only the bare <script> blocks
+	// (the chat client) have code to check.
+	re := regexp.MustCompile(`(?s)<script([^>]*)>(.*?)</script>`)
+	checked := 0
+	for _, m := range re.FindAllStringSubmatch(string(body), -1) {
+		if strings.Contains(m[1], "src=") {
+			continue
+		}
+		checked++
+		path := filepath.Join(t.TempDir(), fmt.Sprintf("inline-%d.js", checked))
+		if err := os.WriteFile(path, []byte(m[2]), 0o644); err != nil {
+			t.Fatalf("write inline script: %v", err)
+		}
+		if out, err := exec.Command(node, "--check", path).CombinedOutput(); err != nil {
+			t.Errorf("inline script %d does not parse: %v\n%s", checked, err, out)
+		}
+	}
+	if checked == 0 {
+		t.Errorf("index page carried no inline script; the parser check checked nothing")
 	}
 }

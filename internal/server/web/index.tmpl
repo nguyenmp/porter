@@ -1146,6 +1146,7 @@
   function genMeta(ms, out) {
     if (!ms || ms <= 0 || !out || out <= 0) return '';
     return ' · ' + fmtDur(ms) + ' · ' + fmtRate(out, ms);
+  }
 
   // contextMeta is the " · context 8423 tokens" fragment appended to a turn
   // footer: the token count of the conversation as of the turn's last request.
