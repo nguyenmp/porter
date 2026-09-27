@@ -1,6 +1,7 @@
 package handoff
 
 import (
+	"os"
 	"strings"
 	"testing"
 
@@ -64,5 +65,18 @@ func TestPromptDefersToPlainLanguageSkill(t *testing.T) {
 		if strings.Contains(b, unwanted) {
 			t.Errorf("prompt still contains %q:\n%s", unwanted, b)
 		}
+	}
+}
+
+// TestPromptEmbedded verifies the served body is the embedded prompt.md. That
+// file is the copy a reader can link to, so the text load_skill serves must
+// match it byte for byte.
+func TestPromptEmbedded(t *testing.T) {
+	want, err := os.ReadFile("prompt.md")
+	if err != nil {
+		t.Fatalf("read prompt.md: %v", err)
+	}
+	if got := Prompt(); got != string(want) {
+		t.Errorf("Prompt() does not match prompt.md:\ngot:  %q\nwant: %q", got, want)
 	}
 }
