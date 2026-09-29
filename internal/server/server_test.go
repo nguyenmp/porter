@@ -23,6 +23,7 @@ import (
 	"porter/internal/client"
 	"porter/internal/codec"
 	"porter/internal/config"
+	"porter/internal/humanize"
 	"porter/internal/llm"
 	"porter/internal/recall"
 	"porter/internal/tools"
@@ -3902,13 +3903,14 @@ func TestMessageOutputReachesEnvelopeAndView(t *testing.T) {
 	}
 }
 
-// TestTimingAnnotationReachesModelNotStorage drives a tool turn against a
+// TestModelViewAnnotationsReachModelNotStorage drives a tool turn against a
 // provider that captures every request body, and asserts two things: the
-// outgoing model requests carry the compact timing annotations ([sent ...],
-// [ran ... finished ...]) in the content, and the stored history does NOT —
-// the annotation exists only on the outgoing copy of the model-view
-// projection, never in the database.
-func TestTimingAnnotationReachesModelNotStorage(t *testing.T) {
+// outgoing model requests carry the model-view annotations (the compact timing
+// headers [sent ...], [ran ... finished ...], and the plain-language reminder
+// humanize.UserMessageReminder on the user message), and the stored history
+// does NOT — those exist only on the outgoing copy of the model-view
+// projection, never in the database or the UI.
+func TestModelViewAnnotationsReachModelNotStorage(t *testing.T) {
 	var mu sync.Mutex
 	var bodies []string
 	llmHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -3938,6 +3940,9 @@ func TestTimingAnnotationReachesModelNotStorage(t *testing.T) {
 		if strings.Contains(m.Content, "[sent ") || strings.Contains(m.Content, "[ran ") {
 			t.Errorf("stored history is annotated (role=%s): %q", m.Role, m.Content)
 		}
+		if strings.Contains(m.Content, humanize.UserMessageReminder) {
+			t.Errorf("stored history carries the plain-language reminder (role=%s): %q", m.Role, m.Content)
+		}
 	}
 
 	mu.Lock()
@@ -3951,6 +3956,13 @@ func TestTimingAnnotationReachesModelNotStorage(t *testing.T) {
 	// The user message is annotated on the first request too.
 	if !strings.Contains(b1, "[sent ") {
 		t.Errorf("request 1 lacks a [sent ...] annotation:\n%.400s", b1)
+	}
+	// Every user message carries the plain-language reminder on the outgoing
+	// copy, in both requests (the user message stays in the history).
+	for i, b := range []string{b1, b2} {
+		if !strings.Contains(b, humanize.UserMessageReminder) {
+			t.Errorf("request %d lacks the user-message reminder:\n%.800s", i+1, b)
+		}
 	}
 	// The second request carries the committed user message AND the tool result
 	// (the model's own intermediate tool-call frame has no content to annotate).

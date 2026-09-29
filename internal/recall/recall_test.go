@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"porter/internal/humanize"
 	"porter/internal/llm"
 	"porter/internal/spool"
 )
@@ -104,9 +105,9 @@ func TestProjectModelView(t *testing.T) {
 	if history[1].Content != full {
 		t.Errorf("ProjectModelView mutated its input; history should hold the full output")
 	}
-	// User message unchanged.
-	if out[0].Content != "hi" {
-		t.Errorf("user message changed: %q", out[0].Content)
+	// User message carries the plain-language reminder (appended after the text).
+	if want := "hi\n\n" + humanize.UserMessageReminder; out[0].Content != want {
+		t.Errorf("user message view = %q, want %q", out[0].Content, want)
 	}
 	// Big tool message truncated in the view.
 	if !strings.HasPrefix(out[1].Content, "[tool output:") {
@@ -330,8 +331,9 @@ func TestProjectModelViewTiming(t *testing.T) {
 	if history[0].Content != "hi" || history[1].Content != full {
 		t.Errorf("ProjectModelView mutated its input")
 	}
-	// A timed user message is annotated.
-	if want := "[sent 2025-09-04 15:42:11 UTC]\nhi"; out[0].Content != want {
+	// A timed user message is annotated, with the reminder appended after the
+	// text so the timing note still leads.
+	if want := "[sent 2025-09-04 15:42:11 UTC]\nhi\n\n" + humanize.UserMessageReminder; out[0].Content != want {
 		t.Errorf("user view = %q, want %q", out[0].Content, want)
 	}
 	// A big timed tool result is truncated AND annotated, timing note first.
@@ -348,6 +350,54 @@ func TestProjectModelViewTiming(t *testing.T) {
 	again := ProjectModelView(history)
 	if again[0].Content != out[0].Content {
 		t.Errorf("projection not deterministic across passes")
+	}
+}
+
+// TestProjectModelViewUserReminder verifies the projection appends the
+// plain-language reminder to every user message — the request the model is
+// about to answer — and to nothing else: assistant replies, tool results, and
+// system notices go to the model exactly as committed, and the stored history
+// keeps what the user typed. That is the whole point of putting it in the
+// projection: the reminder is model-view-only, like the timing note, so it
+// never reaches the database or the UI.
+func TestProjectModelViewUserReminder(t *testing.T) {
+	history := []llm.ChatMessage{
+		llm.UserMessage("first"),
+		llm.AssistantMessage("a reply", "", nil),
+		llm.SystemMessage("exec notice"),
+		llm.UserMessage("second"),
+		llm.ToolResult("call_1", "tiny"),
+	}
+	out := ProjectModelView(history)
+
+	for i, want := range map[int]string{
+		0: "first\n\n" + humanize.UserMessageReminder,
+		3: "second\n\n" + humanize.UserMessageReminder,
+	} {
+		if out[i].Content != want {
+			t.Errorf("out[%d] = %q, want %q", i, out[i].Content, want)
+		}
+	}
+	// Only user messages change; every other role goes out as committed.
+	for _, i := range []int{1, 2, 4} {
+		if out[i].Content != history[i].Content {
+			t.Errorf("out[%d] (role %s) changed: %q", i, out[i].Role, out[i].Content)
+		}
+	}
+	// The input is never mutated: stored history stays exactly as typed.
+	for _, m := range history {
+		if strings.Contains(m.Content, humanize.UserMessageReminder) {
+			t.Errorf("stored history was mutated: role %s content %q", m.Role, m.Content)
+		}
+	}
+	// The guard keeps the projection idempotent: re-projecting a view does not
+	// double the reminder.
+	again := ProjectModelView(out)
+	if again[0].Content != out[0].Content {
+		t.Errorf("re-projection changed the reminder: %q -> %q", out[0].Content, again[0].Content)
+	}
+	if n := strings.Count(again[0].Content, humanize.UserMessageReminder); n != 1 {
+		t.Errorf("reminder appears %d times on a user message, want 1", n)
 	}
 }
 

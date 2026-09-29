@@ -15,7 +15,12 @@
 // is the standing style the agent injects into every request (Directive):
 // replies, drafted reports, and code comments are written plainly the first
 // time, and the rewrite pass becomes a safety net rather than the only
-// plain-language path.
+// plain-language path. A one-line reminder (UserMessageReminder) rides on the
+// conversation too: the model view appends it to every user message, so the
+// style sits next to the request being answered and not only in the system
+// prefix. Like the model view's timing headers, the reminder is derived on the
+// outgoing copy only — the stored message, the database, and the UI keep
+// exactly what the user typed.
 package humanize
 
 import (
@@ -143,6 +148,15 @@ var systemDirective = `Always speak in plain language. Before replying, reflect 
 ` + plainRules + `
 Audience: replies and UI text go to the user, a working developer, so keep the technical terms they already know — do not define them, and do not pad to fill space. Text you draft for other readers, like a report, web page, or update, fits that audience instead: keep the technical terms they need and define each one the first time you use it. Code comments are prose too: short, direct, and about the code they sit in.
 `
+
+// UserMessageReminder is the one-line plain-language reminder the model view
+// appends to every user message (recall.ProjectModelView), so the style also
+// sits next to the request the model is answering and not only in the static
+// system prefix (Directive). Like the timing note, it lives only on the
+// outgoing copy of history: the stored message, the database, and the UI keep
+// exactly what the user typed. Keep it short — it repeats on every user turn,
+// so every extra word is paid for on every request.
+const UserMessageReminder = "Please write prose simply and in plain language"
 
 // Should reports whether an assistant reply is worth a humanize pass: long
 // enough (the thresholds above) and mostly prose rather than code.

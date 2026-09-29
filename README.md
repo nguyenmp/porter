@@ -304,6 +304,13 @@ already know stay as-is and undefined, while text drafted for other readers
 keeps the terms that audience needs and defines them the first time each
 appears.
 
+The style also rides on the conversation itself. The model view appends a
+one-line reminder (`UserMessageReminder`, also in `internal/humanize`) to every
+user message, so the instruction sits next to the request the model is
+answering and not only in the static system prefix. Like the timing headers on
+the same model view, the reminder exists only on the outgoing copy: what you
+typed is what is stored, and what the UI shows.
+
 #### Humanized variants
 
 Every assistant reply with content shows a small tab bar in the web UI —

@@ -25,6 +25,7 @@ import (
 	"strings"
 	"time"
 
+	"porter/internal/humanize"
 	"porter/internal/llm"
 	"porter/internal/spool"
 )
@@ -71,12 +72,15 @@ func Meta(content string) *llm.ToolOutputMeta {
 // The projection also annotates each message with a compact timing header
 // (e.g. "[sent 2025-09-04 15:42:11 UTC]" on a user message, "[ran 3m 12s,
 // finished ...]" on a tool result) so the model can see when things happened
-// and how long its tools ran. The clocks are json:"-" on ChatMessage — they
-// never serialize as fields — so this bracketed text (in the content, the same
-// way truncation and recall hints are presented) is the only route by which
-// timing reaches the model, and it exists solely on this outgoing copy:
-// history, the database, and the UI are never annotated. Annotation is
-// deterministic (derived from committed clocks), so it never busts the
+// and how long its tools ran. And it appends a one-line plain-language
+// reminder (humanize.UserMessageReminder) to every user message, so the
+// standing writing style sits next to the request as well as in the system
+// prefix. The clocks are json:"-" on ChatMessage — they never serialize as
+// fields — so this bracketed text (in the content, the same way truncation and
+// recall hints are presented) is the only route by which timing reaches the
+// model, and it exists solely on this outgoing copy: history, the database,
+// and the UI are never annotated. Timestamps and the reminder are deterministic
+// (derived from committed clocks and a constant), so they never bust the
 // provider's prefix cache.
 func ProjectModelView(msgs []llm.ChatMessage) []llm.ChatMessage {
 	// producerByCall maps each tool_call id to the tool that produced it
@@ -114,6 +118,15 @@ func ProjectModelView(msgs []llm.ChatMessage) []llm.ChatMessage {
 					m.Content += spool.FooterHint(m.ToolCallID)
 				}
 			}
+		}
+		// Every user message carries the one-line plain-language reminder. It is
+		// added here and nowhere else: the stored message, the database, and the
+		// UI keep exactly what the user typed. The HasSuffix guard keeps the
+		// projection idempotent, so a message that already ends with the
+		// reminder (typically a second pass, in a test or a retry) is not
+		// doubled.
+		if m.Role == "user" && m.Content != "" && !strings.HasSuffix(m.Content, humanize.UserMessageReminder) {
+			m.Content += "\n\n" + humanize.UserMessageReminder
 		}
 		// Timing annotation comes last so it always sits in front of any
 		// truncation/recall header, and the stored content is never touched.
