@@ -38,7 +38,7 @@ import (
 // PromptVersion identifies the prompt revision that produced a variant. It is
 // stamped on every pass so the UI can explain why a tab reads the way it does,
 // and should be bumped whenever the prompt below changes.
-const PromptVersion = "plain-language-v8"
+const PromptVersion = "plain-language-v9"
 
 // SkillName is the name the built-in plain-language skill is exposed under,
 // both in the load_skill listing and as the sentinel path (api.BuiltinPrefix +
@@ -63,7 +63,9 @@ func BuiltinSkill() api.Skill {
 // rewrite rules (systemPrompt) plus an interactive-use suffix. A model
 // that loads this skill asks for text when none is given, edits files in
 // place,and reports how many passes it took and what it changed - things a
-// background pass must never do.
+// background pass must never do. The citation rule lives in the shared rule
+// body (plain_rules.md), so this prompt and the background pass cannot differ
+// on it.
 func Prompt() string { return systemPrompt + interactiveSuffix }
 
 // humanizePrompt returns the prompt the background humanize pass uses:the

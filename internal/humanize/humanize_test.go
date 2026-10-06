@@ -175,3 +175,21 @@ func TestPlainRulesEmbedded(t *testing.T) {
 		}
 	}
 }
+
+// TestCiteRuleInRulesBody checks the citation rule lives in the shared rule
+// body, plain_rules.md, so every prompt carries it from one copy: the skill,
+// the standing style, and the background rewrite pass.
+func TestCiteRuleInRulesBody(t *testing.T) {
+	if !strings.Contains(plainRules, "Cite your sources") {
+		t.Fatalf("plain_rules.md is missing the citation rule:\n%s", plainRules)
+	}
+	for name, prompt := range map[string]string{
+		"humanizePrompt": humanizePrompt(),
+		"Prompt":         Prompt(),
+		"Directive":      Directive(),
+	} {
+		if !strings.Contains(prompt, "Cite your sources") {
+			t.Errorf("%s does not carry the citation rule", name)
+		}
+	}
+}
