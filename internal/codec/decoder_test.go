@@ -294,3 +294,55 @@ func TestDecoderNoCacheSplitDefaultsAllUncached(t *testing.T) {
 		t.Errorf("zero cache split leaked into JSON (omitempty should drop it); got:\n%s", got)
 	}
 }
+
+// TestDecoderReadsWholeTextReasoning covers the upstream shape where the chain
+// of thought is never streamed as deltas: it arrives whole, inside the
+// reasoning item's content array, on output_item.added / output_item.done. A
+// Reka endpoint serving z-ai/glm-5.3-flash through OpenRouter was caught doing
+// this, and porter committed an empty reply when a turn spent all its tokens
+// on reasoning.
+func TestDecoderReadsWholeTextReasoning(t *testing.T) {
+	got, err := feed(t,
+		`data: {"type":"response.output_item.added","output_index":0,"item":{"id":"rs_tmp_x","summary":[],"type":"reasoning","content":[{"text":"thinking here","type":"reasoning_text"}]}}`,
+		`data: {"type":"response.output_item.done","output_index":0,"item":{"id":"rs_tmp_x","summary":[],"type":"reasoning","content":[{"text":"thinking here","type":"reasoning_text"}]}}`,
+		`data: {"type":"response.completed","response":{"usage":{"input_tokens":14,"output_tokens":131}}}`,
+	)
+	if err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	for _, want := range []string{
+		`"type":"reasoning_delta"`, `"reasoning":"thinking here"`,
+		// The reasoning must reach the assembled message too.
+		`"type":"message"`, `"reasoning":"thinking here"`,
+		`"type":"usage"`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("output missing %q; got:\n%s", want, got)
+		}
+	}
+	// added and done both carried the same text; it must not be doubled.
+	// Once in the live delta, once in the assembled message.
+	if n := strings.Count(got, "thinking here"); n != 2 {
+		t.Errorf("reasoning appears %d times, want 2 (delta + assembled); got:\n%s", n, got)
+	}
+}
+
+// TestDecoderReasoningEchoOnItemIsNotDoubled covers the provider that both
+// streams reasoning deltas and echoes the whole text on the completed item:
+// the streamed copy wins, the echo is dropped.
+func TestDecoderReasoningEchoOnItemIsNotDoubled(t *testing.T) {
+	got, err := feed(t,
+		`data: {"type":"response.reasoning_summary_text.delta","output_index":0,"delta":"think"}`,
+		`data: {"type":"response.output_item.done","output_index":0,"item":{"type":"reasoning","content":[{"text":"think whole","type":"reasoning_text"}]}}`,
+		`data: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":1}}}`,
+	)
+	if err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	if strings.Contains(got, `"whole"`) {
+		t.Errorf("the item's echo overwrote or joined the streamed reasoning; got:\n%s", got)
+	}
+	if !strings.Contains(got, `"reasoning":"think"`) {
+		t.Errorf("the streamed reasoning is missing; got:\n%s", got)
+	}
+}

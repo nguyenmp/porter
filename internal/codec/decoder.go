@@ -24,6 +24,13 @@ var errDone = errors.New("stream terminated")
 //	response.output_item.done               an item is complete (item)
 //	response.completed / .incomplete        the end, carrying usage
 //	response.failed / error                 the provider gave up
+//
+// Two shapes exist for reasoning text. OpenAI's own models stream it as
+// response.reasoning_*.delta events. Some OpenRouter upstreams (a Reka endpoint
+// serving z-ai/glm-5.3-flash was caught doing this) never stream it at all:
+// they put the whole chain of thought inside the reasoning item's content array
+// on the output_item.added / output_item.done events. Both are accepted, which
+// is why outputItem carries the reasoning content too.
 type streamEvent struct {
 	Type        string        `json:"type"`
 	Delta       string        `json:"delta"`
@@ -36,15 +43,26 @@ type streamEvent struct {
 	Error       *apiError     `json:"error"`
 }
 
-// outputItem is the item an output_item.* event carries. Only a function call
-// has anything porter needs; a message or reasoning item is empty here, because
-// its prose arrives as delta events instead.
+// outputItem is the item an output_item.* event carries. A function call brings
+// its id, name, and arguments. A reasoning item may bring the whole chain of
+// thought in its content array — some upstreams never stream reasoning as
+// deltas, so the item itself is the only place it arrives (see
+// reasoningContent). A message item's prose still arrives as delta events, so
+// its content is ignored here.
 type outputItem struct {
-	Type      string `json:"type"`
-	ID        string `json:"id"`
-	CallID    string `json:"call_id"`
-	Name      string `json:"name"`
-	Arguments string `json:"arguments"`
+	Type      string            `json:"type"`
+	ID        string            `json:"id"`
+	CallID    string            `json:"call_id"`
+	Name      string            `json:"name"`
+	Arguments string            `json:"arguments"`
+	Content   []itemContentPart `json:"content"`
+}
+
+// itemContentPart is one part of an item's content array. Only a reasoning
+// item's text is read; the rest is tolerated and skipped.
+type itemContentPart struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
 }
 
 // responseBody is the response object the terminal events carry. porter reads
@@ -275,25 +293,33 @@ func (d *Decoder) slot(index int) *ToolCall {
 	return cur
 }
 
-// startItem records an item that just began, when it is a tool call. The call's
-// id and name arrive with the item, before any of its arguments do.
+// startItem records an item that just began. A function call brings its id and
+// name, before any of its arguments do. A reasoning item may bring its whole
+// chain of thought right here: some upstreams never stream reasoning as deltas,
+// so this is the only place porter can read it (see reasoningContent).
 //
-// The item's own arguments are shown live here but deliberately not stored:
+// A tool call's own arguments are shown live here but deliberately not stored:
 // every provider that reports them with the item also streams them as separate
 // deltas, and storing both would double the argument string. finishItem takes
 // the item's copy only when no delta ever carried one.
 func (d *Decoder) startItem(ev streamEvent) error {
-	if ev.Item == nil || ev.Item.Type != "function_call" {
+	if ev.Item == nil {
 		return nil
 	}
-	cur := d.slot(ev.OutputIndex)
-	if cur.ID == "" {
-		cur.ID = firstNonEmpty(ev.Item.CallID, ev.Item.ID)
+	switch ev.Item.Type {
+	case "function_call":
+		cur := d.slot(ev.OutputIndex)
+		if cur.ID == "" {
+			cur.ID = firstNonEmpty(ev.Item.CallID, ev.Item.ID)
+		}
+		if cur.Name == "" {
+			cur.Name = ev.Item.Name
+		}
+		return d.liveDelta(ev.OutputIndex, ev.Item.CallID, ev.Item.Name, ev.Item.Arguments)
+	case "reasoning":
+		return d.emitReasoning(reasoningContent(ev.Item))
 	}
-	if cur.Name == "" {
-		cur.Name = ev.Item.Name
-	}
-	return d.liveDelta(ev.OutputIndex, ev.Item.CallID, ev.Item.Name, ev.Item.Arguments)
+	return nil
 }
 
 // addArguments appends a slice of a tool call's arguments and reports it live.
@@ -315,23 +341,46 @@ func (d *Decoder) doneArguments(index int, args string) error {
 }
 
 // finishItem takes the authoritative fields from a completed item, in case the
-// deltas never delivered them.
+// deltas never delivered them. A reasoning item's whole-text copy is taken the
+// same way: only when nothing was accumulated from deltas, so a provider that
+// streams reasoning AND echoes it on the item is not doubled.
 func (d *Decoder) finishItem(ev streamEvent) error {
-	if ev.Item == nil || ev.Item.Type != "function_call" {
+	if ev.Item == nil {
 		return nil
 	}
-	cur := d.slot(ev.OutputIndex)
-	if cur.ID == "" {
-		cur.ID = firstNonEmpty(ev.Item.CallID, ev.Item.ID)
-	}
-	if cur.Name == "" {
-		cur.Name = ev.Item.Name
-	}
-	if cur.Arguments == "" && ev.Item.Arguments != "" {
-		cur.Arguments = ev.Item.Arguments
-		return d.liveDelta(ev.OutputIndex, "", "", ev.Item.Arguments)
+	switch ev.Item.Type {
+	case "function_call":
+		cur := d.slot(ev.OutputIndex)
+		if cur.ID == "" {
+			cur.ID = firstNonEmpty(ev.Item.CallID, ev.Item.ID)
+		}
+		if cur.Name == "" {
+			cur.Name = ev.Item.Name
+		}
+		if cur.Arguments == "" && ev.Item.Arguments != "" {
+			cur.Arguments = ev.Item.Arguments
+			return d.liveDelta(ev.OutputIndex, "", "", ev.Item.Arguments)
+		}
+	case "reasoning":
+		if d.reasoning.Len() == 0 {
+			return d.emitReasoning(reasoningContent(ev.Item))
+		}
 	}
 	return nil
+}
+
+// reasoningContent joins a reasoning item's text parts. An upstream that does
+// not stream reasoning delivers the whole chain of thought here, as one or more
+// parts of type reasoning_text; a summary-style part is accepted too, because
+// the item is the only place the text exists.
+func reasoningContent(item *outputItem) string {
+	var b strings.Builder
+	for _, part := range item.Content {
+		if part.Text != "" {
+			b.WriteString(part.Text)
+		}
+	}
+	return b.String()
 }
 
 // liveDelta emits a tool_call_delta when a fragment carries something new.
