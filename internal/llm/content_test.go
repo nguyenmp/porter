@@ -14,7 +14,7 @@ func TestImagesBecomeContentParts(t *testing.T) {
 	msg := UserMessage("what is this?")
 	msg.Images = []ImagePart{{Name: "shot.png", URL: "data:image/png;base64,AAAA"}}
 
-	wire, err := wireMessages([]ChatMessage{msg})
+	wire, err := wireMessages([]ChatMessage{msg}, nil)
 	if err != nil {
 		t.Fatalf("wireMessages: %v", err)
 	}
@@ -52,7 +52,7 @@ func TestImageOnlyMessageHasNoTextPart(t *testing.T) {
 	msg := UserMessage("")
 	msg.Images = []ImagePart{{Name: "shot.png", URL: "data:image/png;base64,AAAA"}}
 
-	wire, err := wireMessages([]ChatMessage{msg})
+	wire, err := wireMessages([]ChatMessage{msg}, nil)
 	if err != nil {
 		t.Fatalf("wireMessages: %v", err)
 	}
@@ -79,7 +79,7 @@ func TestTextOnlyMessageWireUnchanged(t *testing.T) {
 		AssistantMessage("hi", "", nil),
 		ToolResult("call_1", "exit code: 0"),
 	}
-	wire, err := wireMessages(msgs)
+	wire, err := wireMessages(msgs, nil)
 	if err != nil {
 		t.Fatalf("wireMessages: %v", err)
 	}
@@ -97,3 +97,56 @@ func TestTextOnlyMessageWireUnchanged(t *testing.T) {
 		t.Errorf("text-only message carries an images key: %s", wire[1])
 	}
 }
+
+// TestImageLocationResolvedToDataURL checks that a message naming an image by
+// its hosted asset URL sends the bytes inline: the provider cannot reach the
+// porter server, so the resolver's data URL is what the model sees.
+func TestImageLocationResolvedToDataURL(t *testing.T) {
+	msg := UserMessage("look")
+	msg.Images = []ImagePart{{Name: "shot.png", URL: "/assets/sessions/s/abc/shot.png"}}
+
+	var asked string
+	resolve := func(url string) (string, error) {
+		asked = url
+		return "data:image/png;base64,ZZZZ", nil
+	}
+	wire, err := wireMessages([]ChatMessage{msg}, resolve)
+	if err != nil {
+		t.Fatalf("wireMessages: %v", err)
+	}
+	if asked != "/assets/sessions/s/abc/shot.png" {
+		t.Errorf("resolver asked for %q, want the message's asset URL", asked)
+	}
+	if got := string(wire[0]); !strings.Contains(got, `"url":"data:image/png;base64,ZZZZ"`) {
+		t.Errorf("wire does not carry the resolved data URL; got: %s", got)
+	}
+}
+
+// TestUnresolvableImageBecomesTextNote checks that an image the resolver cannot
+// read degrades to a text note instead of failing the request. The message
+// stays in history, so a request that failed here would fail on every later
+// turn too.
+func TestUnresolvableImageBecomesTextNote(t *testing.T) {
+	msg := UserMessage("look")
+	msg.Images = []ImagePart{{Name: "gone.png", URL: "/assets/sessions/s/abc/gone.png"}}
+
+	resolve := func(string) (string, error) { return "", errUnavailable }
+	wire, err := wireMessages([]ChatMessage{msg}, resolve)
+	if err != nil {
+		t.Fatalf("wireMessages returned an error: %v", err)
+	}
+	got := string(wire[0])
+	if !strings.Contains(got, `"type":"text"`) || !strings.Contains(got, "image unavailable: gone.png") {
+		t.Errorf("missing unavailable-image note; got: %s", got)
+	}
+	if strings.Contains(got, `"type":"image_url"`) {
+		t.Errorf("a failed image still produced an image part; got: %s", got)
+	}
+}
+
+// errUnavailable stands in for any read failure in the resolver tests.
+var errUnavailable = errUnavailableType{}
+
+type errUnavailableType struct{}
+
+func (errUnavailableType) Error() string { return "asset not found" }

@@ -249,14 +249,18 @@ var templates = template.Must(template.New("").Funcs(template.FuncMap{
 	"add1":           func(n int) int { return n + 1 },
 }).ParseFS(webFS, "web/*.tmpl"))
 
-// imageURL marks an attached image's data URL as safe to put in an <img src>.
-// html/template strips `data:` URLs from src attributes by default (it replaces
-// them with #ZgotmplZ), so this opt-out is needed to show an uploaded picture.
+// imageURL marks an attached image's location as safe to put in an <img src>.
+// An attachment is now a published asset path, but a message written before
+// images became assets can still hold a data URL, and html/template strips
+// `data:` URLs from src attributes by default (it replaces them with
+// #ZgotmplZ). This helper covers both forms, so an older message still renders.
 //
-// It is safe because these URLs are built on the server from bytes the server
-// itself inspected (see readImagePart): the media type comes from the file's
-// own bytes and only raster image types are accepted, so the browser renders a
-// picture and never a script. SVG, which can carry script, is not accepted.
+// It is safe because these locations are built on the server from bytes the
+// server itself inspected (see readImageUpload) or validated segments (see
+// Store.AssetFilePath): the media type comes from the file's own bytes, only
+// raster image types are accepted, and a path can never escape the asset root.
+// The browser renders a picture and never a script. SVG, which can carry
+// script, is not accepted.
 func imageURL(u string) template.URL {
 	return template.URL(u)
 }
@@ -407,6 +411,10 @@ func newServer(cfg config.Config, dbPath, mcpPath string) (*Server, error) {
 	// Published assets (publish_asset) live beside the database too, under
 	// .porter/assets, on the same volume that persists the DB.
 	store.SetAssetRoot(localAssetRoot(dbPath))
+	// A message names an image by its hosted asset URL, but the model provider
+	// cannot reach this server, so the client turns each URL into inline bytes
+	// when it builds a request (see llm.ResolveImage).
+	client.ResolveImage = store.AssetDataURL
 	if err := store.Load(client); err != nil {
 		_ = d.Close()
 		return nil, fmt.Errorf("load persisted sessions: %w", err)
@@ -640,7 +648,7 @@ func (s *Server) handleAppend(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "session not found", http.StatusNotFound)
 		return
 	}
-	content, images, err := readAppendContent(r)
+	content, images, err := s.readAppendContent(r, chi.URLParam(r, "id"))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -678,7 +686,12 @@ func (s *Server) handleAppend(w http.ResponseWriter, r *http.Request) {
 // images — from the request body. The shape depends on the Content-Type:
 // multipart form data from the web UI's composer, form-encoded from a plain
 // HTMX form, or JSON from a scripted client.
-func readAppendContent(r *http.Request) (string, []llm.ImagePart, error) {
+//
+// An uploaded file is published as an asset here, so the committed message
+// names the picture by its hosted URL instead of carrying megabytes of inline
+// bytes. A server with no asset store cannot attach images, so it fails with a
+// clear reason rather than dropping the bytes silently.
+func (s *Server) readAppendContent(r *http.Request, sessionID string) (string, []llm.ImagePart, error) {
 	ct := r.Header.Get("Content-Type")
 	if strings.HasPrefix(ct, "multipart/form-data") {
 		// Keep small parts in memory; larger ones spill to a temp file, which
@@ -686,7 +699,11 @@ func readAppendContent(r *http.Request) (string, []llm.ImagePart, error) {
 		if err := r.ParseMultipartForm(maxImageBytes); err != nil {
 			return "", nil, fmt.Errorf("invalid form: %w", err)
 		}
-		images, err := readUploadedImages(r)
+		uploads, err := readUploadedImages(r)
+		if err != nil {
+			return "", nil, err
+		}
+		images, err := s.publishUploads(sessionID, uploads)
 		if err != nil {
 			return "", nil, err
 		}
@@ -703,11 +720,26 @@ func readAppendContent(r *http.Request) (string, []llm.ImagePart, error) {
 		return "", nil, fmt.Errorf("invalid request: %w", err)
 	}
 	for _, img := range req.Images {
-		if err := checkImageDataURL(img.URL); err != nil {
+		if err := checkImageURL(img.URL); err != nil {
 			return "", nil, err
 		}
 	}
 	return req.Content, req.Images, nil
+}
+
+// publishUploads stores each uploaded picture as an asset and returns the image
+// parts naming them. The parts carry the asset URL, not the bytes; the LLM
+// client turns that URL back into inline bytes when it builds a request.
+func (s *Server) publishUploads(sessionID string, uploads []imageUpload) ([]llm.ImagePart, error) {
+	images := make([]llm.ImagePart, 0, len(uploads))
+	for _, up := range uploads {
+		url, err := s.store.PublishAsset(sessionID, up.Name, up.Data)
+		if err != nil {
+			return nil, fmt.Errorf("attach image %s: %w", up.Name, err)
+		}
+		images = append(images, llm.ImagePart{Name: up.Name, URL: url})
+	}
+	return images, nil
 }
 
 // handleHumanize starts a manual plain-language pass on a committed assistant

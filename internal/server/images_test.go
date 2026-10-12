@@ -83,44 +83,42 @@ func waitForTurn(t *testing.T, c *client.Client, id string, fromSeq uint64) {
 	}
 }
 
-func TestReadImagePartAcceptsPNG(t *testing.T) {
-	part, err := readImagePart("shot.png", tinyPNG(t))
+func TestReadImageUploadAcceptsPNG(t *testing.T) {
+	up, err := readImageUpload("shot.png", tinyPNG(t))
 	if err != nil {
-		t.Fatalf("readImagePart: %v", err)
+		t.Fatalf("readImageUpload: %v", err)
 	}
-	if !strings.HasPrefix(part.URL, "data:image/png;base64,") {
-		t.Errorf("URL = %q, want a png data URL", part.URL)
+	if up.Name != "shot.png" {
+		t.Errorf("Name = %q, want shot.png", up.Name)
 	}
-	if part.Name != "shot.png" {
-		t.Errorf("Name = %q, want shot.png", part.Name)
-	}
-}
-
-// TestReadImagePartRejectsNonImage covers the rename trick: the media type
-// comes from the bytes, so a text file called .png is refused.
-func TestReadImagePartRejectsNonImage(t *testing.T) {
-	if _, err := readImagePart("notreally.png", []byte("plain text, not a picture")); err == nil {
-		t.Fatal("readImagePart accepted a text file named .png")
+	if len(up.Data) == 0 {
+		t.Error("Data is empty, want the file's bytes")
 	}
 }
 
-func TestReadImagePartRejectsOversize(t *testing.T) {
+func TestReadImageUploadRejectsNonImage(t *testing.T) {
+	if _, err := readImageUpload("notreally.png", []byte("plain text, not a picture")); err == nil {
+		t.Fatal("readImageUpload accepted a text file named .png")
+	}
+}
+
+func TestReadImageUploadRejectsOversize(t *testing.T) {
 	big := make([]byte, maxImageBytes+1)
 	copy(big, tinyPNG(t))
-	if _, err := readImagePart("big.png", big); err == nil {
-		t.Fatal("readImagePart accepted an image over the cap")
+	if _, err := readImageUpload("big.png", big); err == nil {
+		t.Fatal("readImageUpload accepted an image over the cap")
 	}
 }
 
-func TestReadImagePartRejectsEmpty(t *testing.T) {
-	if _, err := readImagePart("empty.png", nil); err == nil {
-		t.Fatal("readImagePart accepted an empty file")
+func TestReadImageUploadRejectsEmpty(t *testing.T) {
+	if _, err := readImageUpload("empty.png", nil); err == nil {
+		t.Fatal("readImageUpload accepted an empty file")
 	}
 }
 
 // TestAppendMultipartImage is the whole path: a multipart post from the web
 // UI's composer, with one image, lands in history as an image attached to the
-// user message, with the bytes inline as a data URL.
+// user message, naming a published asset rather than carrying the bytes.
 func TestAppendMultipartImage(t *testing.T) {
 	srv := newTestServer(t, plainLLM())
 	c := client.New(srv.URL)
@@ -150,8 +148,11 @@ func TestAppendMultipartImage(t *testing.T) {
 	if len(first.Images) != 1 {
 		t.Fatalf("images = %d, want 1", len(first.Images))
 	}
-	if !strings.HasPrefix(first.Images[0].URL, "data:image/png;base64,") {
-		t.Errorf("image URL = %q, want a png data URL", first.Images[0].URL)
+	if !strings.HasPrefix(first.Images[0].URL, "/assets/sessions/") {
+		t.Errorf("image URL = %q, want a published asset URL", first.Images[0].URL)
+	}
+	if first.Images[0].Name != "shot.png" {
+		t.Errorf("image name = %q, want shot.png", first.Images[0].Name)
 	}
 }
 
@@ -188,9 +189,7 @@ func TestAppendMultipartTooManyImages(t *testing.T) {
 }
 
 // TestViewRendersAttachedImage checks that a committed image renders as an
-// <img> with its data URL intact. html/template strips `data:` URLs from src
-// attributes by default (replacing them with #ZgotmplZ), so this guards the
-// opt-out that makes an attached picture show up in the page.
+// <img> pointing at its published asset URL.
 func TestViewRendersAttachedImage(t *testing.T) {
 	srv := newTestServer(t, plainLLM())
 	c := client.New(srv.URL)
@@ -212,13 +211,32 @@ func TestViewRendersAttachedImage(t *testing.T) {
 	defer view.Body.Close()
 	body, _ := io.ReadAll(view.Body)
 	s := string(body)
-	if !strings.Contains(s, `class="msg-image"`) {
-		t.Errorf("view does not contain an attached image; got: %s", s)
-	}
-	if !strings.Contains(s, `src="data:image/png;base64,`) {
-		t.Errorf("view does not carry the image's data URL; got: %s", s)
+	if !strings.Contains(s, `src="/assets/sessions/`) {
+		t.Errorf("view does not point at the image's published asset; got: %s", s)
 	}
 	if strings.Contains(s, "ZgotmplZ") {
 		t.Errorf("image src was stripped by the template escaping; got: %s", s)
+	}
+}
+
+// TestAppendImageWithoutAssetStore checks that a server with no asset store
+// refuses an upload with a clear reason, instead of accepting the message and
+// dropping the picture. An in-memory database has no directory, so it has no
+// asset root (see localAssetRoot).
+func TestAppendImageWithoutAssetStore(t *testing.T) {
+	_, srv := startServerDB(t, ":memory:", plainLLM())
+	c := client.New(srv.URL)
+	info, err := c.Create(context.Background())
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	resp := postMultipartImage(t, srv.URL, info.ID, "look at this", 1)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("upload without an asset store: status = %d, want 400", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), "assets are not configured") {
+		t.Errorf("refusal does not explain the missing asset store; got: %s", body)
 	}
 }

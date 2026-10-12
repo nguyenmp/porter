@@ -1,6 +1,7 @@
 package session
 
 import (
+	"encoding/base64"
 	"os"
 	"strings"
 	"testing"
@@ -80,6 +81,58 @@ func TestSanitizeFilename(t *testing.T) {
 	for in, want := range cases {
 		if got := asset.SanitizeFilename(in); got != want {
 			t.Errorf("SanitizeFilename(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// TestAssetDataURLRoundTrip publishes bytes and reads them back as an inline
+// data URL. That is how a message that names an asset sends the picture to a
+// model provider that cannot reach this server.
+func TestAssetDataURLRoundTrip(t *testing.T) {
+	root := t.TempDir()
+	st := NewStore(memPersister(t), nil)
+	st.SetAssetRoot(root)
+	s := newTestSession(t, "session_7")
+	s.assetRoot = root
+
+	// The PNG signature alone is enough for http.DetectContentType to call it
+	// an image, which is all the round trip needs.
+	png := []byte("\x89PNG\r\n\x1a\nand then some pixels")
+	url, err := s.publishAsset("shot.png", png)
+	if err != nil {
+		t.Fatalf("publishAsset: %v", err)
+	}
+	got, err := st.AssetDataURL(url)
+	if err != nil {
+		t.Fatalf("AssetDataURL: %v", err)
+	}
+	const prefix = "data:image/png;base64,"
+	if !strings.HasPrefix(got, prefix) {
+		t.Fatalf("data URL = %q, want prefix %q", got, prefix)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(got, prefix))
+	if err != nil {
+		t.Fatalf("data URL body is not base64: %v", err)
+	}
+	if string(decoded) != string(png) {
+		t.Errorf("decoded bytes = %q, want %q", decoded, png)
+	}
+}
+
+// TestAssetDataURLRejectsForeignURL checks that only a published asset's URL is
+// accepted, so a location invented by a client cannot make the server read a
+// file outside the asset root.
+func TestAssetDataURLRejectsForeignURL(t *testing.T) {
+	st := NewStore(memPersister(t), nil)
+	st.SetAssetRoot(t.TempDir())
+	for _, url := range []string{
+		"/etc/passwd",
+		"/assets/sessions/session_7/../../etc/passwd",
+		"/assets/sessions/session_7/abc",
+		"data:image/png;base64,AAAA",
+	} {
+		if _, err := st.AssetDataURL(url); err == nil {
+			t.Errorf("AssetDataURL(%q) succeeded, want an error", url)
 		}
 	}
 }

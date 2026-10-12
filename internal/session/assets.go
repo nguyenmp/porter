@@ -2,11 +2,14 @@ package session
 
 import (
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"porter/internal/asset"
 )
@@ -109,4 +112,33 @@ func (s *Session) publishAsset(filename string, content []byte) (string, error) 
 		return "", errors.New("assets are not configured on this server")
 	}
 	return writeAsset(s.assetRoot, s.id, filename, content)
+}
+
+// AssetDataURL returns a published asset's bytes as an inline data URL, given
+// the hosted URL a message carries: "/assets/sessions/<session>/<id>/<file>".
+// A message names an image by that URL, but the model provider cannot reach the
+// porter server, so the bytes have to travel inside the request. The media type
+// comes from the bytes themselves, the same way an upload is checked.
+//
+// The URL is untrusted (it can come from a client), so every segment is
+// validated by AssetFilePath before any file is opened.
+func (st *Store) AssetDataURL(url string) (string, error) {
+	rest, ok := strings.CutPrefix(url, asset.URLPrefix)
+	if !ok {
+		return "", fmt.Errorf("not a published asset URL: %q", url)
+	}
+	parts := strings.Split(rest, "/")
+	if len(parts) != 3 {
+		return "", fmt.Errorf("malformed asset URL: %q", url)
+	}
+	path, err := st.AssetFilePath(parts[0], parts[1], parts[2])
+	if err != nil {
+		return "", err
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("read asset: %w", err)
+	}
+	mime := http.DetectContentType(data)
+	return "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(data), nil
 }

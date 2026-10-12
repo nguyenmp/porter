@@ -1,6 +1,18 @@
 package llm
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"fmt"
+	"strings"
+)
+
+// ResolveImage turns an image location stored on a message into the data URL
+// the provider needs. A message names an image by its hosted URL
+// ("/assets/sessions/..."), and the provider cannot reach that URL, so the
+// bytes must travel inline. The caller supplies this function: the server knows
+// how to read its own assets, and this package does not. A location that is
+// already a data URL never reaches the resolver.
+type ResolveImage func(url string) (string, error)
 
 // contentPart is one element of a multi-part Chat Completions content array:
 // either prose or an image the provider must look at. The shape follows the
@@ -23,15 +35,49 @@ type imageURL struct {
 // first (when the message has any), then one part per attached image. A
 // message with images and no prose therefore has no text part at all, which is
 // what a pure image upload should look like.
-func contentParts(m ChatMessage) (json.RawMessage, error) {
+//
+// Each image is turned into a data URL through resolve. An image the resolver
+// cannot read becomes a short text note instead of an error, because the
+// message stays in history: a request that failed here would fail on every
+// later turn too.
+func contentParts(m ChatMessage, resolve ResolveImage) (json.RawMessage, error) {
 	parts := make([]contentPart, 0, len(m.Images)+1)
 	if m.Content != "" {
 		parts = append(parts, contentPart{Type: "text", Text: m.Content})
 	}
 	for _, img := range m.Images {
-		parts = append(parts, contentPart{Type: "image_url", ImageURL: &imageURL{URL: img.URL}})
+		url, err := resolveImageURL(img, resolve)
+		if err != nil {
+			parts = append(parts, contentPart{Type: "text", Text: imageUnavailable(img, err)})
+			continue
+		}
+		parts = append(parts, contentPart{Type: "image_url", ImageURL: &imageURL{URL: url}})
 	}
 	return json.Marshal(parts)
+}
+
+// resolveImageURL returns the data URL for one attached image. A stored data
+// URL is already the wire form and comes back unchanged, so a message written
+// before images became assets keeps working.
+func resolveImageURL(img ImagePart, resolve ResolveImage) (string, error) {
+	if strings.HasPrefix(img.URL, "data:") {
+		return img.URL, nil
+	}
+	if resolve == nil {
+		return "", fmt.Errorf("no image resolver is set")
+	}
+	return resolve(img.URL)
+}
+
+// imageUnavailable is the text that stands in for an attached image the request
+// could not read. It names the image and the reason, so the model and the user
+// both see that a picture was meant to be there.
+func imageUnavailable(img ImagePart, err error) string {
+	name := img.Name
+	if name == "" {
+		name = img.URL
+	}
+	return fmt.Sprintf("[image unavailable: %s (%v)]", name, err)
 }
 
 // HasImages reports whether any of the messages carries an attached image, so
@@ -51,9 +97,10 @@ func HasImages(msgs []ChatMessage) bool {
 // Chat Completions only accepts image input in that form, and its `images`
 // field dropped, because the provider must not see a field it does not know.
 //
-// Only the content key is rewritten, so every other field on the message —
-// including ones added later — keeps traveling automatically.
-func wireMessages(msgs []ChatMessage) ([]json.RawMessage, error) {
+// Each image location is resolved to a data URL through resolve; see
+// ResolveImage. Only the content key is rewritten, so every other field on the
+// message — including ones added later — keeps traveling automatically.
+func wireMessages(msgs []ChatMessage, resolve ResolveImage) ([]json.RawMessage, error) {
 	out := make([]json.RawMessage, 0, len(msgs))
 	for _, m := range msgs {
 		b, err := json.Marshal(m)
@@ -68,7 +115,7 @@ func wireMessages(msgs []ChatMessage) ([]json.RawMessage, error) {
 		if err := json.Unmarshal(b, &obj); err != nil {
 			return nil, err
 		}
-		parts, err := contentParts(m)
+		parts, err := contentParts(m, resolve)
 		if err != nil {
 			return nil, err
 		}

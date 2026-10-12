@@ -42,6 +42,12 @@ const DefaultIframeHeight = 480
 // viewport taller than the page it renders in.
 const MaxIframeHeight = 2000
 
+// URLPrefix is the path prefix of a published asset's hosted URL:
+// /assets/sessions/<session id>/<asset id>/<file name>. It is the one shape
+// that names an asset, so a message can carry the URL and the server can find
+// the bytes again from it.
+const URLPrefix = "/assets/sessions/"
+
 // publishArgs is the parsed model-facing publish_asset call.
 type publishArgs struct {
 	Path string `json:"path"`

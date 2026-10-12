@@ -62,6 +62,12 @@ type Client struct {
 	// Debug, when non-nil, receives progress lines (connect, upload, first
 	// byte) on a writer such as stderr. Leave nil to keep output quiet.
 	Debug io.Writer
+
+	// ResolveImage turns an image location stored on a message — a hosted asset
+	// URL — into the data URL the provider needs, since the provider cannot
+	// reach the porter server. A message whose image is already a data URL
+	// needs no resolver, so this can stay nil until images become assets.
+	ResolveImage ResolveImage
 }
 
 // NewClient returns a Client for the given configuration.
@@ -90,7 +96,7 @@ func (c *Client) After() io.Closer {
 // so the endpoint join is predictable. When tools is non-empty it is declared
 // to the model so it may respond with tool calls.
 func (c *Client) Stream(ctx context.Context, messages []ChatMessage, tools []Tool) (io.ReadCloser, error) {
-	wire, err := wireMessages(messages)
+	wire, err := wireMessages(messages, c.ResolveImage)
 	if err != nil {
 		return nil, fmt.Errorf("encode messages: %w", err)
 	}
