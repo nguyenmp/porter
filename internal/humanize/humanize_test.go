@@ -151,10 +151,12 @@ func TestDirectiveNamesSurfaces(t *testing.T) {
 	}
 }
 
-// TestPlainRulesEmbedded covers the embedded rule body and the way the prompts
-// join it: the rules must load from plain_rules.md (so that file is the one
-// copy a reader can link to), and the text each prompt adds after the rules
-// must start on its own line rather than glue onto the last rule.
+// TestPlainRulesEmbedded covers the embedded rule body and the way the two
+// rule-carrying prompts (the skill and the background pass) join it: the rules
+// must load from plain_rules.md (so that file is the one copy a reader can
+// link to), and the text each prompt adds after the rules must start on its
+// own line rather than glue onto the last rule. The standing directive is not
+// in this set: it points at the skill instead of carrying the rules.
 func TestPlainRulesEmbedded(t *testing.T) {
 	if !strings.Contains(plainRules, "Plain language means an average reader") {
 		t.Fatalf("embedded rules are missing the definition:\n%s", plainRules)
@@ -165,7 +167,6 @@ func TestPlainRulesEmbedded(t *testing.T) {
 	for name, prompt := range map[string]string{
 		"humanizePrompt": humanizePrompt(),
 		"Prompt":         Prompt(),
-		"Directive":      Directive(),
 	} {
 		if strings.Contains(prompt, "goals?-") {
 			t.Errorf("%s glued the text after the rules onto the last rule:\n%s", name, prompt)
@@ -177,8 +178,9 @@ func TestPlainRulesEmbedded(t *testing.T) {
 }
 
 // TestCiteRuleInRulesBody checks the citation rule lives in the shared rule
-// body, plain_rules.md, so every prompt carries it from one copy: the skill,
-// the standing style, and the background rewrite pass.
+// body, plain_rules.md, so the rule-carrying prompts get it from one copy: the
+// skill and the background rewrite pass. The standing directive points at the
+// skill rather than carrying the rules, so it is not checked here.
 func TestCiteRuleInRulesBody(t *testing.T) {
 	if !strings.Contains(plainRules, "Cite your sources") {
 		t.Fatalf("plain_rules.md is missing the citation rule:\n%s", plainRules)
@@ -186,10 +188,42 @@ func TestCiteRuleInRulesBody(t *testing.T) {
 	for name, prompt := range map[string]string{
 		"humanizePrompt": humanizePrompt(),
 		"Prompt":         Prompt(),
-		"Directive":      Directive(),
 	} {
 		if !strings.Contains(prompt, "Cite your sources") {
 			t.Errorf("%s does not carry the citation rule", name)
 		}
+	}
+}
+
+// TestDirectivePointsAtSkill verifies the standing style stays lean: it names
+// the plain-language skill and tells the model to load it, rather than
+// restating the rules. The rule body lives in one copy (plain_rules.md),
+// carried by the skill and the background pass, so the directive must not
+// duplicate it.
+func TestDirectivePointsAtSkill(t *testing.T) {
+	d := Directive()
+	if !strings.Contains(d, "plain-language skill") {
+		t.Errorf("directive does not name the plain-language skill:\n%s", d)
+	}
+	if !strings.Contains(d, "Load") {
+		t.Errorf("directive does not tell the model to load the skill:\n%s", d)
+	}
+	for _, rule := range []string{"Cite your sources", "meet their goals?", "Plain language means an average reader"} {
+		if strings.Contains(d, rule) {
+			t.Errorf("directive restates the rule body (%q); it should point at the skill instead:\n%s", rule, d)
+		}
+	}
+}
+
+// TestLoopRuleInRulesBody checks the rule to work through every rule, one at a
+// time, in a loop until the text is thoroughly plain lives in the shared rule
+// body (plain_rules.md), so the skill and the background pass both carry it
+// from one copy.
+func TestLoopRuleInRulesBody(t *testing.T) {
+	if !strings.Contains(plainRules, "loop") {
+		t.Fatalf("plain_rules.md is missing the loop rule:\n%s", plainRules)
+	}
+	if !strings.Contains(Prompt(), "loop") {
+		t.Errorf("the plain-language skill does not carry the loop rule:\n%s", Prompt())
 	}
 }

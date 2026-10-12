@@ -8,9 +8,9 @@
 // shared by every built-in skill and its plumbing.
 //
 // The body deliberately does not restate the plain-language rules. The
-// standing writing directive already carries them into every request, and the
-// plain-language skill holds the full list, so the body points at the rules
-// instead of copying them into a second place that could drift.
+// standing writing directive points at the plain-language skill, and the skill
+// holds the full list, so the body points at the rules instead of copying them
+// into a second place that could drift.
 package handoff
 
 import (

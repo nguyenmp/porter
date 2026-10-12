@@ -11,13 +11,15 @@
 // the skill body is compiled in (the embedded plain_rules.md) and load_skill
 // serves it from memory. A shared
 // rule base means the background pass and the loadable skill can never drift apart;
-// each mode appends only the behavior its own job needs. The same rule body
-// is the standing style the agent injects into every request (Directive):
-// replies, drafted reports, and code comments are written plainly the first
-// time, and the rewrite pass becomes a safety net rather than the only
-// plain-language path. A one-line reminder (UserMessageReminder) rides on the
-// conversation too: the model view appends it to every user message, so the
-// style sits next to the request being answered and not only in the system
+// each mode appends only the behavior its own job needs. The standing style
+// the agent injects into every request (Directive) stays lean: instead of
+// restating the rules, it tells the model to load this skill and apply its
+// rules to everything it writes, so replies, drafted reports, and code
+// comments are written plainly the first time and the rewrite pass is a safety
+// net rather than the only plain-language path. A one-line reminder
+// (UserMessageReminder) rides on the conversation too: the model view appends
+// it to every user message, so the style sits next to the request being
+// answered and not only in the system
 // prefix. Like the model view's timing headers, the reminder is derived on the
 // outgoing copy only — the stored message, the database, and the UI keep
 // exactly what the user typed.
@@ -38,7 +40,7 @@ import (
 // PromptVersion identifies the prompt revision that produced a variant. It is
 // stamped on every pass so the UI can explain why a tab reads the way it does,
 // and should be bumped whenever the prompt below changes.
-const PromptVersion = "plain-language-v10"
+const PromptVersion = "plain-language-v11"
 
 // SkillName is the name the built-in plain-language skill is exposed under,
 // both in the load_skill listing and as the sentinel path (api.BuiltinPrefix +
@@ -54,7 +56,7 @@ const SkillName = "plain-language"
 func BuiltinSkill() api.Skill {
 	return api.Skill{
 		Name:        SkillName,
-		Description: "Rewrite or write text in plain language: simple, direct, reader-first prose (from the US government plainlanguage.gov guidelines). Load to get the full rewrite rules.",
+		Description: "Rewrite or write text in plain language: simple, direct, reader-first prose (from the US government plainlanguage.gov guidelines). Load to get the full rewrite rules and the loop that applies them, rule by rule, until the text is thoroughly plain.",
 		Path:        api.BuiltinPrefix + SkillName,
 	}
 }
@@ -63,9 +65,9 @@ func BuiltinSkill() api.Skill {
 // rewrite rules (systemPrompt) plus an interactive-use suffix. A model
 // that loads this skill asks for text when none is given, edits files in
 // place,and reports how many passes it took and what it changed - things a
-// background pass must never do. The citation rule lives in the shared rule
-// body (plain_rules.md), so this prompt and the background pass cannot differ
-// on it.
+// background pass must never do. The citation and self-review rules live in
+// the shared rule body (plain_rules.md), so this prompt and the background
+// pass cannot differ on them.
 func Prompt() string { return systemPrompt + interactiveSuffix }
 
 // humanizePrompt returns the prompt the background humanize pass uses:the
@@ -84,12 +86,12 @@ const (
 	MinSentences = 4
 )
 
-// plainRules is the plain-language rule body both prompts share: the
-// definition, the rule that decides where to spend effort, and the writing
-// rules. systemPrompt (rewriting) and systemDirective (fresh writing) wrap it
-// with their own framing — a rewrite pass must preserve the given text, while
-// fresh writing just follows the rules as it goes — so the shared guidance can
-// never drift between the two.
+// plainRules is the plain-language rule body the skill and the background pass
+// share: the definition, the rule that decides where to spend effort, and the
+// writing rules. systemPrompt wraps it with the framing both modes need (a
+// rewrite preserves the given text), so the shared guidance can never drift
+// between the skill and the pass. The standing directive (systemDirective)
+// does not wrap it: it points at the skill instead.
 //
 // The rules live in plain_rules.md rather than in Go source, so anyone can read
 // them as prose and link to the file. The build embeds that file, so the binary
@@ -134,21 +136,22 @@ const silentSuffix = "\n\nThe rewrite runs unattended and lands directly in the 
 const interactiveSuffix = "\n\nWhen used interactively:if you have no text,ask what to simplify;if the input is a file,edit the file in place. Tell the user when you start a new pass;after the rewrite,say how many passes you took,and list the main changes,each with the principle behind it."
 
 // Directive returns the standing writing-style instruction the agent injects
-// into every model request, so assistant output — replies to the user, drafted
-// reports, and comments on code — is written in plain language the first time
-// rather than only rewritten afterwards. It wraps the shared rule body
-// (plainRules) that systemPrompt also uses, adding only the generation
-// framing: where the style applies and for whom. Every rule is one copy, so
-// the two prompts cannot drift.
+// into every model request: a short pointer to the built-in plain-language
+// skill. It tells the model to load the skill and apply its rules to
+// everything it writes — replies to the user, drafted reports and documents,
+// and comments on code — so assistant output is written plainly the first
+// time. The rules themselves live in one copy (plain_rules.md, served as the
+// skill body), so this instruction stays lean and the skill, the background
+// pass, and this directive can never disagree about a rule.
 func Directive() string { return systemDirective }
 
-// systemDirective is the text Directive returns: the standing plain-language
-// writing style for generation — the shared rule body (plainRules) plus the
-// generation-only framing. See Directive for why it wraps plainRules like
-// systemPrompt does.
-var systemDirective = `Always speak in plain language. Before replying, reflect on what you are about to say and revise it. Apply this style to everything you write, including replies to the user, reports and documents you draft, code comments you write or edit, web pages you build, UI text you write, and documentation you create.
-` + plainRules + `
-Audience: replies and UI text go to the user, a working developer, so keep the technical terms they already know — do not define them, and do not pad to fill space. Text you draft for other readers, like a report, web page, or update, fits that audience instead: keep the technical terms they need and define each one the first time you use it. Code comments are prose too: short, direct, and about the code they sit in.
+// systemDirective is the text Directive returns: a lean, always-on pointer to
+// the plain-language skill rather than a copy of its rules. The full rule body
+// lives in plain_rules.md and reaches the model through the skill (Prompt) and
+// the background pass (humanizePrompt); the directive only tells the model to
+// load that skill. Keeping the rules out of the standing prefix keeps it
+// small, and the one-copy rule base keeps every mode on the same page.
+var systemDirective = `Always write in plain language. Load the plain-language skill and apply its rules to everything you write: replies to the user, reports and documents you draft, code comments you write or edit, web pages you build, UI text you write, and documentation you create. Replies go to a working developer, so keep the technical terms they already know and define each term they might not, the first time it appears.
 `
 
 // UserMessageReminder is the one-line reminder the model view appends to every

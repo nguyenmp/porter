@@ -59,12 +59,13 @@ I can also use the server as my execution environment in case my laptop is unava
   build). They always win: built-in names are reserved during discovery, so a
   filesystem skill of the same name is skipped and can never shadow the
   shipped guidance. `load_skill` serves their bodies from memory. Three ship
-  today: the plain-language prompt behind Humanized variants
-  (`internal/humanize` exposes it via `Prompt()`; editing the prompt edits
-  the skill, so the two cannot drift), remote-file editing guidance
-  (`internal/remoteedit`, which tells
-  the model to pull a file off a remote host, edit the local copy with the
-  file editing tools, and push it back instead of driving sed/perl over ssh),
+  today: the plain-language prompt behind Humanized variants and behind the
+  writing directive every request leads with (`internal/humanize` exposes it
+  via `Prompt()`; editing the prompt edits the skill, and the directive tells
+  the agent to load it, so the rules live in one copy), remote-file editing
+  guidance (`internal/remoteedit`, which tells the model to pull a file off a
+  remote host, edit the local copy with the file editing tools, and push it
+  back instead of driving sed/perl over ssh),
   and handoff summary guidance (`internal/handoff`: write the summary for the
   person who picks the work up next, in plain language, covering what the work
   was, where it stands, where it lives, the next step, and the traps).
@@ -293,16 +294,18 @@ learns them as one flow: create a file, publish it, show it.
 ### Plain language
 
 Porter writes in plain language by default. Every model request leads with a
-standing writing-style directive — hard-coded in `internal/humanize`
-(`Directive()`), sharing one rule body with the rewrite prompt so the two
-cannot drift — so replies are written plainly the first time instead of only
-being cleaned up afterwards. The directive names the surfaces it governs:
-replies to the user, reports and other documents the agent drafts, and
-comments on code it writes or edits. It is audience-aware rather than
-patronizing: replies go to you, a working developer, so technical terms you
-already know stay as-is and undefined, while text drafted for other readers
-keeps the terms that audience needs and defines them the first time each
-appears.
+short standing writing-style directive — hard-coded in `internal/humanize`
+(`Directive()`) — that tells the agent to load the built-in `plain-language`
+skill and apply its rules to everything it writes, so replies are written
+plainly the first time instead of only being cleaned up afterwards. The rules
+themselves live in one copy, `internal/humanize/plain_rules.md`, served as the
+skill body, so the directive stays lean and the skill can never drift from the
+rules. The directive names the surfaces it governs: replies to the user,
+reports and other documents the agent drafts, and comments on code it writes or
+edits. It is audience-aware rather than patronizing: replies go to you, a
+working developer, so technical terms you already know stay as-is and
+undefined, while text drafted for other readers keeps the terms that audience
+needs and defines them the first time each appears.
 
 The style also rides on the conversation itself. The model view appends a
 one-line reminder (`UserMessageReminder`, also in `internal/humanize`) to every
@@ -347,8 +350,8 @@ plain-language skill — no web fetches, no commentary, markdown preserved,
 facts and code untouched), stamped on every pass as `prompt_version`, and
 exposed as a built-in skill: `humanize.Prompt()` is the body of the
 `plain-language` skill that `load_skill` serves from memory, so the
-background pass, the loadable skill, and the standing writing directive
-share one rule body. The
+background pass and the loadable skill share one rule body, and the standing
+writing directive points at that skill instead of restating the rules. The
 auto-trigger thresholds (`MinWords`, `MinSentences`, code-block detection)
 live there too. The backend surface is
 `POST /api/sessions/{id}/messages/{seq}/humanize`.
