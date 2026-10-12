@@ -47,8 +47,8 @@ type streamEvent struct {
 // its id, name, and arguments. A reasoning item may bring the whole chain of
 // thought in its content array — some upstreams never stream reasoning as
 // deltas, so the item itself is the only place it arrives (see
-// reasoningContent). A message item's prose still arrives as delta events, so
-// its content is ignored here.
+// reasoningContent). A message item may carry the whole reply the same way;
+// that copy is read only as a last-resort fallback (see finishItem).
 type outputItem struct {
 	Type      string            `json:"type"`
 	ID        string            `json:"id"`
@@ -58,8 +58,8 @@ type outputItem struct {
 	Content   []itemContentPart `json:"content"`
 }
 
-// itemContentPart is one part of an item's content array. Only a reasoning
-// item's text is read; the rest is tolerated and skipped.
+// itemContentPart is one part of an item's content array. Only a reasoning or
+// message item's text is read; the rest is tolerated and skipped.
 type itemContentPart struct {
 	Type string `json:"type"`
 	Text string `json:"text"`
@@ -139,6 +139,11 @@ type Decoder struct {
 	// that arrive across many events reassemble into one.
 	toolCalls map[int]*ToolCall
 
+	// messageItemText holds a message item's whole-text reply when no
+	// output_text.delta ever arrived. finalize emits it as the message, so a
+	// reply delivered only inside the item still reaches the user.
+	messageItemText string
+
 	// OnEvent, when set, is invoked for every Event the decoder produces, in
 	// addition to writing it to enc. It lets consumers render or react to the
 	// stream without re-parsing.
@@ -192,7 +197,9 @@ func (d *Decoder) Process(line string) (bool, error) {
 		// A gateway that sent no text deltas may still hand the whole message
 		// over here instead.
 		if d.full.Len() == 0 && ev.Text != "" {
-			d.full.WriteString(ev.Text)
+			if err := d.emitText(ev.Text); err != nil {
+				return false, err
+			}
 		}
 	case ev.Type == "response.output_item.added":
 		return false, d.startItem(ev)
@@ -228,12 +235,17 @@ func (d *Decoder) Final() bool {
 func (d *Decoder) Finished() bool { return d.finished }
 
 // finalize writes the accumulated message, tool-call, and usage events exactly
-// once and reports done.
+// once and reports done. When no text delta ever arrived but a message item
+// carried the whole reply, that text is emitted here (and reported as a delta
+// first, so a live consumer sees it too).
 func (d *Decoder) finalize() bool {
 	if d.finalized {
 		return true
 	}
 	d.finalized = true
+	if d.full.Len() == 0 && d.messageItemText != "" {
+		_ = d.emitText(d.messageItemText)
+	}
 	_ = d.emit(Event{Type: TypeMessage, Role: "assistant", Content: d.full.String(), Reasoning: d.reasoning.String()})
 	for _, call := range d.completedToolCalls() {
 		_ = d.emit(Event{Type: TypeToolCall, Index: call.Index, ToolCallID: call.ID, Name: call.Name, Arguments: call.Arguments})
@@ -365,8 +377,31 @@ func (d *Decoder) finishItem(ev streamEvent) error {
 		if d.reasoning.Len() == 0 {
 			return d.emitReasoning(reasoningContent(ev.Item))
 		}
+	case "message":
+		// The last-resort fallback for prose: an upstream that never streams
+		// output_text.delta delivers the whole reply inside the message item.
+		// Take it only when nothing else accumulated, so a provider that
+		// streams AND echoes the item is not doubled. This is what
+		// session_1034's dead-end turns were: the model wrote a reply, the item
+		// carried it whole, the decoder ignored it, and porter committed an
+		// empty message and ended the turn.
+		if d.full.Len() == 0 && d.messageItemText == "" {
+			d.messageItemText = proseContent(ev.Item)
+		}
 	}
 	return nil
+}
+
+// proseContent joins a message item's output_text parts, the whole-text copy of
+// a reply some upstreams deliver instead of streaming it.
+func proseContent(item *outputItem) string {
+	var b strings.Builder
+	for _, part := range item.Content {
+		if part.Type == "output_text" && part.Text != "" {
+			b.WriteString(part.Text)
+		}
+	}
+	return b.String()
 }
 
 // reasoningContent joins a reasoning item's text parts. An upstream that does

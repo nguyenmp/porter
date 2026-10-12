@@ -346,3 +346,55 @@ func TestDecoderReasoningEchoOnItemIsNotDoubled(t *testing.T) {
 		t.Errorf("the streamed reasoning is missing; got:\n%s", got)
 	}
 }
+
+// TestDecoderReadsWholeTextReplyFromMessageItem covers the dead-end shape from
+// the production hunt: an upstream that never streams output_text.delta
+// delivers the whole reply inside the message item. Before this fallback, the
+// decoder ignored that item, porter committed an empty reply, and the turn
+// ended silently — the user had to type "continue" over and over.
+func TestDecoderReadsWholeTextReplyFromMessageItem(t *testing.T) {
+	got, err := feed(t,
+		`data: {"type":"response.output_item.added","output_index":0,"item":{"id":"rs_1","type":"reasoning","content":[{"text":"plan","type":"reasoning_text"}]}}`,
+		`data: {"type":"response.output_item.added","output_index":1,"item":{"id":"msg_1","content":[{"text":"Let me check your battery.","type":"output_text"}],"role":"assistant","type":"message"}}`,
+		`data: {"type":"response.output_item.done","output_index":1,"item":{"id":"msg_1","content":[{"text":"Let me check your battery.","type":"output_text"}],"role":"assistant","type":"message"}}`,
+		`data: {"type":"response.completed","response":{"usage":{"input_tokens":10,"output_tokens":30}}}`,
+	)
+	if err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	for _, want := range []string{
+		`"type":"message_delta"`, `"delta":"Let me check your battery."`,
+		`"type":"message"`, `"content":"Let me check your battery."`,
+		`"reasoning":"plan"`,
+		`"type":"usage"`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("output missing %q; got:\n%s", want, got)
+		}
+	}
+	// added and done both carried the reply; it must not be doubled.
+	if n := strings.Count(got, "Let me check your battery."); n != 2 {
+		t.Errorf("reply appears %d times, want 2 (delta + assembled); got:\n%s", n, got)
+	}
+}
+
+// TestDecoderStreamedTextWinsOverItemEcho keeps the double-write from the other
+// side: a provider that streams output_text.delta AND carries the whole reply
+// in the item must commit it once.
+func TestDecoderStreamedTextWinsOverItemEcho(t *testing.T) {
+	got, err := feed(t,
+		`data: {"type":"response.output_text.delta","output_index":0,"delta":"streamed"}`,
+		`data: {"type":"response.output_item.added","output_index":0,"item":{"id":"msg_1","content":[{"text":"whole","type":"output_text"}],"role":"assistant","type":"message"}}`,
+		`data: {"type":"response.output_item.done","output_index":0,"item":{"id":"msg_1","content":[{"text":"whole","type":"output_text"}],"role":"assistant","type":"message"}}`,
+		`data: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":1}}}`,
+	)
+	if err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	if strings.Contains(got, `"whole"`) {
+		t.Errorf("the item echo joined the streamed reply; got:\n%s", got)
+	}
+	if !strings.Contains(got, `"content":"streamed"`) {
+		t.Errorf("the streamed reply is missing; got:\n%s", got)
+	}
+}
