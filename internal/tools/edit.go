@@ -71,136 +71,128 @@ func fileToolDefs() []llm.Tool {
 	return []llm.Tool{
 		{
 			Type: "function",
-			Function: llm.Function{
-				Name: ReadLinesTool,
-				Description: "Read a file with line numbers (cat -n style: a right-aligned 1-based number, a tab, then the line's " +
-					"exact content — the number and tab are not part of the file). Paths are relative to the working directory, same as shell. " +
-					"Returns a header 'file has N lines (M bytes), ends with newline: yes/no, showing lines A-B' then the numbered lines. " +
-					"start (default 1) is the first line to show, 1-based inclusive; limit (default -1) is how many lines to show (-1 = through end of file). " +
-					"Read a large file in windows (small start/limit) instead of all at once, then edit by those line numbers with line_insert or line_replace. " +
-					"The ends-with-newline state matters: line_insert cannot append to a file that does not end with a newline, and only " +
-					"line_replace can remove or replace a final unterminated line. Refuses binary files (use shell + xxd/strings for those).",
-				Parameters: map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"path": map[string]any{
-							"type":        "string",
-							"description": "Path of the file to read, relative to the working directory.",
-						},
-						"start": map[string]any{
-							"type":        "integer",
-							"description": "First line to show, 1-based inclusive (default 1).",
-						},
-						"limit": map[string]any{
-							"type":        "integer",
-							"description": "Number of lines to show; -1 (default) reads through end of file.",
-						},
+			Name: ReadLinesTool,
+			Description: "Read a file with line numbers (cat -n style: a right-aligned 1-based number, a tab, then the line's " +
+				"exact content — the number and tab are not part of the file). Paths are relative to the working directory, same as shell. " +
+				"Returns a header 'file has N lines (M bytes), ends with newline: yes/no, showing lines A-B' then the numbered lines. " +
+				"start (default 1) is the first line to show, 1-based inclusive; limit (default -1) is how many lines to show (-1 = through end of file). " +
+				"Read a large file in windows (small start/limit) instead of all at once, then edit by those line numbers with line_insert or line_replace. " +
+				"The ends-with-newline state matters: line_insert cannot append to a file that does not end with a newline, and only " +
+				"line_replace can remove or replace a final unterminated line. Refuses binary files (use shell + xxd/strings for those).",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"path": map[string]any{
+						"type":        "string",
+						"description": "Path of the file to read, relative to the working directory.",
 					},
-					"required": []string{"path"},
+					"start": map[string]any{
+						"type":        "integer",
+						"description": "First line to show, 1-based inclusive (default 1).",
+					},
+					"limit": map[string]any{
+						"type":        "integer",
+						"description": "Number of lines to show; -1 (default) reads through end of file.",
+					},
 				},
+				"required": []string{"path"},
 			},
 		},
 		{
 			Type: "function",
-			Function: llm.Function{
-				Name: LineInsertTool,
-				Description: "Insert whole lines into an existing file before a numbered line, keyed by the line numbers read_with_line_numbers " +
-					"reports (1-based). start names the line your text should appear before: it and everything after it shift down. start ranges " +
-					"from 1 (insert at the top) through one past the last line (append at the end); appending needs the file to end in a newline, " +
-					"which read_with_line_numbers reports. new_text becomes whole lines: a trailing newline is added if it is missing, so it never " +
-					"glues onto the line that follows it (joining lines on purpose is string_replace's job). Empty new_text does nothing. Cannot " +
-					"create a file — make new files with the shell tool. Applies atomically (temp file + rename) and never rewrites untouched lines. " +
-					"The success echo shows the inserted lines with their new numbers. Use this to add lines; use line_replace to change or delete " +
-					"existing lines, and string_replace for a distinctive small text change.",
-				Parameters: map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"path": map[string]any{
-							"type":        "string",
-							"description": "Path of the file to edit, relative to the working directory. Must already exist.",
-						},
-						"start": map[string]any{
-							"type":        "integer",
-							"description": "Insert before this line, 1-based; one past the last line appends at the end (needs the file to end in a newline).",
-						},
-						"new_text": map[string]any{
-							"type":        "string",
-							"description": "Whole lines to insert. A missing trailing newline is added automatically.",
-						},
+			Name: LineInsertTool,
+			Description: "Insert whole lines into an existing file before a numbered line, keyed by the line numbers read_with_line_numbers " +
+				"reports (1-based). start names the line your text should appear before: it and everything after it shift down. start ranges " +
+				"from 1 (insert at the top) through one past the last line (append at the end); appending needs the file to end in a newline, " +
+				"which read_with_line_numbers reports. new_text becomes whole lines: a trailing newline is added if it is missing, so it never " +
+				"glues onto the line that follows it (joining lines on purpose is string_replace's job). Empty new_text does nothing. Cannot " +
+				"create a file — make new files with the shell tool. Applies atomically (temp file + rename) and never rewrites untouched lines. " +
+				"The success echo shows the inserted lines with their new numbers. Use this to add lines; use line_replace to change or delete " +
+				"existing lines, and string_replace for a distinctive small text change.",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"path": map[string]any{
+						"type":        "string",
+						"description": "Path of the file to edit, relative to the working directory. Must already exist.",
 					},
-					"required": []string{"path", "start", "new_text"},
+					"start": map[string]any{
+						"type":        "integer",
+						"description": "Insert before this line, 1-based; one past the last line appends at the end (needs the file to end in a newline).",
+					},
+					"new_text": map[string]any{
+						"type":        "string",
+						"description": "Whole lines to insert. A missing trailing newline is added automatically.",
+					},
 				},
+				"required": []string{"path", "start", "new_text"},
 			},
 		},
 		{
 			Type: "function",
-			Function: llm.Function{
-				Name: LineReplaceTool,
-				Description: "Cut whole lines out of an existing file and paste whole lines in their place, keyed by the line numbers " +
-					"read_with_line_numbers reports (1-based). start and end are the first and last line to replace, both inclusive: " +
-					"start=end=5 replaces exactly line 5, and start=12 end=15 replaces the four lines numbered 12 through 15. Replace the whole " +
-					"file with start=1 and end=<line count>. new_text becomes whole lines: a trailing newline is added if it is missing, so it " +
-					"never glues onto the line after the range. Empty new_text deletes lines start through end. Replacing a range that includes " +
-					"the file's final unterminated line leaves the file ending in a newline. Cannot create a file — make new files with the shell " +
-					"tool. Applies atomically (temp file + rename) and never rewrites untouched lines. The success echo shows the removed and new " +
-					"lines with their numbers. Use this to change or delete existing lines; use line_insert to add lines without removing any, and " +
-					"string_replace for a distinctive small text change.",
-				Parameters: map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"path": map[string]any{
-							"type":        "string",
-							"description": "Path of the file to edit, relative to the working directory. Must already exist.",
-						},
-						"start": map[string]any{
-							"type":        "integer",
-							"description": "First line to replace, 1-based inclusive.",
-						},
-						"end": map[string]any{
-							"type":        "integer",
-							"description": "Last line to replace, 1-based inclusive (start=end replaces a single line).",
-						},
-						"new_text": map[string]any{
-							"type":        "string",
-							"description": "Whole lines to put in place of the range. Empty string deletes the range. A missing trailing newline is added automatically.",
-						},
+			Name: LineReplaceTool,
+			Description: "Cut whole lines out of an existing file and paste whole lines in their place, keyed by the line numbers " +
+				"read_with_line_numbers reports (1-based). start and end are the first and last line to replace, both inclusive: " +
+				"start=end=5 replaces exactly line 5, and start=12 end=15 replaces the four lines numbered 12 through 15. Replace the whole " +
+				"file with start=1 and end=<line count>. new_text becomes whole lines: a trailing newline is added if it is missing, so it " +
+				"never glues onto the line after the range. Empty new_text deletes lines start through end. Replacing a range that includes " +
+				"the file's final unterminated line leaves the file ending in a newline. Cannot create a file — make new files with the shell " +
+				"tool. Applies atomically (temp file + rename) and never rewrites untouched lines. The success echo shows the removed and new " +
+				"lines with their numbers. Use this to change or delete existing lines; use line_insert to add lines without removing any, and " +
+				"string_replace for a distinctive small text change.",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"path": map[string]any{
+						"type":        "string",
+						"description": "Path of the file to edit, relative to the working directory. Must already exist.",
 					},
-					"required": []string{"path", "start", "end", "new_text"},
+					"start": map[string]any{
+						"type":        "integer",
+						"description": "First line to replace, 1-based inclusive.",
+					},
+					"end": map[string]any{
+						"type":        "integer",
+						"description": "Last line to replace, 1-based inclusive (start=end replaces a single line).",
+					},
+					"new_text": map[string]any{
+						"type":        "string",
+						"description": "Whole lines to put in place of the range. Empty string deletes the range. A missing trailing newline is added automatically.",
+					},
 				},
+				"required": []string{"path", "start", "end", "new_text"},
 			},
 		},
 		{
 			Type: "function",
-			Function: llm.Function{
-				Name: StringReplace,
-				Description: "Replace an exact literal string in an existing file with new_text — no regex; spaces, tabs, and newlines must match " +
-					"exactly (read the file first to get them right). old_text must not be empty. Every occurrence of old_text is replaced, so " +
-					"old_text must appear exactly expected_count times (default 1) in the whole file; if the count differs the edit is rejected and " +
-					"every match is listed with line-numbered context so you can disambiguate (lengthen old_text, or switch to line_insert or line_replace). " +
-					"Applies atomically. Cannot create a file — make new files with the shell tool. Prefer line_insert or line_replace for whole lines or big " +
-					"blocks. Success echoes before/after context with line numbers.",
-				Parameters: map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"path": map[string]any{
-							"type":        "string",
-							"description": "Path of the file to edit, relative to the working directory. Must already exist.",
-						},
-						"old_text": map[string]any{
-							"type":        "string",
-							"description": "Exact text to find. Must not be empty and must appear exactly expected_count times.",
-						},
-						"new_text": map[string]any{
-							"type":        "string",
-							"description": "Replacement text; may be empty to delete occurrences.",
-						},
-						"expected_count": map[string]any{
-							"type":        "integer",
-							"description": "How many times old_text must appear in the file (default 1). Any other count is an error, not a partial edit.",
-						},
+			Name: StringReplace,
+			Description: "Replace an exact literal string in an existing file with new_text — no regex; spaces, tabs, and newlines must match " +
+				"exactly (read the file first to get them right). old_text must not be empty. Every occurrence of old_text is replaced, so " +
+				"old_text must appear exactly expected_count times (default 1) in the whole file; if the count differs the edit is rejected and " +
+				"every match is listed with line-numbered context so you can disambiguate (lengthen old_text, or switch to line_insert or line_replace). " +
+				"Applies atomically. Cannot create a file — make new files with the shell tool. Prefer line_insert or line_replace for whole lines or big " +
+				"blocks. Success echoes before/after context with line numbers.",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"path": map[string]any{
+						"type":        "string",
+						"description": "Path of the file to edit, relative to the working directory. Must already exist.",
 					},
-					"required": []string{"path", "old_text", "new_text"},
+					"old_text": map[string]any{
+						"type":        "string",
+						"description": "Exact text to find. Must not be empty and must appear exactly expected_count times.",
+					},
+					"new_text": map[string]any{
+						"type":        "string",
+						"description": "Replacement text; may be empty to delete occurrences.",
+					},
+					"expected_count": map[string]any{
+						"type":        "integer",
+						"description": "How many times old_text must appear in the file (default 1). Any other count is an error, not a partial edit.",
+					},
 				},
+				"required": []string{"path", "old_text", "new_text"},
 			},
 		},
 	}

@@ -13,20 +13,20 @@ import (
 	"porter/internal/config"
 )
 
-// chatRequest is the subset of the Chat Completions request body we send.
-// Messages are pre-encoded (see wireMessages) because a message carrying
-// images has to be rewritten into content parts on the way out, and pre-encoded
-// messages let that rewrite touch only the messages that need it.
-type chatRequest struct {
-	Model    string            `json:"model"`
-	Messages []json.RawMessage `json:"messages"`
-	Tools    []Tool            `json:"tools,omitempty"`
-	Stream   bool              `json:"stream"`
-	// StreamOptions requests the provider's token usage on the final streamed
-	// chunk. OpenAI-compatible providers (and LiteLLM in front of them) omit
-	// `usage` from a streaming response unless include_usage is set, so without
-	// it turn metadata can never report input/output token counts.
-	StreamOptions *streamOptions `json:"stream_options,omitempty"`
+// responsesRequest is the subset of the Responses request body we send.
+//
+// Input is pre-encoded (see wireInput) because the provider takes a flat item
+// list rather than a messages array, and one porter message can become more
+// than one item — so this is a shape change, not a re-tagging.
+//
+// There is no stream_options here. The Chat Completions API omitted `usage`
+// from a streamed reply unless it was asked for; the Responses API always
+// reports token usage, on the response.completed event the decoder reads.
+type responsesRequest struct {
+	Model  string            `json:"model"`
+	Input  []json.RawMessage `json:"input"`
+	Tools  []Tool            `json:"tools,omitempty"`
+	Stream bool              `json:"stream"`
 	// Reasoning asks the provider for chain-of-thought output. It is the
 	// gateway's reasoning control: `effort` says how much thinking to spend.
 	// OpenRouter reads this object and turns it into whatever the upstream
@@ -39,13 +39,7 @@ type chatRequest struct {
 	Provider *config.ProviderPreferences `json:"provider,omitempty"`
 }
 
-// streamOptions is the Chat Completions stream_options payload. IncludeUsage
-// asks the provider to send a final chunk carrying the round-trip token usage.
-type streamOptions struct {
-	IncludeUsage bool `json:"include_usage"`
-}
-
-// reasoningConfig is the `reasoning` object of a Chat Completions request.
+// reasoningConfig is the `reasoning` object of a Responses request.
 // Effort is the OpenRouter scale: "max", "xhigh", "high", "medium", "low",
 // "minimal", or "none". OpenRouter translates it for models that want a token
 // budget instead, and ignores it for models that cannot reason.
@@ -53,7 +47,7 @@ type reasoningConfig struct {
 	Effort string `json:"effort,omitempty"`
 }
 
-// Client makes streaming Chat Completions requests.
+// Client makes streaming Responses requests.
 type Client struct {
 	cfg    config.Config
 	http   *http.Client
@@ -85,29 +79,28 @@ func (c *Client) After() io.Closer {
 	return c.closer
 }
 
-// Stream starts a streaming Chat Completions request for the given messages
-// and returns the raw SSE response body. Strip the base URL's trailing slash
-// so the endpoint join is predictable. When tools is non-empty it is declared
-// to the model so it may respond with tool calls.
+// Stream starts a streaming Responses request for the given messages and
+// returns the raw SSE response body. Strip the base URL's trailing slash so the
+// endpoint join is predictable. When tools is non-empty it is declared to the
+// model so it may respond with tool calls.
 func (c *Client) Stream(ctx context.Context, messages []ChatMessage, tools []Tool) (io.ReadCloser, error) {
-	wire, err := wireMessages(messages)
+	input, err := wireInput(messages)
 	if err != nil {
-		return nil, fmt.Errorf("encode messages: %w", err)
+		return nil, fmt.Errorf("encode input: %w", err)
 	}
-	body, err := json.Marshal(chatRequest{
-		Model:         c.cfg.Model,
-		Messages:      wire,
-		Tools:         tools,
-		Stream:        true,
-		StreamOptions: &streamOptions{IncludeUsage: true},
-		Reasoning:     &reasoningConfig{Effort: "high"},
-		Provider:      c.cfg.Provider,
+	body, err := json.Marshal(responsesRequest{
+		Model:     c.cfg.Model,
+		Input:     input,
+		Tools:     tools,
+		Stream:    true,
+		Reasoning: &reasoningConfig{Effort: "high"},
+		Provider:  c.cfg.Provider,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
-	endpoint := strings.TrimSuffix(c.cfg.BaseURL, "/") + "/chat/completions"
+	endpoint := strings.TrimSuffix(c.cfg.BaseURL, "/") + "/responses"
 	c.debugf("uploading %d byte prompt to %s (model=%s)", len(body), endpoint, c.cfg.Model)
 	if HasImages(messages) {
 		// A request that carries an image holds megabytes of base64 inline;

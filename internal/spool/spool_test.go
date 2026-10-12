@@ -74,10 +74,10 @@ func TestWritePayload(t *testing.T) {
 
 func TestDef(t *testing.T) {
 	d := Def()
-	if d.Function.Name != OutputTool {
-		t.Errorf("Def().Function.Name = %q, want %q", d.Function.Name, OutputTool)
+	if d.Name != OutputTool {
+		t.Errorf("Def().Name = %q, want %q", d.Name, OutputTool)
 	}
-	if !strings.Contains(d.Function.Description, DefaultDir) {
+	if !strings.Contains(d.Description, DefaultDir) {
 		t.Errorf("Def description should mention the default directory %s", DefaultDir)
 	}
 }

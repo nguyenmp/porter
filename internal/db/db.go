@@ -146,8 +146,8 @@ CREATE INDEX IF NOT EXISTS idx_queries_turn ON queries(session_id, turn_seq);
 	}
 	if v < 4 {
 		// v4: split input tokens into cached vs uncached. The provider reports
-		// how many prompt tokens were served from cache
-		// (prompt_tokens_details.cached_tokens); storing the split explicitly
+		// how many input tokens it served from its own cache; storing the split
+		// explicitly
 		// (instead of a single input total) is what lets cost display price
 		// cache hits differently from misses. Old rows are backfilled as
 		// all-uncached — the split was not recorded before v4, so treating

@@ -201,11 +201,11 @@ func TestLoadSkillReturnsSkillBody(t *testing.T) {
 	if len(defs) != 6 {
 		t.Fatalf("Defs = %d tools, want shell + file tools + load_skill", len(defs))
 	}
-	if got := defs[len(defs)-1].Function.Name; got != "load_skill" {
+	if got := defs[len(defs)-1].Name; got != "load_skill" {
 		t.Errorf("last tool = %q, want load_skill", got)
 	}
-	if !strings.Contains(defs[len(defs)-1].Function.Description, "my-skill: desc") {
-		t.Errorf("load_skill description missing skill metadata: %q", defs[len(defs)-1].Function.Description)
+	if !strings.Contains(defs[len(defs)-1].Description, "my-skill: desc") {
+		t.Errorf("load_skill description missing skill metadata: %q", defs[len(defs)-1].Description)
 	}
 
 	res, err := run(context.Background(), d, "load_skill", []byte(`{"name":"my-skill"}`))
@@ -317,8 +317,8 @@ func TestDispatcherWithoutSkillsExposesBaseTools(t *testing.T) {
 		t.Fatalf("Defs without skills = %d tools %+v, want %d", len(defs), defs, len(want))
 	}
 	for i, w := range want {
-		if defs[i].Function.Name != w {
-			t.Errorf("tool %d = %q, want %q", i, defs[i].Function.Name, w)
+		if defs[i].Name != w {
+			t.Errorf("tool %d = %q, want %q", i, defs[i].Name, w)
 		}
 	}
 }
@@ -338,8 +338,8 @@ func TestShellDefSteersToDedicatedTools(t *testing.T) {
 	defs := NewDispatcher().Defs()
 	var shellDesc string
 	for _, d := range defs {
-		if d.Function.Name == "shell" {
-			shellDesc = d.Function.Description
+		if d.Name == "shell" {
+			shellDesc = d.Description
 		}
 	}
 	if shellDesc == "" {

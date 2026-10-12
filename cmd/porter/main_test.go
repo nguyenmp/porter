@@ -21,8 +21,9 @@ func TestRunStreamsJSONL(t *testing.T) {
 	llmSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		fmt.Fprint(w,
-			`data: {"choices":[{"delta":{"content":"Hel"},"finish_reason":null}]}`+"\n\n"+
-				`data: {"choices":[{"delta":{"content":"lo"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":20}}`+"\n\n"+
+			`data: {"type":"response.output_text.delta","output_index":0,"delta":"Hel"}`+"\n\n"+
+				`data: {"type":"response.output_text.delta","output_index":0,"delta":"lo"}`+"\n\n"+
+				`data: {"type":"response.completed","response":{"usage":{"input_tokens":10,"output_tokens":20}}}`+"\n\n"+
 				`data: [DONE]`+"\n")
 	}))
 	s, err := server.New(config.Config{BaseURL: llmSrv.URL + "/v1", Model: "m", APIKey: "k"})
@@ -64,7 +65,8 @@ func TestRunResumesSession(t *testing.T) {
 	llmSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		fmt.Fprint(w,
-			`data: {"choices":[{"delta":{"content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":4,"completion_tokens":5}}`+"\n\n"+
+			`data: {"type":"response.output_text.delta","output_index":0,"delta":"hi"}`+"\n\n"+
+				`data: {"type":"response.completed","response":{"usage":{"input_tokens":4,"output_tokens":5}}}`+"\n\n"+
 				`data: [DONE]`+"\n")
 	}))
 	defer llmSrv.Close()

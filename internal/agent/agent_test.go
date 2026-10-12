@@ -33,14 +33,14 @@ func toolServer(t *testing.T) (*httptest.Server, func() ([][]json.RawMessage, []
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
-			Messages []json.RawMessage `json:"messages"`
-			Tools    []json.RawMessage `json:"tools"`
+			Input []json.RawMessage `json:"input"`
+			Tools []json.RawMessage `json:"tools"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			t.Errorf("decode request: %v", err)
 		}
 		mu.Lock()
-		captured = append(captured, req.Messages)
+		captured = append(captured, req.Input)
 		hadTools = append(hadTools, len(req.Tools) > 0)
 		mu.Unlock()
 
@@ -49,15 +49,17 @@ func toolServer(t *testing.T) (*httptest.Server, func() ([][]json.RawMessage, []
 		if n == 1 {
 			// First turn: ask for a tool call (arguments stream in pieces), with reasoning.
 			fmt.Fprintf(w,
-				`data: {"choices":[{"delta":{"reasoning_content":"deciding to call the shell"},"finish_reason":null}]}`+"\n\n"+
-					`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"shell","arguments":"{\"command\":\"echo hi\",\"porter_action_desc"}}]},"finish_reason":null}]}`+"\n\n"+
-					`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"ription\":\"say hi for the test\",\"porter_timeout_seconds\":30}"}}]},"finish_reason":"tool_calls"}]}`+"\n\n"+
+				`data: {"type":"response.reasoning_summary_text.delta","output_index":0,"delta":"deciding to call the shell"}`+"\n\n"+
+					`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","call_id":"call_1","name":"shell"}}`+"\n\n"+
+					`data: {"type":"response.function_call_arguments.delta","output_index":0,"delta":"{\"command\":\"echo hi\",\"porter_action_desc"}`+"\n\n"+
+					`data: {"type":"response.function_call_arguments.delta","output_index":0,"delta":"ription\":\"say hi for the test\",\"porter_timeout_seconds\":30}"}`+"\n\n"+
 					`data: [DONE]`+"\n")
 		} else {
 			// Second turn: reply plainly (with reasoning), with usage.
 			fmt.Fprintf(w,
-				`data: {"choices":[{"delta":{"reasoning_content":"wrapping up"},"finish_reason":null}]}`+"\n\n"+
-					`data: {"choices":[{"delta":{"content":"done"},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":3}}`+"\n\n"+
+				`data: {"type":"response.reasoning_summary_text.delta","output_index":0,"delta":"wrapping up"}`+"\n\n"+
+					`data: {"type":"response.output_text.delta","output_index":0,"delta":"done"}`+"\n\n"+
+					`data: {"type":"response.completed","response":{"usage":{"input_tokens":2,"output_tokens":3}}}`+"\n\n"+
 					`data: [DONE]`+"\n")
 		}
 	}))
@@ -113,16 +115,12 @@ func TestRunTurnExecutesToolAndLoops(t *testing.T) {
 
 	// Second request must feed the tool result back in.
 	found := false
-	for _, m := range captured[1] {
-		var msg struct {
-			Role       string `json:"role"`
-			ToolCallID string `json:"tool_call_id"`
-			Content    string `json:"content"`
+	for _, raw := range captured[1] {
+		var item inputItem
+		if err := json.Unmarshal(raw, &item); err != nil {
+			t.Fatalf("unmarshal item: %v", err)
 		}
-		if err := json.Unmarshal(m, &msg); err != nil {
-			t.Fatalf("unmarshal message: %v", err)
-		}
-		if msg.Role == "tool" && msg.ToolCallID == "call_1" && strings.Contains(msg.Content, "exit code: 0") {
+		if item.Type == "function_call_output" && item.CallID == "call_1" && strings.Contains(item.Output, "exit code: 0") {
 			found = true
 		}
 	}
@@ -521,18 +519,16 @@ func TestRunTurnCancelsSilentToolCommitsContent(t *testing.T) {
 	}
 }
 
-// usageAfterFinishServer serves a plain reply in the OpenAI-compatible shape:
-// usage arrives in a separate chunk AFTER the finish_reason chunk (with empty
-// choices). When withDone is false it omits the [DONE] marker, exercising the
-// EOF path that Final() must flush.
+// usageAfterFinishServer serves a plain reply whose token totals ride on the
+// response.completed event, the way a Responses stream reports them. When
+// withDone is false it omits the end marker a gateway may still add.
 func usageAfterFinishServer(t *testing.T, withDone bool) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		fmt.Fprintf(w,
-			`data: {"choices":[{"delta":{"content":"done"},"finish_reason":null}]}`+"\n\n"+
-				`data: {"choices":[{"delta":{},"finish_reason":"stop"}]}`+"\n\n"+
-				`data: {"choices":[],"usage":{"prompt_tokens":2,"completion_tokens":3}}`+"\n\n")
+			`data: {"type":"response.output_text.delta","output_index":0,"delta":"done"}`+"\n\n"+
+				`data: {"type":"response.completed","response":{"usage":{"input_tokens":2,"output_tokens":3}}}`+"\n\n")
 		if withDone {
 			fmt.Fprint(w, `data: [DONE]`+"\n")
 		}
@@ -540,11 +536,9 @@ func usageAfterFinishServer(t *testing.T, withDone bool) *httptest.Server {
 	return srv
 }
 
-// TestRunTurnUsageArrivesAfterFinishReason reproduces the exact bug: because
-// the decoder stopped at finish_reason it never read the trailing usage chunk,
-// so usage came back 0/0. After the fix the loop keeps reading to [DONE] and
-// the separate usage chunk is captured.
-func TestRunTurnUsageArrivesAfterFinishReason(t *testing.T) {
+// TestRunTurnUsageFromCompletedEvent pins that the token totals the completed
+// event carries reach the turn's usage record.
+func TestRunTurnUsageFromCompletedEvent(t *testing.T) {
 	srv := usageAfterFinishServer(t, true)
 	defer srv.Close()
 
@@ -659,15 +653,14 @@ func TestRunTurnReportsFailedQuery(t *testing.T) {
 }
 
 // cacheSplitServer serves a plain reply whose usage reports a cache split:
-// prompt_tokens_details.cached_tokens = 7 of 10 prompt tokens were cache hits.
+// input_tokens_details.cached_tokens = 7 of 10 input tokens were cache hits.
 func cacheSplitServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		fmt.Fprintf(w,
-			`data: {"choices":[{"delta":{"content":"done"},"finish_reason":null}]}`+"\n\n"+
-				`data: {"choices":[{"delta":{},"finish_reason":"stop"}]}`+"\n\n"+
-				`data: {"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":3,"prompt_tokens_details":{"cached_tokens":7}}}`+"\n\n"+
+			`data: {"type":"response.output_text.delta","output_index":0,"delta":"done"}`+"\n\n"+
+				`data: {"type":"response.completed","response":{"usage":{"input_tokens":10,"output_tokens":3,"input_tokens_details":{"cached_tokens":7}}}}`+"\n\n"+
 				`data: [DONE]`+"\n")
 	}))
 	return srv
@@ -737,20 +730,20 @@ func TestRunTurnInjectsEnvironmentContext(t *testing.T) {
 	}
 	for i, msgs := range captured {
 		if len(msgs) < 3 {
-			t.Fatalf("request %d has %d messages, want >= 3 (style + context + history)", i, len(msgs))
+			t.Fatalf("request %d has %d items, want >= 3 (style + context + history)", i, len(msgs))
 		}
-		var style, env llm.ChatMessage
+		var style, env inputItem
 		if err := json.Unmarshal(msgs[0], &style); err != nil {
-			t.Fatalf("unmarshal first message: %v", err)
+			t.Fatalf("unmarshal first item: %v", err)
 		}
 		if err := json.Unmarshal(msgs[1], &env); err != nil {
-			t.Fatalf("unmarshal second message: %v", err)
+			t.Fatalf("unmarshal second item: %v", err)
 		}
-		if style.Role != "system" || !strings.Contains(style.Content, "plain language") {
-			t.Errorf("request %d first message = %+v, want the writing-style directive", i, style)
+		if style.Role != "system" || !strings.Contains(style.text(), "plain language") {
+			t.Errorf("request %d first item = %+v, want the writing-style directive", i, style)
 		}
-		if env.Role != "system" || !strings.Contains(env.Content, "/work") {
-			t.Errorf("request %d second message = %+v, want the injected system context", i, env)
+		if env.Role != "system" || !strings.Contains(env.text(), "/work") {
+			t.Errorf("request %d second item = %+v, want the injected system context", i, env)
 		}
 	}
 }
@@ -762,12 +755,12 @@ func TestRunTurnInjectsEnvironmentContext(t *testing.T) {
 // launched.
 func TestRunTurnStopsMidStreamCommitsPartial(t *testing.T) {
 	// The server streams one content delta then holds the connection open
-	// (no finish_reason, no [DONE]) until the client's request context is
-	// cancelled — exactly a reply the user interrupts.
+	// (no terminal event) until the client's request context is cancelled —
+	// exactly a reply the user interrupts.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		fl, _ := w.(http.Flusher)
-		fmt.Fprint(w, `data: {"choices":[{"delta":{"content":"The answer is "},"finish_reason":null}]}`+"\n\n")
+		fmt.Fprint(w, `data: {"type":"response.output_text.delta","output_index":0,"delta":"The answer is "}`+"\n\n")
 		if fl != nil {
 			fl.Flush()
 		}
@@ -1049,11 +1042,12 @@ func TestRunTurnStopsAfterToolWithNoPartial(t *testing.T) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		if call == 1 {
 			fmt.Fprint(w,
-				`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","type":"function","function":{"name":"shell","arguments":"{\"command\":\"echo hi\",\"porter_action_description\":\"test the shell\",\"porter_timeout_seconds\":30}"}}]},"finish_reason":"tool_calls"}]}`+"\n\n"+
+				`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","call_id":"c1","name":"shell"}}`+"\n\n"+
+					`data: {"type":"response.function_call_arguments.delta","output_index":0,"delta":"{\"command\":\"echo hi\",\"porter_action_description\":\"test the shell\",\"porter_timeout_seconds\":30}"}`+"\n\n"+
 					`data: [DONE]`+"\n")
 			return
 		}
-		// Second request: hold the stream open (no content, no finish_reason);
+		// Second request: hold the stream open (no content, no terminal event);
 		// the stop must end the turn here with nothing new committed.
 		fl, _ := w.(http.Flusher)
 		if fl != nil {
@@ -1157,24 +1151,22 @@ func recallLLMServer(t *testing.T) (*httptest.Server, func() ([][]json.RawMessag
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
-			Messages []json.RawMessage `json:"messages"`
-			Tools    []json.RawMessage `json:"tools"`
+			Input []json.RawMessage `json:"input"`
+			Tools []json.RawMessage `json:"tools"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			t.Errorf("decode request: %v", err)
 		}
 		mu.Lock()
-		captured = append(captured, req.Messages)
+		captured = append(captured, req.Input)
 		hadTools = append(hadTools, len(req.Tools) > 0)
 		names := make([]string, 0, len(req.Tools))
 		for _, t := range req.Tools {
 			var f struct {
-				Function struct {
-					Name string `json:"name"`
-				} `json:"function"`
+				Name string `json:"name"`
 			}
-			if err := json.Unmarshal(t, &f); err == nil && f.Function.Name != "" {
-				names = append(names, f.Function.Name)
+			if err := json.Unmarshal(t, &f); err == nil && f.Name != "" {
+				names = append(names, f.Name)
 			}
 		}
 		toolNames = append(toolNames, names)
@@ -1184,11 +1176,14 @@ func recallLLMServer(t *testing.T) (*httptest.Server, func() ([][]json.RawMessag
 		w.Header().Set("Content-Type", "text/event-stream")
 		switch n {
 		case 1:
-			fmt.Fprintf(w, `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"shell","arguments":"{\"command\":\"cat big\",\"porter_action_description\":\"read the big file\",\"porter_timeout_seconds\":30}"}}]},"finish_reason":"tool_calls"}]}`+"\n\n"+`data: [DONE]`+"\n")
+			fmt.Fprintf(w, `data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","call_id":"call_1","name":"shell"}}`+"\n\n"+
+				`data: {"type":"response.function_call_arguments.delta","output_index":0,"delta":"{\"command\":\"cat big\",\"porter_action_description\":\"read the big file\",\"porter_timeout_seconds\":30}"}`+"\n\n"+`data: [DONE]`+"\n")
 		case 2:
-			fmt.Fprintf(w, `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_2","type":"function","function":{"name":"recall_tool_output","arguments":"{\"call_id\":\"call_1\",\"offset\":%d,\"max_bytes\":1000,\"porter_action_description\":\"read more of the big output\",\"porter_timeout_seconds\":30}"}}]},"finish_reason":"tool_calls"}]}`+"\n\n"+`data: [DONE]`+"\n", recall.HeadBytes)
+			fmt.Fprintf(w, `data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","call_id":"call_2","name":"recall_tool_output"}}`+"\n\n"+
+				`data: {"type":"response.function_call_arguments.delta","output_index":0,"delta":"{\"call_id\":\"call_1\",\"offset\":%d,\"max_bytes\":1000,\"porter_action_description\":\"read more of the big output\",\"porter_timeout_seconds\":30}"}`+"\n\n"+`data: [DONE]`+"\n", recall.HeadBytes)
 		default:
-			fmt.Fprintf(w, `data: {"choices":[{"delta":{"content":"done"},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":3}}`+"\n\n"+`data: [DONE]`+"\n")
+			fmt.Fprintf(w, `data: {"type":"response.output_text.delta","output_index":0,"delta":"done"}`+"\n\n"+
+				`data: {"type":"response.completed","response":{"usage":{"input_tokens":2,"output_tokens":3}}}`+"\n\n"+`data: [DONE]`+"\n")
 		}
 	}))
 	return srv, func() ([][]json.RawMessage, []bool, [][]string) {
@@ -1204,20 +1199,45 @@ func bigContent() string {
 	return strings.Repeat("h", recall.HeadBytes) + strings.Repeat("m", 1000) + strings.Repeat("t", recall.TailBytes) + "\nexit code: 0\n"
 }
 
-// toolMsg extracts a role-"tool" message from a captured request by call id.
+// inputItem is one decoded request item, used by tests that inspect the body
+// porter sent: a message item (role plus content parts) or a tool item (a call
+// or its result).
+type inputItem struct {
+	Type    string `json:"type"`
+	Role    string `json:"role"`
+	CallID  string `json:"call_id"`
+	Output  string `json:"output"`
+	Content []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	} `json:"content"`
+}
+
+// text joins a message item's text parts.
+func (i inputItem) text() string {
+	var b strings.Builder
+	for _, p := range i.Content {
+		if p.Type == "input_text" || p.Type == "output_text" {
+			b.WriteString(p.Text)
+		}
+	}
+	return b.String()
+}
+
+// toolMsg extracts a tool result item from a captured request by call id.
 func toolMsg(t *testing.T, msgs []json.RawMessage, callID string) (string, bool) {
 	t.Helper()
 	for _, raw := range msgs {
-		var m struct {
-			Role       string `json:"role"`
-			ToolCallID string `json:"tool_call_id"`
-			Content    string `json:"content"`
+		var item struct {
+			Type   string `json:"type"`
+			CallID string `json:"call_id"`
+			Output string `json:"output"`
 		}
-		if err := json.Unmarshal(raw, &m); err != nil {
-			t.Fatalf("unmarshal captured message: %v", err)
+		if err := json.Unmarshal(raw, &item); err != nil {
+			t.Fatalf("unmarshal captured item: %v", err)
 		}
-		if m.Role == "tool" && m.ToolCallID == callID {
-			return m.Content, true
+		if item.Type == "function_call_output" && item.CallID == callID {
+			return item.Output, true
 		}
 	}
 	return "", false
@@ -1387,7 +1407,7 @@ func TestRunTurnReadOutputUnknownCallID(t *testing.T) {
 	var reqCount int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
-			Messages []json.RawMessage `json:"messages"`
+			Input []json.RawMessage `json:"input"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&req)
 		mu.Lock()
@@ -1397,11 +1417,13 @@ func TestRunTurnReadOutputUnknownCallID(t *testing.T) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		switch n {
 		case 1:
-			fmt.Fprintf(w, `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"shell","arguments":"{\"command\":\"echo hi\",\"porter_action_description\":\"test the shell\",\"porter_timeout_seconds\":30}"}}]},"finish_reason":"tool_calls"}]}`+"\n\n"+`data: [DONE]`+"\n")
+			fmt.Fprintf(w, `data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","call_id":"call_1","name":"shell"}}`+"\n\n"+
+				`data: {"type":"response.function_call_arguments.delta","output_index":0,"delta":"{\"command\":\"echo hi\",\"porter_action_description\":\"test the shell\",\"porter_timeout_seconds\":30}"}`+"\n\n"+`data: [DONE]`+"\n")
 		case 2:
-			fmt.Fprintf(w, `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_2","type":"function","function":{"name":"recall_tool_output","arguments":"{\"call_id\":\"nope\",\"porter_action_description\":\"load a bogus output\",\"porter_timeout_seconds\":30}"}}]},"finish_reason":"tool_calls"}]}`+"\n\n"+`data: [DONE]`+"\n")
+			fmt.Fprintf(w, `data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","call_id":"call_2","name":"recall_tool_output"}}`+"\n\n"+
+				`data: {"type":"response.function_call_arguments.delta","output_index":0,"delta":"{\"call_id\":\"nope\",\"porter_action_description\":\"load a bogus output\",\"porter_timeout_seconds\":30}"}`+"\n\n"+`data: [DONE]`+"\n")
 		default:
-			fmt.Fprintf(w, `data: {"choices":[{"delta":{"content":"done"},"finish_reason":"stop"}]}`+"\n\n"+`data: [DONE]`+"\n")
+			fmt.Fprintf(w, `data: {"type":"response.output_text.delta","output_index":0,"delta":"done"}`+"\n\n"+`data: [DONE]`+"\n")
 		}
 	}))
 	defer srv.Close()
@@ -1435,34 +1457,33 @@ func TestRunTurnReadOutputUnknownCallID(t *testing.T) {
 func TestRunTurnFlagsRepeatedIdenticalFailure(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
-			Messages []json.RawMessage `json:"messages"`
+			Input []json.RawMessage `json:"input"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&req)
 		w.Header().Set("Content-Type", "text/event-stream")
-		// Count how many assistant tool-calls the model has already made by
-		// scanning the messages it received.
+		// Count how many tool calls the model has already made by scanning the
+		// items it received.
 		prior := 0
-		for _, m := range req.Messages {
-			var msg struct {
-				Role      string `json:"role"`
-				ToolCalls []struct {
-					ID string `json:"id"`
-				} `json:"tool_calls"`
+		for _, item := range req.Input {
+			var it struct {
+				Type string `json:"type"`
 			}
-			_ = json.Unmarshal(m, &msg)
-			if msg.Role == "assistant" {
-				prior += len(msg.ToolCalls)
+			_ = json.Unmarshal(item, &it)
+			if it.Type == "function_call" {
+				prior++
 			}
 		}
 		switch prior {
 		case 0:
 			// First turn: call shell with an empty command, which fails to start.
-			fmt.Fprintf(w, `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"shell","arguments":"{\"command\":\"\",\"porter_action_description\":\"run an empty command on purpose\",\"porter_timeout_seconds\":30}"}}]},"finish_reason":"tool_calls"}]}`+"\n\n"+`data: [DONE]`+"\n")
+			fmt.Fprintf(w, `data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","call_id":"call_1","name":"shell"}}`+"\n\n"+
+				`data: {"type":"response.function_call_arguments.delta","output_index":0,"delta":"{\"command\":\"\",\"porter_action_description\":\"run an empty command on purpose\",\"porter_timeout_seconds\":30}"}`+"\n\n"+`data: [DONE]`+"\n")
 		case 1:
 			// Second turn: the model re-issues the identical call.
-			fmt.Fprintf(w, `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_2","type":"function","function":{"name":"shell","arguments":"{\"command\":\"\",\"porter_action_description\":\"run an empty command on purpose\",\"porter_timeout_seconds\":30}"}}]},"finish_reason":"tool_calls"}]}`+"\n\n"+`data: [DONE]`+"\n")
+			fmt.Fprintf(w, `data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","call_id":"call_2","name":"shell"}}`+"\n\n"+
+				`data: {"type":"response.function_call_arguments.delta","output_index":0,"delta":"{\"command\":\"\",\"porter_action_description\":\"run an empty command on purpose\",\"porter_timeout_seconds\":30}"}`+"\n\n"+`data: [DONE]`+"\n")
 		default:
-			fmt.Fprintf(w, `data: {"choices":[{"delta":{"content":"done"},"finish_reason":"stop"}]}`+"\n\n"+`data: [DONE]`+"\n")
+			fmt.Fprintf(w, `data: {"type":"response.output_text.delta","output_index":0,"delta":"done"}`+"\n\n"+`data: [DONE]`+"\n")
 		}
 	}))
 	defer srv.Close()
@@ -1510,29 +1531,27 @@ func TestRunTurnFlagsRepeatedIdenticalFailure(t *testing.T) {
 func TestRunTurnBlocksRepeatedIdenticalFailure(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
-			Messages []json.RawMessage `json:"messages"`
+			Input []json.RawMessage `json:"input"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&req)
 		w.Header().Set("Content-Type", "text/event-stream")
 		prior := 0
-		for _, m := range req.Messages {
-			var msg struct {
-				Role      string `json:"role"`
-				ToolCalls []struct {
-					ID string `json:"id"`
-				} `json:"tool_calls"`
+		for _, item := range req.Input {
+			var it struct {
+				Type string `json:"type"`
 			}
-			_ = json.Unmarshal(m, &msg)
-			if msg.Role == "assistant" {
-				prior += len(msg.ToolCalls)
+			_ = json.Unmarshal(item, &it)
+			if it.Type == "function_call" {
+				prior++
 			}
 		}
 		switch {
 		case prior < 4:
 			callID := fmt.Sprintf("call_%d", prior+1)
-			fmt.Fprintf(w, `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":%q,"type":"function","function":{"name":"shell","arguments":"{\"command\":\"\",\"porter_action_description\":\"run an empty command on purpose\",\"porter_timeout_seconds\":30}"}}]},"finish_reason":"tool_calls"}]}`+"\n\n"+`data: [DONE]`+"\n", callID)
+			fmt.Fprintf(w, `data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","call_id":%q,"name":"shell"}}`+"\n\n"+
+				`data: {"type":"response.function_call_arguments.delta","output_index":0,"delta":"{\"command\":\"\",\"porter_action_description\":\"run an empty command on purpose\",\"porter_timeout_seconds\":30}"}`+"\n\n"+`data: [DONE]`+"\n", callID)
 		default:
-			fmt.Fprintf(w, `data: {"choices":[{"delta":{"content":"done"},"finish_reason":"stop"}]}`+"\n\n"+`data: [DONE]`+"\n")
+			fmt.Fprintf(w, `data: {"type":"response.output_text.delta","output_index":0,"delta":"done"}`+"\n\n"+`data: [DONE]`+"\n")
 		}
 	}))
 	defer srv.Close()
@@ -1579,14 +1598,8 @@ func repliedHeaderServer(t *testing.T, chunks ...string) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		for i, c := range chunks {
-			finish := ""
-			if i == len(chunks)-1 {
-				finish = `,"finish_reason":"stop"`
-			} else {
-				finish = `,"finish_reason":null`
-			}
-			fmt.Fprintf(w, `data: {"choices":[{"delta":{"content":%s}%s}]}`+"\n\n", jsonStr(c), finish)
+		for _, c := range chunks {
+			fmt.Fprintf(w, `data: {"type":"response.output_text.delta","output_index":0,"delta":%s}`+"\n\n", jsonStr(c))
 		}
 		fmt.Fprint(w, `data: [DONE]`+"\n")
 	}))
@@ -1706,31 +1719,33 @@ func contractlessServer(t *testing.T) *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		var req struct {
-			Messages []json.RawMessage `json:"messages"`
+			Input []json.RawMessage `json:"input"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			t.Errorf("decode request: %v", err)
 		}
 		// Count how many turns this stream has served by inspecting the last
-		// message's role.
+		// item's type.
 		last := ""
-		if len(req.Messages) > 0 {
-			var m struct {
-				Role string `json:"role"`
+		if len(req.Input) > 0 {
+			var it struct {
+				Type string `json:"type"`
 			}
-			_ = json.Unmarshal(req.Messages[len(req.Messages)-1], &m)
-			last = m.Role
+			_ = json.Unmarshal(req.Input[len(req.Input)-1], &it)
+			last = it.Type
 		}
-		if last != "tool" {
+		if last != "function_call_output" {
 			// First request: ask for a contract-less tool call.
 			fmt.Fprintf(w,
-				`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"shell","arguments":"{\"command\":\"echo hi\"}"}}]},"finish_reason":"tool_calls"}]}`+"\n\n"+
+				`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","call_id":"call_1","name":"shell"}}`+"\n\n"+
+					`data: {"type":"response.function_call_arguments.delta","output_index":0,"delta":"{\"command\":\"echo hi\"}"}`+"\n\n"+
 					`data: [DONE]`+"\n")
 			return
 		}
 		// Second request: the rejection was fed back; reply plainly.
 		fmt.Fprintf(w,
-			`data: {"choices":[{"delta":{"content":"done"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`+"\n\n"+
+			`data: {"type":"response.output_text.delta","output_index":0,"delta":"done"}`+"\n\n"+
+				`data: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":1}}}`+"\n\n"+
 				`data: [DONE]`+"\n")
 	}))
 }
@@ -1785,27 +1800,29 @@ func timeoutServer(t *testing.T) *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		var req struct {
-			Messages []json.RawMessage `json:"messages"`
+			Input []json.RawMessage `json:"input"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			t.Errorf("decode request: %v", err)
 		}
 		last := ""
-		if len(req.Messages) > 0 {
-			var m struct {
-				Role string `json:"role"`
+		if len(req.Input) > 0 {
+			var it struct {
+				Type string `json:"type"`
 			}
-			_ = json.Unmarshal(req.Messages[len(req.Messages)-1], &m)
-			last = m.Role
+			_ = json.Unmarshal(req.Input[len(req.Input)-1], &it)
+			last = it.Type
 		}
-		if last != "tool" {
+		if last != "function_call_output" {
 			fmt.Fprintf(w,
-				`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"shell","arguments":"{\"command\":\"sleep 30\",\"porter_action_description\":\"time out on purpose\",\"porter_timeout_seconds\":1}"}}]},"finish_reason":"tool_calls"}]}`+"\n\n"+
+				`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","call_id":"call_1","name":"shell"}}`+"\n\n"+
+					`data: {"type":"response.function_call_arguments.delta","output_index":0,"delta":"{\"command\":\"sleep 30\",\"porter_action_description\":\"time out on purpose\",\"porter_timeout_seconds\":1}"}`+"\n\n"+
 					`data: [DONE]`+"\n")
 			return
 		}
 		fmt.Fprintf(w,
-			`data: {"choices":[{"delta":{"content":"done"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`+"\n\n"+
+			`data: {"type":"response.output_text.delta","output_index":0,"delta":"done"}`+"\n\n"+
+				`data: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":1}}}`+"\n\n"+
 				`data: [DONE]`+"\n")
 	}))
 }

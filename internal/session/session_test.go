@@ -340,7 +340,8 @@ func TestEnqueueRunsTurn(t *testing.T) {
 	llmSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		fmt.Fprint(w,
-			`data: {"choices":[{"delta":{"content":"done"},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":3}}`+"\n\n"+
+			`data: {"type":"response.output_text.delta","output_index":0,"delta":"done"}`+"\n\n"+
+				`data: {"type":"response.completed","response":{"usage":{"input_tokens":2,"output_tokens":3}}}`+"\n\n"+
 				`data: [DONE]`+"\n")
 	}))
 	defer llmSrv.Close()
@@ -842,7 +843,7 @@ func TestRemoteProviderDefsAndEnvironmentFromContext(t *testing.T) {
 	id = s.RegisterExec(make(chan api.ExecRequest, 1), "", "", "")
 	p = s.provider()
 	defs := p.Defs()
-	if len(defs) != 6 || defs[len(defs)-1].Function.Name != "load_skill" {
+	if len(defs) != 6 || defs[len(defs)-1].Name != "load_skill" {
 		t.Errorf("Defs with skills = %+v, want base tool set + load_skill", defs)
 	}
 	env := p.Environment()
@@ -1353,13 +1354,15 @@ func TestProviderNoticeDeferredToTurnBoundary(t *testing.T) {
 		if n == 1 {
 			// First request: the model asks for a shell tool call.
 			fmt.Fprint(w,
-				`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"shell","arguments":"{\"command\":\"echo hi\",\"porter_action_description\":\"say hi for the test\",\"porter_timeout_seconds\":30}"}}]},"finish_reason":"tool_calls"}]}`+"\n\n"+
+				`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","call_id":"call_1","name":"shell"}}`+"\n\n"+
+					`data: {"type":"response.function_call_arguments.delta","output_index":0,"delta":"{\"command\":\"echo hi\",\"porter_action_description\":\"say hi for the test\",\"porter_timeout_seconds\":30}"}`+"\n\n"+
 					`data: [DONE]`+"\n")
 			return
 		}
 		// Second request: plain reply, no more tools.
 		fmt.Fprint(w,
-			`data: {"choices":[{"delta":{"content":"done"},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":3}}`+"\n\n"+
+			`data: {"type":"response.output_text.delta","output_index":0,"delta":"done"}`+"\n\n"+
+				`data: {"type":"response.completed","response":{"usage":{"input_tokens":2,"output_tokens":3}}}`+"\n\n"+
 				`data: [DONE]`+"\n")
 	}))
 	defer llmSrv.Close()
@@ -1479,7 +1482,7 @@ func TestProviderExposesRemoteMCPServers(t *testing.T) {
 	// Defs include the MCP tools (shell + FindMCP + CallMCP).
 	names := map[string]bool{}
 	for _, d := range p.Defs() {
-		names[d.Function.Name] = true
+		names[d.Name] = true
 	}
 	for _, want := range []string{"shell", mcp.FindTool, mcp.CallTool} {
 		if !names[want] {
@@ -1508,7 +1511,7 @@ func longReply() string {
 	return strings.Repeat("This is a perfectly ordinary sentence with more than enough words to qualify. ", 6)
 }
 
-// llmStub returns a streaming Chat Completions server that replies with long
+// llmStub returns a streaming Responses server that replies with long
 // on every request. The turn and the humanize pass share it, so the rewritten
 // variant equals the original reply.
 func llmStub(t *testing.T, long string) *httptest.Server {
@@ -1516,7 +1519,8 @@ func llmStub(t *testing.T, long string) *httptest.Server {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		fmt.Fprintf(w,
-			`data: {"choices":[{"delta":{"content":%q},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":3}}`+"\n\n"+
+			`data: {"type":"response.output_text.delta","output_index":0,"delta":%q}`+"\n\n"+
+				`data: {"type":"response.completed","response":{"usage":{"input_tokens":2,"output_tokens":3}}}`+"\n\n"+
 				`data: [DONE]`+"\n", long)
 	}))
 	t.Cleanup(srv.Close)
@@ -1690,7 +1694,7 @@ func TestHumanizeSkipsShortReplies(t *testing.T) {
 func toolNames(defs []llm.Tool) []string {
 	out := make([]string, len(defs))
 	for i, d := range defs {
-		out[i] = d.Function.Name
+		out[i] = d.Name
 	}
 	return out
 }

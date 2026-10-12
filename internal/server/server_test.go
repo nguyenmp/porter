@@ -30,11 +30,40 @@ import (
 )
 
 // plainLLM serves an SSE reply "hi" with usage 1/2 for every request.
+// inputItem is one decoded LLM request item, for tests that inspect the body
+// porter sent: a message item (role plus content parts) or a tool item (a call
+// or its result).
+type inputItem struct {
+	Type    string      `json:"type"`
+	Role    string      `json:"role"`
+	CallID  string      `json:"call_id"`
+	Output  string      `json:"output"`
+	Content []inputPart `json:"content"`
+}
+
+// inputPart is one content part of a message item.
+type inputPart struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
+}
+
+// text joins a message item's text parts.
+func (i inputItem) text() string {
+	var b strings.Builder
+	for _, p := range i.Content {
+		if p.Type == "input_text" || p.Type == "output_text" {
+			b.WriteString(p.Text)
+		}
+	}
+	return b.String()
+}
+
 func plainLLM() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		fmt.Fprint(w,
-			`data: {"choices":[{"delta":{"content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":2}}`+"\n\n"+
+			`data: {"type":"response.output_text.delta","output_index":0,"delta":"hi"}`+"\n\n"+
+				`data: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":2}}}`+"\n\n"+
 				`data: [DONE]`+"\n")
 	}
 }
@@ -174,12 +203,14 @@ func toolThenReplyLLM() http.HandlerFunc {
 		mu.Unlock()
 		if call == 1 {
 			fmt.Fprint(w,
-				`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","type":"function","function":{"name":"shell","arguments":"{\"command\":\"echo hi\",\"porter_action_description\":\"say hi for the test\",\"porter_timeout_seconds\":30}"}}]},"finish_reason":"tool_calls"}]}`+"\n\n"+
+				`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","call_id":"c1","name":"shell"}}`+"\n\n"+
+					`data: {"type":"response.function_call_arguments.delta","output_index":0,"delta":"{\"command\":\"echo hi\",\"porter_action_description\":\"say hi for the test\",\"porter_timeout_seconds\":30}"}`+"\n\n"+
 					`data: [DONE]`+"\n")
 			return
 		}
 		fmt.Fprint(w,
-			`data: {"choices":[{"delta":{"content":"done"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`+"\n\n"+
+			`data: {"type":"response.output_text.delta","output_index":0,"delta":"done"}`+"\n\n"+
+				`data: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":1}}}`+"\n\n"+
 				`data: [DONE]`+"\n")
 	}
 }
@@ -321,11 +352,12 @@ func slowStreamLLM() http.HandlerFunc {
 				f.Flush()
 			}
 		}
-		write(`data: {"choices":[{"delta":{"content":"Hel"},"finish_reason":null}]}` + "\n\n")
+		write(`data: {"type":"response.output_text.delta","output_index":0,"delta":"Hel"}` + "\n\n")
 		time.Sleep(300 * time.Millisecond)
-		write(`data: {"choices":[{"delta":{"content":"lo"},"finish_reason":null}]}` + "\n\n")
+		write(`data: {"type":"response.output_text.delta","output_index":0,"delta":"lo"}` + "\n\n")
 		time.Sleep(300 * time.Millisecond)
-		write(`data: {"choices":[{"delta":{"content":""},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":2}}` + "\n\n")
+		write(`data: {"type":"response.output_text.delta","output_index":0,"delta":""}` + "\n\n" +
+			`data: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":2}}}` + "\n\n")
 		write(`data: [DONE]` + "\n")
 	}
 }
@@ -1410,8 +1442,9 @@ func TestStreamReplaysFromSince(t *testing.T) {
 func markdownLLM() http.HandlerFunc {
 	fence := "```go\ncode\n```"
 	reply := "**bold**\n\n# Heading\n\n- item\n\n" + fence
-	chunk1 := fmt.Sprintf(`data: {"choices":[{"delta":{"content":%q}}]}`+"\n\n", reply[:18])
-	chunk2 := fmt.Sprintf(`data: {"choices":[{"delta":{"content":%q,"finish_reason":"stop"}}],"usage":{"prompt_tokens":1,"completion_tokens":9}}`+"\n\n", reply[18:])
+	chunk1 := fmt.Sprintf(`data: {"type":"response.output_text.delta","output_index":0,"delta":%q}`+"\n\n", reply[:18])
+	chunk2 := fmt.Sprintf(`data: {"type":"response.output_text.delta","output_index":0,"delta":%q}`+"\n\n"+
+		`data: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":9}}}`+"\n\n", reply[18:])
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		fmt.Fprint(w, chunk1)
@@ -1521,16 +1554,17 @@ func TestStreamSSECarriesMessageHTML(t *testing.T) {
 	}
 }
 
-// reasoningLLM streams a reply split between reasoning_content and content, the
-// shape a reasoning-capable provider emits, so a test can verify reasoning is
-// persisted and rendered on reload exactly as it streamed live.
+// reasoningLLM streams a reply split between a reasoning stream and reply text,
+// the shape a reasoning-capable provider emits, so a test can verify reasoning
+// is persisted and rendered on reload exactly as it streamed live.
 func reasoningLLM() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		fmt.Fprint(w,
-			`data: {"choices":[{"delta":{"reasoning_content":"let me think\nstep one"},"finish_reason":null}]}`+"\n\n"+
-				`data: {"choices":[{"delta":{"reasoning_content":"\nstep two"},"finish_reason":null}]}`+"\n\n"+
-				`data: {"choices":[{"delta":{"content":"The answer"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":2}}`+"\n\n"+
+			`data: {"type":"response.reasoning_summary_text.delta","output_index":0,"delta":"let me think\nstep one"}`+"\n\n"+
+				`data: {"type":"response.reasoning_summary_text.delta","output_index":0,"delta":"\nstep two"}`+"\n\n"+
+				`data: {"type":"response.output_text.delta","output_index":0,"delta":"The answer"}`+"\n\n"+
+				`data: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":2}}}`+"\n\n"+
 				`data: [DONE]`+"\n")
 	}
 }
@@ -1800,7 +1834,8 @@ func TestCancelStopsRunningTool(t *testing.T) {
 		mu.Unlock()
 		if call == 1 {
 			fmt.Fprint(w,
-				`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","type":"function","function":{"name":"shell","arguments":"{\"command\":\"sleep 60\",\"porter_action_description\":\"sleep so the test can act\",\"porter_timeout_seconds\":30}"}}]},"finish_reason":"tool_calls"}]}`+"\n\n"+
+				`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","call_id":"c1","name":"shell"}}`+"\n\n"+
+					`data: {"type":"response.function_call_arguments.delta","output_index":0,"delta":"{\"command\":\"sleep 60\",\"porter_action_description\":\"sleep so the test can act\",\"porter_timeout_seconds\":30}"}`+"\n\n"+
 					`data: [DONE]`+"\n")
 			return
 		}
@@ -1808,7 +1843,8 @@ func TestCancelStopsRunningTool(t *testing.T) {
 		// partial result was fed back instead of stopping.
 		t.Errorf("model was called again after cancellation")
 		fmt.Fprint(w,
-			`data: {"choices":[{"delta":{"content":"unexpected"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`+"\n\n"+
+			`data: {"type":"response.output_text.delta","output_index":0,"delta":"unexpected"}`+"\n\n"+
+				`data: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":1}}}`+"\n\n"+
 				`data: [DONE]`+"\n")
 	}))
 	defer exec.Command("pkill", "-f", "^sleep 60$").Run() // tidy any stray survivor
@@ -2076,22 +2112,22 @@ func TestCancelSilentToolThenRequeue(t *testing.T) {
 	var mu sync.Mutex
 	n := 0
 	srv := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Enforce the provider contract: every role-"tool" message must carry
-		// content. This is what real providers (deepseek via litellm) reject
-		// with a 400 when it is missing.
+		// Enforce the provider contract: every tool result must carry its
+		// output. This is what real providers reject with a 400 when the field
+		// is missing.
 		var req struct {
-			Messages []struct {
-				Role    string  `json:"role"`
-				Content *string `json:"content"`
-			} `json:"messages"`
+			Input []struct {
+				Type   string  `json:"type"`
+				Output *string `json:"output"`
+			} `json:"input"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			t.Errorf("decode request: %v", err)
 		}
-		for _, m := range req.Messages {
-			if m.Role == "tool" && (m.Content == nil) {
-				t.Errorf("provider rejected: tool message missing content field")
-				http.Error(w, `{"error":{"message":"missing field content"}}`, http.StatusBadRequest)
+		for _, item := range req.Input {
+			if item.Type == "function_call_output" && item.Output == nil {
+				t.Errorf("provider rejected: tool result missing its output field")
+				http.Error(w, `{"error":{"message":"missing field output"}}`, http.StatusBadRequest)
 				return
 			}
 		}
@@ -2103,12 +2139,14 @@ func TestCancelSilentToolThenRequeue(t *testing.T) {
 		mu.Unlock()
 		if call == 1 {
 			fmt.Fprint(w,
-				`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","type":"function","function":{"name":"shell","arguments":"{\"command\":\"sleep 60\",\"porter_action_description\":\"sleep so the test can act\",\"porter_timeout_seconds\":30}"}}]},"finish_reason":"tool_calls"}]}`+"\n\n"+
+				`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","call_id":"c1","name":"shell"}}`+"\n\n"+
+					`data: {"type":"response.function_call_arguments.delta","output_index":0,"delta":"{\"command\":\"sleep 60\",\"porter_action_description\":\"sleep so the test can act\",\"porter_timeout_seconds\":30}"}`+"\n\n"+
 					`data: [DONE]`+"\n")
 			return
 		}
 		fmt.Fprint(w,
-			`data: {"choices":[{"delta":{"content":"done"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`+"\n\n"+
+			`data: {"type":"response.output_text.delta","output_index":0,"delta":"done"}`+"\n\n"+
+				`data: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":1}}}`+"\n\n"+
 				`data: [DONE]`+"\n")
 	}))
 	defer exec.Command("pkill", "-f", "^sleep 60$").Run() // tidy any stray survivor
@@ -2389,7 +2427,8 @@ func cacheSplitLLM() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		fmt.Fprint(w,
-			`data: {"choices":[{"delta":{"content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":3,"prompt_tokens_details":{"cached_tokens":7}}}`+"\n\n"+
+			`data: {"type":"response.output_text.delta","output_index":0,"delta":"hi"}`+"\n\n"+
+				`data: {"type":"response.completed","response":{"usage":{"input_tokens":10,"output_tokens":3,"input_tokens_details":{"cached_tokens":7}}}}`+"\n\n"+
 				`data: [DONE]`+"\n")
 	}
 }
@@ -2642,17 +2681,18 @@ func TestExecContextAndStatus(t *testing.T) {
 func capturingLLM(captured *[][]json.RawMessage, toolsSeen *[]bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
-			Messages []json.RawMessage `json:"messages"`
-			Tools    []json.RawMessage `json:"tools"`
+			Input []json.RawMessage `json:"input"`
+			Tools []json.RawMessage `json:"tools"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			return
 		}
-		*captured = append(*captured, req.Messages)
+		*captured = append(*captured, req.Input)
 		*toolsSeen = append(*toolsSeen, len(req.Tools) > 0)
 		w.Header().Set("Content-Type", "text/event-stream")
 		fmt.Fprint(w,
-			`data: {"choices":[{"delta":{"content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":2}}`+"\n\n"+
+			`data: {"type":"response.output_text.delta","output_index":0,"delta":"hi"}`+"\n\n"+
+				`data: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":2}}}`+"\n\n"+
 				`data: [DONE]`+"\n")
 	}
 }
@@ -2710,22 +2750,24 @@ func TestExecProviderContextInjectedIntoModel(t *testing.T) {
 	}
 	// Every request leads with the standing plain-language style, then the
 	// execution provider's injected context.
-	var style, first llm.ChatMessage
+	var style, first inputItem
 	if err := json.Unmarshal(captured[0][0], &style); err != nil {
-		t.Fatalf("unmarshal first message: %v", err)
+		t.Fatalf("unmarshal first item: %v", err)
 	}
 	if err := json.Unmarshal(captured[0][1], &first); err != nil {
-		t.Fatalf("unmarshal second message: %v", err)
+		t.Fatalf("unmarshal second item: %v", err)
 	}
-	if style.Role != "system" || !strings.Contains(style.Content, "plain language") {
-		t.Errorf("first message = %+v, want the writing-style directive", style)
+	styleText := style.text()
+	firstText := first.text()
+	if style.Role != "system" || !strings.Contains(styleText, "plain language") {
+		t.Errorf("first item = %+v, want the writing-style directive", style)
 	}
 	if first.Role != "system" {
-		t.Errorf("second message role = %q, want system (injected context)", first.Role)
+		t.Errorf("second item role = %q, want system (injected context)", first.Role)
 	}
 	for _, want := range []string{"/work", "README.md", "my-skill: does things"} {
-		if !strings.Contains(first.Content, want) {
-			t.Errorf("injected context missing %q:\n%s", want, first.Content)
+		if !strings.Contains(firstText, want) {
+			t.Errorf("injected context missing %q:\n%s", want, firstText)
 		}
 	}
 	if !toolsSeen[0] {
@@ -2797,9 +2839,9 @@ func TestStopStopsRunningTurn(t *testing.T) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		if call == 1 {
 			// Stream a partial reply, then hold the connection open (no
-			// finish_reason, no [DONE]) until the stop cancels it.
+			// terminal event) until the stop cancels it.
 			fl, _ := w.(http.Flusher)
-			fmt.Fprint(w, `data: {"choices":[{"delta":{"content":"The answer is "},"finish_reason":null}]}`+"\n\n")
+			fmt.Fprint(w, `data: {"type":"response.output_text.delta","output_index":0,"delta":"The answer is "}`+"\n\n")
 			if fl != nil {
 				fl.Flush()
 			}
@@ -2810,7 +2852,8 @@ func TestStopStopsRunningTurn(t *testing.T) {
 		// partial was fed back instead of stopping.
 		t.Errorf("model was called again after stop")
 		fmt.Fprint(w,
-			`data: {"choices":[{"delta":{"content":"unexpected"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`+"\n\n"+
+			`data: {"type":"response.output_text.delta","output_index":0,"delta":"unexpected"}`+"\n\n"+
+				`data: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":1}}}`+"\n\n"+
 				`data: [DONE]`+"\n")
 	}))
 
@@ -2939,7 +2982,7 @@ func TestStoppedTurnResumesOnNextMessage(t *testing.T) {
 		if call == 1 {
 			// First turn: stream a partial reply, then hold until stopped.
 			fl, _ := w.(http.Flusher)
-			fmt.Fprint(w, `data: {"choices":[{"delta":{"content":"The answer is "},"finish_reason":null}]}`+"\n\n")
+			fmt.Fprint(w, `data: {"type":"response.output_text.delta","output_index":0,"delta":"The answer is "}`+"\n\n")
 			if fl != nil {
 				fl.Flush()
 			}
@@ -2948,7 +2991,8 @@ func TestStoppedTurnResumesOnNextMessage(t *testing.T) {
 		}
 		// Second turn (the resume): reply fully.
 		fmt.Fprint(w,
-			`data: {"choices":[{"delta":{"content":"The answer is 42."},"finish_reason":"stop"}],"usage":{"prompt_tokens":4,"completion_tokens":5}}`+"\n\n"+
+			`data: {"type":"response.output_text.delta","output_index":0,"delta":"The answer is 42."}`+"\n\n"+
+				`data: {"type":"response.completed","response":{"usage":{"input_tokens":4,"output_tokens":5}}}`+"\n\n"+
 				`data: [DONE]`+"\n")
 	}))
 
@@ -3018,22 +3062,31 @@ func TestStoppedTurnResumesOnNextMessage(t *testing.T) {
 	// The resumed request's history carries the committed partial with the
 	// interrupted marker, so the model knows the previous reply was cut off.
 	var req struct {
-		Messages []struct {
+		Input []struct {
+			Type    string `json:"type"`
 			Role    string `json:"role"`
-			Content string `json:"content"`
-		} `json:"messages"`
+			Content []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"input"`
 	}
 	if err := json.Unmarshal(bodies[1], &req); err != nil {
 		t.Fatalf("decode resumed request: %v", err)
 	}
 	found := false
-	for _, m := range req.Messages {
-		if m.Role == "assistant" && strings.Contains(m.Content, "... [interrupted]") {
-			found = true
+	for _, item := range req.Input {
+		if item.Role != "assistant" {
+			continue
+		}
+		for _, part := range item.Content {
+			if strings.Contains(part.Text, "... [interrupted]") {
+				found = true
+			}
 		}
 	}
 	if !found {
-		t.Errorf("resumed request missing the interrupted partial; messages = %+v", req.Messages)
+		t.Errorf("resumed request missing the interrupted partial; input = %+v", req.Input)
 	}
 }
 
@@ -3118,15 +3171,18 @@ func mcpThenReplyLLM() http.HandlerFunc {
 		switch call {
 		case 1:
 			fmt.Fprint(w,
-				`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","type":"function","function":{"name":"FindMCP","arguments":"{\"server_name\":\"mock\",\"porter_action_description\":\"list the mock server\",\"porter_timeout_seconds\":30}"}}]},"finish_reason":"tool_calls"}]}`+"\n\n"+
+				`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","call_id":"c1","name":"FindMCP"}}`+"\n\n"+
+					`data: {"type":"response.function_call_arguments.delta","output_index":0,"delta":"{\"server_name\":\"mock\",\"porter_action_description\":\"list the mock server\",\"porter_timeout_seconds\":30}"}`+"\n\n"+
 					`data: [DONE]`+"\n")
 		case 2:
 			fmt.Fprint(w,
-				`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c2","type":"function","function":{"name":"CallMCP","arguments":"{\"server_name\":\"mock\",\"tool_name\":\"echo\",\"args\":{\"text\":\"hi\"},\"porter_action_description\":\"echo hi on the mock server\",\"porter_timeout_seconds\":30}"}}]},"finish_reason":"tool_calls"}]}`+"\n\n"+
+				`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","call_id":"c2","name":"CallMCP"}}`+"\n\n"+
+					`data: {"type":"response.function_call_arguments.delta","output_index":0,"delta":"{\"server_name\":\"mock\",\"tool_name\":\"echo\",\"args\":{\"text\":\"hi\"},\"porter_action_description\":\"echo hi on the mock server\",\"porter_timeout_seconds\":30}"}`+"\n\n"+
 					`data: [DONE]`+"\n")
 		default:
 			fmt.Fprint(w,
-				`data: {"choices":[{"delta":{"content":"done"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`+"\n\n"+
+				`data: {"type":"response.output_text.delta","output_index":0,"delta":"done"}`+"\n\n"+
+					`data: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":1}}}`+"\n\n"+
 					`data: [DONE]`+"\n")
 		}
 	}
@@ -3184,12 +3240,14 @@ func TestTruncationEndToEnd(t *testing.T) {
 		mu.Unlock()
 		if call == 1 {
 			io.WriteString(w,
-				`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","type":"function","function":{"name":"shell","arguments":"{\"command\":\"awk 'BEGIN{for(i=0;i<3000;i++) printf \\\"line %d\\\\n\\\", i}'\",\"porter_action_description\":\"print many lines for the truncation test\",\"porter_timeout_seconds\":30}"}}]},"finish_reason":"tool_calls"}]}`+"\n\n"+
+				`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","call_id":"c1","name":"shell"}}`+"\n\n"+
+					`data: {"type":"response.function_call_arguments.delta","output_index":0,"delta":"{\"command\":\"awk 'BEGIN{for(i=0;i<3000;i++) printf \\\"line %d\\\\n\\\", i}'\",\"porter_action_description\":\"print many lines for the truncation test\",\"porter_timeout_seconds\":30}"}`+"\n\n"+
 					`data: [DONE]`+"\n")
 			return
 		}
 		io.WriteString(w,
-			`data: {"choices":[{"delta":{"content":"done"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`+"\n\n"+
+			`data: {"type":"response.output_text.delta","output_index":0,"delta":"done"}`+"\n\n"+
+				`data: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":1}}}`+"\n\n"+
 				`data: [DONE]`+"\n")
 	}
 	ts := newTestServer(t, llmHandler)
@@ -3702,7 +3760,8 @@ func longLLM() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		fmt.Fprintf(w,
-			`data: {"choices":[{"delta":{"content":%q},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":2}}`+"\n\n"+
+			`data: {"type":"response.output_text.delta","output_index":0,"delta":%q}`+"\n\n"+
+				`data: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":2}}}`+"\n\n"+
 				`data: [DONE]`+"\n", long)
 	}
 }
@@ -3850,7 +3909,7 @@ func TestGenMetaFormatting(t *testing.T) {
 // generation_ms, and the reload /view fragment renders data-output for the
 // click-to-expand tokens/second panel.
 func TestMessageOutputReachesEnvelopeAndView(t *testing.T) {
-	srv := newTestServer(t, plainLLM()) // serves completion_tokens: 2
+	srv := newTestServer(t, plainLLM()) // serves output_tokens: 2
 	got, _ := runOneTurn(t, srv.URL, "hi")
 
 	var sawAssistant, sawTurnDone bool
@@ -3923,13 +3982,15 @@ func TestModelViewAnnotationsReachModelNotStorage(t *testing.T) {
 		if call == 1 {
 			// First request: tell the model to run the shell tool.
 			fmt.Fprint(w,
-				`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","type":"function","function":{"name":"shell","arguments":"{\"command\":\"echo hi\",\"porter_action_description\":\"say hi for the test\",\"porter_timeout_seconds\":30}"}}]},"finish_reason":"tool_calls"}]}`+"\n\n"+
+				`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","call_id":"c1","name":"shell"}}`+"\n\n"+
+					`data: {"type":"response.function_call_arguments.delta","output_index":0,"delta":"{\"command\":\"echo hi\",\"porter_action_description\":\"say hi for the test\",\"porter_timeout_seconds\":30}"}`+"\n\n"+
 					`data: [DONE]`+"\n")
 			return
 		}
 		// Second request: answer in prose.
 		fmt.Fprint(w,
-			`data: {"choices":[{"delta":{"content":"done"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`+"\n\n"+
+			`data: {"type":"response.output_text.delta","output_index":0,"delta":"done"}`+"\n\n"+
+				`data: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":1}}}`+"\n\n"+
 				`data: [DONE]`+"\n")
 	})
 	_, ts := startServerDB(t, filepath.Join(t.TempDir(), "porter.db"), llmHandler)

@@ -4,12 +4,14 @@ package llm
 //
 // A message carries text, a tool call request (role "assistant"), or a tool
 // result (role "tool"). Empty fields are omitted so only the relevant payload
-// is serialized — except Content, which is ALWAYS present on the wire: an
-// assistant turn that is pure tool calls has no prose, and some providers
-// (notably DeepSeek) reject a message object that lacks the `content` key
-// entirely, while every OpenAI-compatible backend accepts an explicit empty
-// string. So Content is tagged `json:"content"` (no omitempty), and an empty
-// value serializes as "content":"".
+// is stored or replayed — except Content, which is ALWAYS present: an assistant
+// turn that is pure tool calls has no prose, and a reader (the history API, a
+// transcript, a reconnecting client) is better served by an explicit empty
+// string than by a missing key. So Content is tagged `json:"content"` (no
+// omitempty), and an empty value encodes as "content":"".
+//
+// The provider never sees this encoding: the request body is built from these
+// messages by wireInput (see input.go).
 type ChatMessage struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
@@ -61,8 +63,8 @@ type ChatMessage struct {
 	// Images are pictures the user attached to this message. They ride on the
 	// message (not in Content) so the text stays a plain string everywhere the
 	// app already reads it — storage, the sidebar preview, the renderer, and
-	// the model-view projection. The LLM client merges them into Content as
-	// Chat Completions content parts on the way out; see wireMessages.
+	// the model-view projection. The LLM client merges them into an input
+	// message's content parts on the way out; see wireInput.
 	Images []ImagePart `json:"images,omitempty"`
 	// ToolOutput is structured metadata about a tool result's size and model-view
 	// presentation (see ToolOutputMeta): total/shown bytes, whether the model
@@ -88,15 +90,12 @@ type ToolFunction struct {
 }
 
 // Tool describes a callable tool to the model via a JSON schema of its input.
-// This matches the Chat Completions format: `type` sits at the top level while
-// name/description/parameters live under a nested `function` object.
+// This matches the Responses API format: `type`, the tool's name, what it does,
+// and its parameter schema all sit at the top level. Chat Completions nested
+// the last three under a `function` object; Responses flattens them, so a tool
+// def carries no wrapper and every Defs site reads the same at one level less.
 type Tool struct {
-	Type     string   `json:"type"`
-	Function Function `json:"function"`
-}
-
-// Function carries a tool's model-facing name, description, and input schema.
-type Function struct {
+	Type        string         `json:"type"`
 	Name        string         `json:"name"`
 	Description string         `json:"description,omitempty"`
 	Parameters  map[string]any `json:"parameters"`

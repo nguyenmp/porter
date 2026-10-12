@@ -43,8 +43,8 @@ func TestParseIframeArgs(t *testing.T) {
 // descriptions the model reads: publish_asset names render_iframe for HTML,
 // and render_iframe says to publish with publish_asset first.
 func TestToolDescriptionsCrossReference(t *testing.T) {
-	pub := Def().Function.Description
-	frame := IframeDef().Function.Description
+	pub := Def().Description
+	frame := IframeDef().Description
 	if !strings.Contains(pub, "render_iframe") {
 		t.Errorf("publish_asset description should mention render_iframe:\n%s", pub)
 	}

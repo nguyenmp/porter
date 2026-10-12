@@ -13,7 +13,7 @@ import (
 // a model request. See ParseProvider for its two forms.
 const ProviderEnv = "PORTER_PROVIDER"
 
-// ProviderPreferences is the `provider` object of a Chat Completions request.
+// ProviderPreferences is the `provider` object of a Responses request.
 // It holds the gateway's routing rules, which decide which endpoint answers.
 // One model usually has many endpoints: providers that serve it at different
 // precisions. A gateway that does not know the field ignores it, so leaving it

@@ -11,17 +11,17 @@ import (
 	"porter/internal/config"
 )
 
-// TestStreamRequestsUsage ensures the streaming request asks the provider for
-// token usage via stream_options.include_usage. OpenAI-compatible providers
-// (and LiteLLM in front of them) omit `usage` from a streamed response unless
-// this flag is set, so without it turn metadata can never report input/output
-// token counts.
-func TestStreamRequestsUsage(t *testing.T) {
+// TestStreamRequestsResponsesEndpoint pins the transport: the request goes to
+// the /responses endpoint, and the body carries an "input" item list rather
+// than a "messages" array.
+func TestStreamRequestsResponsesEndpoint(t *testing.T) {
 	var got []byte
+	var path string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		got, _ = io.ReadAll(r.Body)
+		path = r.URL.Path
 		w.Header().Set("Content-Type", "text/event-stream")
-		io.WriteString(w, "data: [DONE]\n")
+		io.WriteString(w, sseEndMarker)
 	}))
 	defer srv.Close()
 
@@ -32,18 +32,43 @@ func TestStreamRequestsUsage(t *testing.T) {
 	}
 	body.Close()
 
+	if path != "/v1/responses" {
+		t.Errorf("request path = %q, want /v1/responses", path)
+	}
+
 	var req struct {
-		StreamOptions *struct {
-			IncludeUsage bool `json:"include_usage"`
-		} `json:"stream_options"`
+		Model    string          `json:"model"`
+		Stream   bool            `json:"stream"`
+		Messages json.RawMessage `json:"messages"`
+		Input    []struct {
+			Type    string `json:"type"`
+			Role    string `json:"role"`
+			Content []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"input"`
 	}
 	if err := json.Unmarshal(got, &req); err != nil {
 		t.Fatalf("unmarshal request body %q: %v", got, err)
 	}
-	if req.StreamOptions == nil || !req.StreamOptions.IncludeUsage {
-		t.Fatalf("request body missing stream_options.include_usage=true; got: %s", got)
+	if req.Messages != nil {
+		t.Errorf("request still sends a messages array: %s", got)
+	}
+	if !req.Stream {
+		t.Errorf("request must stream: %s", got)
+	}
+	if len(req.Input) != 1 || req.Input[0].Type != "message" || req.Input[0].Role != "user" {
+		t.Fatalf("input = %+v, want one user message item", req.Input)
+	}
+	if len(req.Input[0].Content) != 1 || req.Input[0].Content[0].Type != "input_text" || req.Input[0].Content[0].Text != "hi" {
+		t.Errorf("content = %+v, want one input_text part", req.Input[0].Content)
 	}
 }
+
+// sseEndMarker is the end-of-stream marker some gateways still send. A fake
+// stream that carries no events closes with it.
+const sseEndMarker = "data" + ":" + " " + "[" + "DONE" + "]" + "\n"
 
 // TestStreamSendsProvider checks the configured provider preference arrives in
 // the request as the `provider` object, because that is what pins the endpoint

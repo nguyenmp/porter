@@ -10,28 +10,24 @@ import (
 func TestAddToolContract(t *testing.T) {
 	defs := []Tool{
 		{
-			Type: "function",
-			Function: Function{
-				Name:        "shell",
-				Description: "run a command",
-				Parameters: map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"command": map[string]any{"type": "string"},
-					},
-					"required": []string{"command"},
+			Type:        "function",
+			Name:        "shell",
+			Description: "run a command",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"command": map[string]any{"type": "string"},
 				},
+				"required": []string{"command"},
 			},
 		},
 		{
-			Type: "function",
-			Function: Function{
-				Name:        "bare",
-				Description: "no required args at all",
-				Parameters: map[string]any{
-					"type":       "object",
-					"properties": map[string]any{},
-				},
+			Type:        "function",
+			Name:        "bare",
+			Description: "no required args at all",
+			Parameters: map[string]any{
+				"type":       "object",
+				"properties": map[string]any{},
 			},
 		},
 	}
@@ -43,26 +39,26 @@ func TestAddToolContract(t *testing.T) {
 		"bare":  {ArgPorterDescription, ArgPorterTimeout},
 	}
 	for _, d := range out {
-		params := d.Function.Parameters
+		params := d.Parameters
 		props := params["properties"].(orderedProps)
 		for _, name := range []string{ArgPorterDescription, ArgPorterTimeout} {
 			if _, ok := props[name]; !ok {
-				t.Errorf("%s: missing %s property", d.Function.Name, name)
+				t.Errorf("%s: missing %s property", d.Name, name)
 			}
 		}
 		// The schema is what we send to the provider, so it must stay valid
 		// JSON — and its property order is the point of this test.
 		raw, err := json.Marshal(d)
 		if err != nil {
-			t.Errorf("%s: schema no longer marshals: %v", d.Function.Name, err)
+			t.Errorf("%s: schema no longer marshals: %v", d.Name, err)
 			continue
 		}
-		if keys := propertiesKeys(t, raw); !reflect.DeepEqual(keys, want[d.Function.Name]) {
-			t.Errorf("%s: properties order = %v, want %v", d.Function.Name, keys, want[d.Function.Name])
+		if keys := propertiesKeys(t, raw); !reflect.DeepEqual(keys, want[d.Name]) {
+			t.Errorf("%s: properties order = %v, want %v", d.Name, keys, want[d.Name])
 		}
 		req := params["required"].([]string)
-		if !reflect.DeepEqual(req, want[d.Function.Name]) {
-			t.Errorf("%s: required list = %v, want %v", d.Function.Name, req, want[d.Function.Name])
+		if !reflect.DeepEqual(req, want[d.Name]) {
+			t.Errorf("%s: required list = %v, want %v", d.Name, req, want[d.Name])
 		}
 	}
 }
@@ -128,18 +124,16 @@ func skipValue(t *testing.T, dec *json.Decoder) {
 func TestAddToolContractDoesNotDuplicate(t *testing.T) {
 	defs := AddToolContract([]Tool{{
 		Type: "function",
-		Function: Function{
-			Name: "s",
-			Parameters: map[string]any{
-				"type":       "object",
-				"properties": map[string]any{},
-			},
+		Name: "s",
+		Parameters: map[string]any{
+			"type":       "object",
+			"properties": map[string]any{},
 		},
 	}})
 	// Applying it twice (a caller that rebuilds defs per request and decorates
 	// again) must not duplicate required entries.
 	twice := AddToolContract(defs)
-	got := twice[0].Function.Parameters["required"].([]string)
+	got := twice[0].Parameters["required"].([]string)
 	seen := map[string]int{}
 	for _, r := range got {
 		seen[r]++

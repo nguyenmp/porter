@@ -99,25 +99,23 @@ func WritePayload(path, content string) []byte {
 func Def() llm.Tool {
 	return llm.Tool{
 		Type: "function",
-		Function: llm.Function{
-			Name: OutputTool,
-			Description: "Save a tool result's full output to a file on the execution environment, so you can work with it using shell (grep, jq, sed, head) and the file tools instead of reading it in context. " +
-				"call_id is the id of the tool result to save (shown in its truncation header). path is optional: omit it to write to " + DefaultDir + "/<call_id> under the working directory, " +
-				"or give a path (relative to the working directory, or absolute). The result reports where the file was written.",
-			Parameters: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"call_id": map[string]any{
-						"type":        "string",
-						"description": "The tool_call_id of the tool result to save (shown in its truncation header).",
-					},
-					"path": map[string]any{
-						"type":        "string",
-						"description": "Optional destination: relative to the working directory or absolute. Defaults to " + DefaultDir + "/<call_id>.",
-					},
+		Name: OutputTool,
+		Description: "Save a tool result's full output to a file on the execution environment, so you can work with it using shell (grep, jq, sed, head) and the file tools instead of reading it in context. " +
+			"call_id is the id of the tool result to save (shown in its truncation header). path is optional: omit it to write to " + DefaultDir + "/<call_id> under the working directory, " +
+			"or give a path (relative to the working directory, or absolute). The result reports where the file was written.",
+		Parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"call_id": map[string]any{
+					"type":        "string",
+					"description": "The tool_call_id of the tool result to save (shown in its truncation header).",
 				},
-				"required": []string{"call_id"},
+				"path": map[string]any{
+					"type":        "string",
+					"description": "Optional destination: relative to the working directory or absolute. Defaults to " + DefaultDir + "/<call_id>.",
+				},
 			},
+			"required": []string{"call_id"},
 		},
 	}
 }

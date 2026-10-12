@@ -338,11 +338,11 @@ func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage,
 				break
 			}
 		}
-		// Flush any terminal events the stream did not deliver as a [DONE]
-		// marker (a provider that closes the SSE stream right after
-		// finish_reason — the usage chunk may arrive in a separate trailing
-		// chunk that we only reach by reading to EOF). Final is idempotent,
-		// so this is a no-op when [DONE] already finalized the decoder.
+		// Flush any terminal events the stream has not delivered: a transport
+		// that closes without the response.completed event leaves the decoder
+		// holding an accumulated message and tool calls, and no usage. Final is
+		// idempotent, so this is a no-op when the completed event already
+		// finalized the decoder.
 		dec.Final()
 		body.Close()
 		genEnd := time.Now().UnixMilli()
@@ -355,9 +355,9 @@ func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage,
 		// (marked interrupted so the model knows it was cut off) and end the
 		// turn. A fully assembled tool call is deliberately dropped — the tool
 		// never ran, and a stop must not launch it. The stream must not have
-		// reached a terminal state: a stop that lands in the same instant a
-		// reply completes ([DONE] or a finish_reason with no [DONE]) lets the
-		// turn finish normally rather than retroactively marking it stopped.
+		// reached a terminal state: a stop that lands in the same instant the
+		// response.completed event arrives lets the turn finish normally rather
+		// than retroactively marking it stopped.
 		if ctx.Err() != nil && !streamDone && !dec.Finished() {
 			partial := reply.String()
 			if strings.TrimSpace(partial) != "" || strings.TrimSpace(reasoning) != "" {

@@ -58,19 +58,20 @@ func TestReasoningSerializationSeparate(t *testing.T) {
 	}
 }
 
-func TestToolSerializationNestsFunction(t *testing.T) {
+// TestToolSerializationIsFlat pins the Responses tool shape: `type`, name,
+// description, and the parameter schema all sit at the top level, with no
+// `function` wrapper.
+func TestToolSerializationIsFlat(t *testing.T) {
 	tool := Tool{
-		Type: "function",
-		Function: Function{
-			Name:        "shell",
-			Description: "run",
-			Parameters: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"command": map[string]any{"type": "string"},
-				},
-				"required": []string{"command"},
+		Type:        "function",
+		Name:        "shell",
+		Description: "run",
+		Parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"command": map[string]any{"type": "string"},
 			},
+			"required": []string{"command"},
 		},
 	}
 	data, err := json.Marshal(tool)
@@ -78,12 +79,10 @@ func TestToolSerializationNestsFunction(t *testing.T) {
 		t.Fatalf("marshal: %v", err)
 	}
 	got := string(data)
-	// name/description/parameters must nest under "function", not the root.
 	for _, want := range []string{
 		`"type":"function"`,
-		`"function":{`,
-		`"function":{"name":"shell"`,
 		`"name":"shell"`,
+		`"description":"run"`,
 		`"parameters":{`,
 		`"type":"object"`,
 		`"required":["command"]`,
@@ -91,6 +90,9 @@ func TestToolSerializationNestsFunction(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Errorf("missing %q; got: %s", want, got)
 		}
+	}
+	if strings.Contains(got, `"function":{`) {
+		t.Errorf("tool still nests under a function object: %s", got)
 	}
 }
 

@@ -27,9 +27,9 @@ func feed(t *testing.T, lines ...string) (string, error) {
 
 func TestDecoderAccumulatesAndTerminates(t *testing.T) {
 	got, err := feed(t,
-		`data: {"choices":[{"delta":{"content":"Hel"},"finish_reason":null}]}`,
-		`data: {"choices":[{"delta":{"content":"lo"},"finish_reason":null}]}`,
-		`data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":20}}`,
+		`data: {"type":"response.output_text.delta","output_index":0,"delta":"Hel"}`,
+		`data: {"type":"response.output_text.delta","output_index":0,"delta":"lo"}`,
+		`data: {"type":"response.completed","response":{"usage":{"input_tokens":10,"output_tokens":20}}}`,
 		`data: [DONE]`,
 	)
 	if err != nil {
@@ -48,7 +48,7 @@ func TestDecoderAccumulatesAndTerminates(t *testing.T) {
 
 func TestDecoderDoneMarkerStopsStream(t *testing.T) {
 	got, err := feed(t,
-		`data: {"choices":[{"delta":{"content":"hi"}}]}`,
+		`data: {"type":"response.output_text.delta","output_index":0,"delta":"hi"}`,
 		`data: [DONE]`,
 	)
 	if err != nil {
@@ -61,11 +61,14 @@ func TestDecoderDoneMarkerStopsStream(t *testing.T) {
 
 func TestDecoderReasoningStaysSeparate(t *testing.T) {
 	got, err := feed(t,
-		// DeepSeek-style: reasoning_content interleaved with content.
-		`data: {"choices":[{"delta":{"reasoning_content":"think","content":"Answer"},"finish_reason":null}]}`,
-		`data: {"choices":[{"delta":{"reasoning_content":"ing"},"finish_reason":null}]}`,
-		// OpenAI-style: reasoning alongside a content delta.
-		`data: {"choices":[{"delta":{"reasoning":".","content":" is 4"},"finish_reason":"stop"}]}`,
+		// Reasoning and content arrive as separate streams of deltas.
+		`data: {"type":"response.reasoning_summary_text.delta","output_index":0,"delta":"think"}`,
+
+		`data: {"type":"response.output_text.delta","output_index":0,"delta":"Answer"}`,
+		`data: {"type":"response.reasoning_summary_text.delta","output_index":0,"delta":"ing"}`,
+		`data: {"type":"response.reasoning_summary_text.delta","output_index":0,"delta":"."}`,
+
+		`data: {"type":"response.output_text.delta","output_index":0,"delta":" is 4"}`,
 		`data: [DONE]`,
 	)
 	if err != nil {
@@ -84,9 +87,9 @@ func TestDecoderReasoningStaysSeparate(t *testing.T) {
 func TestDecoderToolCallAccumulatesAcrossDeltas(t *testing.T) {
 	got, err := feed(t,
 		// Tool call split over three deltas: id/name first, then args chunks.
-		`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"shell","arguments":""}}]},"finish_reason":null}]}`,
-		`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"echo "}}]},"finish_reason":null}]}`,
-		`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"hi"}}]},"finish_reason":"tool_calls"}]}`,
+		`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","call_id":"call_1","name":"shell"}}`,
+		`data: {"type":"response.function_call_arguments.delta","output_index":0,"delta":"echo "}`,
+		`data: {"type":"response.function_call_arguments.delta","output_index":0,"delta":"hi"}`,
 		`data: [DONE]`,
 	)
 	if err != nil {
@@ -104,9 +107,9 @@ func TestDecoderToolCallAccumulatesAcrossDeltas(t *testing.T) {
 func TestDecoderEmitsToolCallDeltasLive(t *testing.T) {
 	got, err := feed(t,
 		// A tool call split over three deltas: id/name first, then args chunks.
-		`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"shell","arguments":""}}]},"finish_reason":null}]}`,
-		`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"echo "}}]},"finish_reason":null}]}`,
-		`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"hi"}}]},"finish_reason":"tool_calls"}]}`,
+		`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","call_id":"call_1","name":"shell"}}`,
+		`data: {"type":"response.function_call_arguments.delta","output_index":0,"delta":"echo "}`,
+		`data: {"type":"response.function_call_arguments.delta","output_index":0,"delta":"hi"}`,
 		`data: [DONE]`,
 	)
 	if err != nil {
@@ -126,21 +129,23 @@ func TestDecoderEmitsToolCallDeltasLive(t *testing.T) {
 	}
 }
 
-func TestDecoderToolCallDeltaSkipsEmptyFragment(t *testing.T) {
+// TestDecoderSkipsEventsWithNothingNew keeps providers from causing spurious
+// re-renders: an event that carries no fresh field must not emit a delta. Here
+// the completed item repeats the id and name porter already has, so only the
+// two events that did carry something new may emit.
+func TestDecoderSkipsEventsWithNothingNew(t *testing.T) {
 	got, err := feed(t,
-		`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"shell","arguments":"hi"}}]},"finish_reason":null}]}`,
-		// An echo of the same index with no new fields must not emit a delta.
-		`data: {"choices":[{"delta":{"tool_calls":[{"index":0}]},"finish_reason":"tool_calls"}]}`,
+		`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","call_id":"call_1","name":"shell"}}`,
+		`data: {"type":"response.function_call_arguments.delta","output_index":0,"delta":"hi"}`,
+		// A completed item that carries nothing new must not emit a delta.
+		`data: {"type":"response.output_item.done","output_index":0,"item":{"type":"function_call","call_id":"call_1","name":"shell"}}`,
 		`data: [DONE]`,
 	)
 	if err != nil {
 		t.Fatalf("Process: %v", err)
 	}
-	if !strings.Contains(got, `"type":"tool_call_delta"`) {
-		t.Fatalf("expected a live delta; got:\n%s", got)
-	}
-	if n, want := strings.Count(got, `"type":"tool_call_delta"`), 1; n != want {
-		t.Errorf("delta count = %d, want %d (empty fragment must not emit); got:\n%s", n, want, got)
+	if n, want := strings.Count(got, `"type":"tool_call_delta"`), 2; n != want {
+		t.Errorf("delta count = %d, want %d (an event with nothing new must not emit); got:\n%s", n, want, got)
 	}
 }
 
@@ -156,15 +161,13 @@ func TestDecoderRejectsMalformedJSON(t *testing.T) {
 	}
 }
 
-// TestDecoderConsumesTrailingUsageChunk reproduces the real OpenAI/OpenAI-
-// compatible streaming shape: usage arrives in a separate chunk AFTER the
-// finish_reason chunk, with empty choices. The decoder must keep reading past
-// finish_reason (not return done there) so the usage is captured before [DONE].
-func TestDecoderConsumesTrailingUsageChunk(t *testing.T) {
+// TestDecoderReadsUsageFromCompletedEvent covers the Responses ending: the
+// token totals ride on the response.completed event, which is also the end of
+// the stream.
+func TestDecoderReadsUsageFromCompletedEvent(t *testing.T) {
 	got, err := feed(t,
-		`data: {"choices":[{"delta":{"content":"Hi"},"finish_reason":null}]}`,
-		`data: {"choices":[{"delta":{},"finish_reason":"stop"}]}`,
-		`data: {"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":20}}`,
+		`data: {"type":"response.output_text.delta","output_index":0,"delta":"Hi"}`,
+		`data: {"type":"response.completed","response":{"usage":{"input_tokens":10,"output_tokens":20}}}`,
 		`data: [DONE]`,
 	)
 	if err != nil {
@@ -180,51 +183,43 @@ func TestDecoderConsumesTrailingUsageChunk(t *testing.T) {
 	}
 }
 
-// TestDecoderFinishReasonDoesNotStopStream pins the contract that Process only
-// reports done at [DONE], not at finish_reason: a usage-only chunk can still
-// follow a finish_reason chunk.
-func TestDecoderFinishReasonDoesNotStopStream(t *testing.T) {
+// TestDecoderCompletesAtTheCompletedEvent pins when Process reports done: a
+// content delta is not the end of a stream, and response.completed is.
+func TestDecoderCompletesAtTheCompletedEvent(t *testing.T) {
 	dec := NewDecoder(nil)
-	done, err := dec.Process(`data: {"choices":[{"delta":{},"finish_reason":"stop"}]}`)
+	done, err := dec.Process(`data: {"type":"response.output_text.delta","output_index":0,"delta":"hi"}`)
 	if err != nil {
 		t.Fatalf("Process: %v", err)
 	}
 	if done {
-		t.Fatal("Process must not report done at finish_reason; usage may follow in a separate chunk")
+		t.Fatal("Process must not report done while the model is still writing")
 	}
-	done, err = dec.Process(`data: {"choices":[],"usage":{"prompt_tokens":1,"completion_tokens":2}}`)
-	if err != nil {
-		t.Fatalf("Process: %v", err)
-	}
-	if done {
-		t.Fatal("Process must not report done on a usage-only chunk; [DONE] is still to come")
-	}
-	done, err = dec.Process(`data: [DONE]`)
+	done, err = dec.Process(`data: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":2}}}`)
 	if err != nil {
 		t.Fatalf("Process: %v", err)
 	}
 	if !done {
-		t.Fatal("Process must report done at [DONE]")
+		t.Fatal("Process must report done at response.completed")
 	}
 }
 
-// TestDecoderFinalFlushesWithoutDone covers the EOF path: a stream that ends
-// (EOF/close) without a [DONE] marker. Final() must flush the terminal events,
-// including usage consumed in a trailing chunk, and must be idempotent.
+// TestDecoderFinalFlushesWithoutDone covers the EOF path: a transport that
+// closes without a terminal event. Final() must flush the accumulated message
+// and tool call, and must be idempotent.
 func TestDecoderFinalFlushesWithoutDone(t *testing.T) {
 	var buf bytes.Buffer
 	dec := NewDecoder(NewEncoder(&buf))
 	for _, line := range []string{
-		`data: {"choices":[{"delta":{"content":"yo"},"finish_reason":null}]}`,
-		`data: {"choices":[{"delta":{},"finish_reason":"stop"}]}`,
-		`data: {"choices":[],"usage":{"prompt_tokens":3,"completion_tokens":4}}`,
+		`data: {"type":"response.output_text.delta","output_index":0,"delta":"yo"}`,
+		`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","call_id":"call_1","name":"shell"}}`,
+		`data: {"type":"response.function_call_arguments.delta","output_index":0,"delta":"echo hi"}`,
 	} {
 		done, err := dec.Process(line)
 		if err != nil {
 			t.Fatalf("Process: %v", err)
 		}
 		if done {
-			t.Fatalf("Process reported done before [DONE]")
+			t.Fatalf("Process reported done with no terminal event")
 		}
 	}
 	if !dec.Final() {
@@ -233,7 +228,7 @@ func TestDecoderFinalFlushesWithoutDone(t *testing.T) {
 	got := buf.String()
 	for _, want := range []string{
 		`"type":"message"`, `"content":"yo"`,
-		`"type":"usage"`, `"input_tokens":3`, `"output_tokens":4`,
+		`"type":"tool_call"`, `"arguments":"echo hi"`,
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("output missing %q; got:\n%s", want, got)
@@ -248,13 +243,15 @@ func TestDecoderFinalFlushesWithoutDone(t *testing.T) {
 }
 
 // TestDecoderSplitsCachedAndUncachedInput pins the explicit cache split: the
-// provider reports how many prompt tokens were served from cache
-// (prompt_tokens_details.cached_tokens, the OpenAI-compatible shape LiteLLM and
-// OpenRouter normalize to). The emitted usage event carries both parts, which
-// sum to the total input, plus the unchanged total for wire compatibility.
+// provider reports how many input tokens were served from cache
+// (input_tokens_details.cached_tokens). The emitted usage event carries both
+// parts, which sum to the total input, plus the unchanged total for wire
+// compatibility.
 func TestDecoderSplitsCachedAndUncachedInput(t *testing.T) {
 	got, err := feed(t,
-		`data: {"choices":[{"delta":{"content":"Hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":20,"prompt_tokens_details":{"cached_tokens":4}}}`,
+		`data: {"type":"response.output_text.delta","output_index":0,"delta":"Hi"}`,
+
+		`data: {"type":"response.completed","response":{"usage":{"input_tokens":10,"output_tokens":20,"input_tokens_details":{"cached_tokens":4}}}}`,
 		`data: [DONE]`,
 	)
 	if err != nil {
@@ -273,35 +270,14 @@ func TestDecoderSplitsCachedAndUncachedInput(t *testing.T) {
 	}
 }
 
-// TestDecoderSplitsCachedInputDeepSeek covers the native DeepSeek shape, where
-// the cache-hit count is a top-level prompt_cache_hit_tokens field rather than
-// nested under prompt_tokens_details. This is what the current .env model
-// (deepseek/deepseek-v4-flash) sends when it bypasses an OpenAI-normalizing
-// proxy.
-func TestDecoderSplitsCachedInputDeepSeek(t *testing.T) {
-	got, err := feed(t,
-		`data: {"choices":[{"delta":{"content":"Hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":20,"prompt_cache_hit_tokens":7}}`,
-		`data: [DONE]`,
-	)
-	if err != nil {
-		t.Fatalf("Process: %v", err)
-	}
-	for _, want := range []string{
-		`"cached_input_tokens":7`,
-		`"uncached_input_tokens":3`,
-	} {
-		if !strings.Contains(got, want) {
-			t.Errorf("output missing %q; got:\n%s", want, got)
-		}
-	}
-}
-
 // TestDecoderNoCacheSplitDefaultsAllUncached pins the "provider did not report
 // a cache split" default: everything is uncached, and no zero-value cache
 // fields leak into the JSON.
 func TestDecoderNoCacheSplitDefaultsAllUncached(t *testing.T) {
 	got, err := feed(t,
-		`data: {"choices":[{"delta":{"content":"Hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":3}}`,
+		`data: {"type":"response.output_text.delta","output_index":0,"delta":"Hi"}`,
+
+		`data: {"type":"response.completed","response":{"usage":{"input_tokens":5,"output_tokens":3}}}`,
 		`data: [DONE]`,
 	)
 	if err != nil {

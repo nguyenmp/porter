@@ -27,13 +27,14 @@ func newReplServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	llmSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
-			Messages []json.RawMessage `json:"messages"`
+			Input []json.RawMessage `json:"input"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&req)
-		reply := fmt.Sprintf("reply %d", len(req.Messages))
+		reply := fmt.Sprintf("reply %d", len(req.Input))
 		w.Header().Set("Content-Type", "text/event-stream")
 		fmt.Fprintf(w,
-			`data: {"choices":[{"delta":{"content":%q},"finish_reason":"stop"}],"usage":{"prompt_tokens":4,"completion_tokens":5}}`+"\n\n"+
+			`data: {"type":"response.output_text.delta","output_index":0,"delta":%q}`+"\n\n"+
+				`data: {"type":"response.completed","response":{"usage":{"input_tokens":4,"output_tokens":5}}}`+"\n\n"+
 				`data: [DONE]`+"\n", reply)
 	}))
 	s, err := server.New(config.Config{BaseURL: llmSrv.URL + "/v1", Model: "m", APIKey: "k"})
@@ -298,7 +299,8 @@ func TestRunShowsCacheSplit(t *testing.T) {
 	llmSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		fmt.Fprint(w,
-			`data: {"choices":[{"delta":{"content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":5,"prompt_tokens_details":{"cached_tokens":6}}}`+"\n\n"+
+			`data: {"type":"response.output_text.delta","output_index":0,"delta":"hi"}`+"\n\n"+
+				`data: {"type":"response.completed","response":{"usage":{"input_tokens":10,"output_tokens":5,"input_tokens_details":{"cached_tokens":6}}}}`+"\n\n"+
 				`data: [DONE]`+"\n")
 	}))
 	defer llmSrv.Close()

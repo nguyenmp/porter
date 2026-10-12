@@ -74,25 +74,23 @@ func ReadPayload(path string) []byte {
 func Def() llm.Tool {
 	return llm.Tool{
 		Type: "function",
-		Function: llm.Function{
-			Name: PublishTool,
-			Description: "Publish a file from the execution environment to a hosted URL, so you can show it in your reply. " +
-				"First create the file with shell or another rendering tool in the working directory (for example a PNG from a screenshot, mermaid-cli, or matplotlib, or an HTML file you generated). " +
-				"Then call publish_asset with the file's path (relative to the working directory, or absolute). " +
-				"The file is uploaded to the server, and the result is its hosted URL. That URL is a path from the base URL. Use it as-is; you don't need to add a prefix, and it works. The URL stays available as long as the session exists. " +
-				"To show the file in your reply, reference the URL as an image: ![alt text](URL) or <img src=\"URL\">. " +
-				"To show an HTML file as a live page instead of a static image, pass the URL to render_iframe — render_iframe displays HTML that publish_asset uploaded. " +
-				"Content type is guessed from the file extension (png, jpg, gif, webp, svg, html, pdf, and more).",
-			Parameters: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"path": map[string]any{
-						"type":        "string",
-						"description": "The file to publish: relative to the working directory, or absolute.",
-					},
+		Name: PublishTool,
+		Description: "Publish a file from the execution environment to a hosted URL, so you can show it in your reply. " +
+			"First create the file with shell or another rendering tool in the working directory (for example a PNG from a screenshot, mermaid-cli, or matplotlib, or an HTML file you generated). " +
+			"Then call publish_asset with the file's path (relative to the working directory, or absolute). " +
+			"The file is uploaded to the server, and the result is its hosted URL. That URL is a path from the base URL. Use it as-is; you don't need to add a prefix, and it works. The URL stays available as long as the session exists. " +
+			"To show the file in your reply, reference the URL as an image: ![alt text](URL) or <img src=\"URL\">. " +
+			"To show an HTML file as a live page instead of a static image, pass the URL to render_iframe — render_iframe displays HTML that publish_asset uploaded. " +
+			"Content type is guessed from the file extension (png, jpg, gif, webp, svg, html, pdf, and more).",
+		Parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"path": map[string]any{
+					"type":        "string",
+					"description": "The file to publish: relative to the working directory, or absolute.",
 				},
-				"required": []string{"path"},
 			},
+			"required": []string{"path"},
 		},
 	}
 }
@@ -128,27 +126,25 @@ func ParseIframeArgs(raw string) (IframeArgs, error) {
 func IframeDef() llm.Tool {
 	return llm.Tool{
 		Type: "function",
-		Function: llm.Function{
-			Name: IframeTool,
-			Description: "Display an HTML page you generated in the chat, in a sandboxed iframe that is always expanded. " +
-				"render_iframe requires an asset you published with publish_asset first: call publish_asset with the path to an HTML file you created, " +
-				"then pass the URL it returned as src. The page is shown in an iframe sandboxed with allow-scripts only (no same-origin), so its " +
-				"scripts run but it cannot touch the rest of the chat or the site. height is optional, in px (default " +
-				strconv.Itoa(DefaultIframeHeight) + ").",
-			Parameters: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"src": map[string]any{
-						"type":        "string",
-						"description": "The /assets/sessions/... URL that publish_asset returned for the HTML file.",
-					},
-					"height": map[string]any{
-						"type":        "integer",
-						"description": "Optional height of the iframe in px (default " + strconv.Itoa(DefaultIframeHeight) + ").",
-					},
+		Name: IframeTool,
+		Description: "Display an HTML page you generated in the chat, in a sandboxed iframe that is always expanded. " +
+			"render_iframe requires an asset you published with publish_asset first: call publish_asset with the path to an HTML file you created, " +
+			"then pass the URL it returned as src. The page is shown in an iframe sandboxed with allow-scripts only (no same-origin), so its " +
+			"scripts run but it cannot touch the rest of the chat or the site. height is optional, in px (default " +
+			strconv.Itoa(DefaultIframeHeight) + ").",
+		Parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"src": map[string]any{
+					"type":        "string",
+					"description": "The /assets/sessions/... URL that publish_asset returned for the HTML file.",
 				},
-				"required": []string{"src"},
+				"height": map[string]any{
+					"type":        "integer",
+					"description": "Optional height of the iframe in px (default " + strconv.Itoa(DefaultIframeHeight) + ").",
+				},
 			},
+			"required": []string{"src"},
 		},
 	}
 }

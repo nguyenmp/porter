@@ -41,10 +41,10 @@ type Event struct {
 	// Index identifies which tool call in a stream this event belongs to
 	// (tool_call_delta and the assembled tool_call). Zero is the first call.
 	Index int `json:"index,omitempty"`
-	// InputTokens/OutputTokens are the round-trip totals reported by the
-	// provider (prompt_tokens / completion_tokens). InputTokens is kept as the
-	// total for wire compatibility and display; the explicit split below is the
-	// source of truth for how much of that input was served from cache.
+	// InputTokens/OutputTokens are the round-trip totals the provider reported
+	// (input_tokens / output_tokens). InputTokens is kept as the total for
+	// display and for the usage record; the explicit split below is the source
+	// of truth for how much of that input was served from cache.
 	InputTokens  int `json:"input_tokens,omitempty"`
 	OutputTokens int `json:"output_tokens,omitempty"`
 	// CachedInputTokens is how many prompt tokens the provider served from its

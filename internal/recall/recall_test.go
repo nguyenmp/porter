@@ -210,10 +210,10 @@ func TestWindowTextAndPlaceholder(t *testing.T) {
 
 func TestDef(t *testing.T) {
 	d := Def()
-	if d.Function.Name != "recall_tool_output" {
-		t.Errorf("Def name = %q", d.Function.Name)
+	if d.Name != "recall_tool_output" {
+		t.Errorf("Def name = %q", d.Name)
 	}
-	params := d.Function.Parameters["properties"].(map[string]any)
+	params := d.Parameters["properties"].(map[string]any)
 	if _, ok := params["call_id"]; !ok {
 		t.Errorf("Def missing call_id parameter")
 	}
@@ -223,7 +223,7 @@ func TestDef(t *testing.T) {
 	if _, ok := params["max_bytes"]; !ok {
 		t.Errorf("Def missing max_bytes parameter")
 	}
-	required := d.Function.Parameters["required"].([]string)
+	required := d.Parameters["required"].([]string)
 	if len(required) != 1 || required[0] != "call_id" {
 		t.Errorf("Def required = %v, want [call_id]", required)
 	}

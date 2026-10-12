@@ -47,7 +47,7 @@ const (
 // out new maps each time they are asked.
 func AddToolContract(defs []Tool) []Tool {
 	for i := range defs {
-		params := defs[i].Function.Parameters
+		params := defs[i].Parameters
 		props, _ := params["properties"].(map[string]any)
 		if props == nil {
 			continue

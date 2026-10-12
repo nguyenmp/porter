@@ -85,17 +85,15 @@ func (h *Hub) findDef(extra []api.MCPServer) llm.Tool {
 	}
 	h.mu.RUnlock()
 	return llm.Tool{
-		Type: "function",
-		Function: llm.Function{
-			Name:        FindTool,
-			Description: b.String(),
-			Parameters: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"server_name": map[string]any{"type": "string", "description": "Optional: only list tools from this server. Omit to search all servers."},
-					"query":       map[string]any{"type": "string", "description": "Optional: substring filter on tool names and descriptions."},
-					"full":        map[string]any{"type": "boolean", "description": "Return full descriptions and input schemas instead of one-line snippets. Verbose; use sparingly."},
-				},
+		Type:        "function",
+		Name:        FindTool,
+		Description: b.String(),
+		Parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"server_name": map[string]any{"type": "string", "description": "Optional: only list tools from this server. Omit to search all servers."},
+				"query":       map[string]any{"type": "string", "description": "Optional: substring filter on tool names and descriptions."},
+				"full":        map[string]any{"type": "boolean", "description": "Return full descriptions and input schemas instead of one-line snippets. Verbose; use sparingly."},
 			},
 		},
 	}
@@ -104,19 +102,17 @@ func (h *Hub) findDef(extra []api.MCPServer) llm.Tool {
 // callDef is the model-facing CallMCP definition.
 func callDef() llm.Tool {
 	return llm.Tool{
-		Type: "function",
-		Function: llm.Function{
-			Name:        CallTool,
-			Description: "Call a tool on an MCP server. The tool must exist on the server; discover it with FindMCP, which also shows its input schema when asked. The result is the server's text response; a failing call is reported as an error in the result.",
-			Parameters: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"server_name": map[string]any{"type": "string", "description": "The MCP server to call (see FindMCP for configured servers)."},
-					"tool_name":   map[string]any{"type": "string", "description": "The tool to call on that server."},
-					"args":        map[string]any{"type": "object", "description": "The tool's arguments, as a JSON object matching its input schema (see FindMCP with full=true). Example: {\"urls\": [\"https://example.com\"]} for exa-web_fetch_exa. Always pass this; if the tool takes no arguments, pass {}."},
-				},
-				"required": []string{"server_name", "tool_name", "args"},
+		Type:        "function",
+		Name:        CallTool,
+		Description: "Call a tool on an MCP server. The tool must exist on the server; discover it with FindMCP, which also shows its input schema when asked. The result is the server's text response; a failing call is reported as an error in the result.",
+		Parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"server_name": map[string]any{"type": "string", "description": "The MCP server to call (see FindMCP for configured servers)."},
+				"tool_name":   map[string]any{"type": "string", "description": "The tool to call on that server."},
+				"args":        map[string]any{"type": "object", "description": "The tool's arguments, as a JSON object matching its input schema (see FindMCP with full=true). Example: {\"urls\": [\"https://example.com\"]} for exa-web_fetch_exa. Always pass this; if the tool takes no arguments, pass {}."},
 			},
+			"required": []string{"server_name", "tool_name", "args"},
 		},
 	}
 }

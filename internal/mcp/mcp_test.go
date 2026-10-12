@@ -293,11 +293,11 @@ func TestFetchAndCall(t *testing.T) {
 
 	// The FindMCP tool definition's description lists the server.
 	defs := h.Defs()
-	if len(defs) != 2 || defs[0].Function.Name != FindTool || defs[1].Function.Name != CallTool {
+	if len(defs) != 2 || defs[0].Name != FindTool || defs[1].Name != CallTool {
 		t.Fatalf("Defs = %+v", defs)
 	}
-	if !strings.Contains(defs[0].Function.Description, "web (2 tools)") {
-		t.Errorf("FindMCP description missing server list: %q", defs[0].Function.Description)
+	if !strings.Contains(defs[0].Description, "web (2 tools)") {
+		t.Errorf("FindMCP description missing server list: %q", defs[0].Description)
 	}
 
 	// CallMCP: args forwarded, text result returned.
@@ -388,8 +388,8 @@ func TestServerError(t *testing.T) {
 		t.Errorf("FindMCP error output = %q", data)
 	}
 	// The FindMCP tool description also reflects the failure.
-	if !strings.Contains(h.Defs()[0].Function.Description, "down (error:") {
-		t.Errorf("FindMCP description missing error status: %q", h.Defs()[0].Function.Description)
+	if !strings.Contains(h.Defs()[0].Description, "down (error:") {
+		t.Errorf("FindMCP description missing error status: %q", h.Defs()[0].Description)
 	}
 }
 
@@ -484,7 +484,7 @@ func TestCompositeRouting(t *testing.T) {
 	// With servers, Defs includes the hub tools after the exec tools.
 	names := map[string]bool{}
 	for _, d := range c.Defs() {
-		names[d.Function.Name] = true
+		names[d.Name] = true
 	}
 	for _, want := range []string{"shell", FindTool, CallTool} {
 		if !names[want] {
@@ -584,7 +584,7 @@ func TestCompositeRemoteRouting(t *testing.T) {
 	// Remote servers alone expose the MCP tools.
 	names := map[string]bool{}
 	for _, d := range c.Defs() {
-		names[d.Function.Name] = true
+		names[d.Name] = true
 	}
 	for _, want := range []string{"shell", FindTool, CallTool} {
 		if !names[want] {
@@ -921,7 +921,7 @@ func TestArgsHint(t *testing.T) {
 
 func TestCallDefRequiresArgs(t *testing.T) {
 	def := callDef()
-	params := def.Function.Parameters
+	params := def.Parameters
 	required, _ := params["required"].([]string)
 	found := false
 	for _, r := range required {
@@ -942,7 +942,7 @@ func TestCallDefRequiresArgs(t *testing.T) {
 func toolNames(defs []llm.Tool) []string {
 	out := make([]string, len(defs))
 	for i, d := range defs {
-		out[i] = d.Function.Name
+		out[i] = d.Name
 	}
 	return out
 }

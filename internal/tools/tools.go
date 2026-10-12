@@ -32,20 +32,18 @@ const LoadSkillTool = "load_skill"
 // shellDef is the model-facing definition of the shell tool.
 func shellDef() llm.Tool {
 	return llm.Tool{
-		Type: "function",
-		Function: llm.Function{
-			Name:        "shell",
-			Description: "Run a shell command in the working directory and return its output. Use it for anything the dedicated tools do not cover: run programs and CLIs, git, and create files. To read or change text in an existing file, prefer the file tools: read_with_line_numbers, line_insert, line_replace, string_replace. To fetch a URL, prefer web_fetch; use curl when you need methods, headers, auth, or downloads.",
-			Parameters: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"command": map[string]any{
-						"type":        "string",
-						"description": "The shell command to run, e.g. 'cat main.go' or 'git diff'.",
-					},
+		Type:        "function",
+		Name:        "shell",
+		Description: "Run a shell command in the working directory and return its output. Use it for anything the dedicated tools do not cover: run programs and CLIs, git, and create files. To read or change text in an existing file, prefer the file tools: read_with_line_numbers, line_insert, line_replace, string_replace. To fetch a URL, prefer web_fetch; use curl when you need methods, headers, auth, or downloads.",
+		Parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"command": map[string]any{
+					"type":        "string",
+					"description": "The shell command to run, e.g. 'cat main.go' or 'git diff'.",
 				},
-				"required": []string{"command"},
 			},
+			"required": []string{"command"},
 		},
 	}
 }
@@ -60,20 +58,18 @@ func loadSkillDef(skills []api.Skill) llm.Tool {
 		fmt.Fprintf(&b, "- %s: %s\n", s.Name, s.Description)
 	}
 	return llm.Tool{
-		Type: "function",
-		Function: llm.Function{
-			Name:        "load_skill",
-			Description: b.String(),
-			Parameters: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"name": map[string]any{
-						"type":        "string",
-						"description": "The name of the skill to load.",
-					},
+		Type:        "function",
+		Name:        "load_skill",
+		Description: b.String(),
+		Parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"name": map[string]any{
+					"type":        "string",
+					"description": "The name of the skill to load.",
 				},
-				"required": []string{"name"},
 			},
+			"required": []string{"name"},
 		},
 	}
 }

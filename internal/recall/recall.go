@@ -351,31 +351,29 @@ func Placeholder(meta *llm.ToolOutputMeta) string {
 func Def() llm.Tool {
 	return llm.Tool{
 		Type: "function",
-		Function: llm.Function{
-			Name: ReadOutputTool,
-			Description: "Load more of a tool result that was truncated in your context. Tool results larger than " +
-				strconv.Itoa(HeadBytes+TailBytes) + " bytes are shown as a head and tail with a recall_tool_output hint. " +
-				"call_id is the id of the original tool call (shown in the truncation header), offset is the byte offset " +
-				"to start at (default 0), and max_bytes limits the returned window — omit it to read the rest of the " +
-				"output in one call. Offsets address the raw output bytes.",
-			Parameters: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"call_id": map[string]any{
-						"type":        "string",
-						"description": "The tool_call_id of the original tool result to read (shown in its truncation header).",
-					},
-					"offset": map[string]any{
-						"type":        "integer",
-						"description": "Byte offset into the output to start at (default 0).",
-					},
-					"max_bytes": map[string]any{
-						"type":        "integer",
-						"description": "Maximum bytes to return (default: the rest of the output, to the end).",
-					},
+		Name: ReadOutputTool,
+		Description: "Load more of a tool result that was truncated in your context. Tool results larger than " +
+			strconv.Itoa(HeadBytes+TailBytes) + " bytes are shown as a head and tail with a recall_tool_output hint. " +
+			"call_id is the id of the original tool call (shown in the truncation header), offset is the byte offset " +
+			"to start at (default 0), and max_bytes limits the returned window — omit it to read the rest of the " +
+			"output in one call. Offsets address the raw output bytes.",
+		Parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"call_id": map[string]any{
+					"type":        "string",
+					"description": "The tool_call_id of the original tool result to read (shown in its truncation header).",
 				},
-				"required": []string{"call_id"},
+				"offset": map[string]any{
+					"type":        "integer",
+					"description": "Byte offset into the output to start at (default 0).",
+				},
+				"max_bytes": map[string]any{
+					"type":        "integer",
+					"description": "Maximum bytes to return (default: the rest of the output, to the end).",
+				},
 			},
+			"required": []string{"call_id"},
 		},
 	}
 }

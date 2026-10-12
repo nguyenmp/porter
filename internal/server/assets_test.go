@@ -147,12 +147,14 @@ func iframeThenReplyLLM() http.HandlerFunc {
 		mu.Unlock()
 		if call == 1 {
 			fmt.Fprint(w,
-				`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","type":"function","function":{"name":"render_iframe","arguments":"{\"src\":\"/assets/sessions/session_1/0a0a0a0a/page.html\",\"height\":600,\"porter_action_description\":\"show the generated page\",\"porter_timeout_seconds\":30}"}}]},"finish_reason":"tool_calls"}]}`+"\n\n"+
+				`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","call_id":"c1","name":"render_iframe"}}`+"\n\n"+
+					`data: {"type":"response.function_call_arguments.delta","output_index":0,"delta":"{\"src\":\"/assets/sessions/session_1/0a0a0a0a/page.html\",\"height\":600,\"porter_action_description\":\"show the generated page\",\"porter_timeout_seconds\":30}"}`+"\n\n"+
 					`data: [DONE]`+"\n")
 			return
 		}
 		fmt.Fprint(w,
-			`data: {"choices":[{"delta":{"content":"done"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`+"\n\n"+
+			`data: {"type":"response.output_text.delta","output_index":0,"delta":"done"}`+"\n\n"+
+				`data: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":1}}}`+"\n\n"+
 				`data: [DONE]`+"\n")
 	}
 }
