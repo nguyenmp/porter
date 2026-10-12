@@ -210,9 +210,12 @@ type ProviderErrorRequest struct {
 	Error string `json:"error"`
 }
 
-// AppendRequest is the body of POST /api/sessions/{id}/messages.
+// AppendRequest is the body of POST /api/sessions/{id}/messages. Images are
+// pictures attached to the message; they travel inline as data URLs, so no
+// separate upload step is needed.
 type AppendRequest struct {
-	Content string `json:"content"`
+	Content string          `json:"content"`
+	Images  []llm.ImagePart `json:"images,omitempty"`
 }
 
 // RenameRequest is the body of POST /api/sessions/{id}/rename. Name is the

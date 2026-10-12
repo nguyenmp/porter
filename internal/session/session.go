@@ -527,10 +527,12 @@ type toolRun struct {
 }
 
 // queuedMessage is one user-submitted turn waiting in the scheduler's queue:
-// its text plus the epoch-ms it was enqueued, so the committed user message can
-// timestamp the actual send (not the moment a backlogged turn finally runs).
+// its text and any attached images, plus the epoch-ms it was enqueued, so the
+// committed user message can timestamp the actual send (not the moment a
+// backlogged turn finally runs).
 type queuedMessage struct {
 	content string
+	images  []llm.ImagePart
 	at      int64
 }
 
@@ -671,7 +673,7 @@ func (s *Session) loop(ctx context.Context) {
 			// Flush any notices queued before this turn so the provider
 			// narrative lands at the boundary, not inside the turn.
 			s.flushNotices()
-			s.runTurn(ctx, q.content, q.at)
+			s.runTurn(ctx, q.content, q.images, q.at)
 		case n := <-s.notices:
 			// A provider change arrived (possibly mid-turn; it waits in the
 			// channel until the turn ends, then commits at the boundary). The
@@ -682,7 +684,7 @@ func (s *Session) loop(ctx context.Context) {
 	}
 }
 
-func (s *Session) runTurn(ctx context.Context, content string, receivedAt int64) {
+func (s *Session) runTurn(ctx context.Context, content string, images []llm.ImagePart, receivedAt int64) {
 	turnID := s.nextTurn()
 	// The turn runs under its own cancellable context so the user can stop the
 	// whole loop (the Stop button): cancelling it aborts the model stream
@@ -706,6 +708,7 @@ func (s *Session) runTurn(ctx context.Context, content string, receivedAt int64)
 	// message was actually sent (receivedAt from the queue), not when a
 	// backlogged turn finally ran.
 	msg := llm.UserMessage(content)
+	msg.Images = images
 	msg.StartedAt = receivedAt
 	env := api.Envelope{Kind: api.KindMessage, Message: &msg, Queue: s.QueueDepth()}
 	turnSeq, err := s.commitEnv(env)
@@ -781,9 +784,10 @@ func (s *Session) runTurn(ctx context.Context, content string, receivedAt int64)
 }
 
 // Enqueue adds a user message for the scheduler to process. It never blocks a
-// single message; the scheduler paces turns serially.
-func (s *Session) Enqueue(content string) {
-	s.queue <- queuedMessage{content: content, at: time.Now().UnixMilli()}
+// single message; the scheduler paces turns serially. images are pictures the
+// user attached; nil is the common case (a text-only message).
+func (s *Session) Enqueue(content string, images []llm.ImagePart) {
+	s.queue <- queuedMessage{content: content, images: images, at: time.Now().UnixMilli()}
 }
 
 // ID returns the session's id.

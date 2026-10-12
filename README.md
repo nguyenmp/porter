@@ -476,6 +476,7 @@ Build order:
         host is offline rather than silently running on the server
 - [ ] Metrics & performance (tokens/sec, tool timing, worktree cache)
 - [x] Tool output trimming (`tool_output` head+tail model view, `read_output` recall) — full output kept in History/DB, only the model view trimmed
+- [x] Image attachments (web UI only: paste a screenshot or pick a file, up to 4 per message, 5 MiB each). The bytes travel inline as a base64 data URL, so the provider never has to reach the porter server; the media type comes from the file's own bytes, and only raster images are accepted. Each image is stored once, with the message, but rides along with the history on every later request, so an old image costs on every turn — dropping old images in the model view is the waiting improvement.
 - [ ] Token budget before send
 - [x] Dynamic MCP
 

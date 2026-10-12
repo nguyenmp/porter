@@ -341,7 +341,7 @@ func TestLiveReturnsInFlightStream(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	ses.Enqueue("stream it")
+	ses.Enqueue("stream it", nil)
 
 	var lr api.LiveResponse
 	deadline := time.Now().Add(5 * time.Second)

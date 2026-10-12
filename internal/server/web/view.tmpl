@@ -4,7 +4,8 @@
 		{{if eq $m.Role "user"}}
 			<div class="msg msg-user"{{if $m.StartedAt}} data-started="{{$m.StartedAt}}"{{end}}>
 				<span class="msg-role">user</span>
-				<div class="msg-content">{{nl2br $m.Content}}</div>
+				{{range $m.Images}}<img class="msg-image" src="{{imageURL .URL}}" alt="{{if .Name}}{{.Name}}{{else}}attached image{{end}}" loading="lazy">{{end}}
+				{{if $m.Content}}<div class="msg-content">{{nl2br $m.Content}}</div>{{end}}
 			</div>
 		{{else if eq $m.Role "assistant"}}
 			{{if $m.Reasoning}}

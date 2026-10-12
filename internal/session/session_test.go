@@ -354,7 +354,7 @@ func TestEnqueueRunsTurn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	s.Enqueue("hello")
+	s.Enqueue("hello", nil)
 
 	deadline := time.After(5 * time.Second)
 	var snap api.SessionHistory
@@ -386,7 +386,7 @@ func TestRunningAndQueueDepth(t *testing.T) {
 		t.Errorf("fresh session queue depth = %d, want 0", d)
 	}
 	for i := 0; i < 3; i++ {
-		s.Enqueue(fmt.Sprintf("m%d", i))
+		s.Enqueue(fmt.Sprintf("m%d", i), nil)
 	}
 	if d := s.QueueDepth(); d != 3 {
 		t.Errorf("queue depth after 3 enqueues = %d, want 3", d)
@@ -1375,7 +1375,7 @@ func TestProviderNoticeDeferredToTurnBoundary(t *testing.T) {
 
 	ch := make(chan api.ExecRequest, 8)
 	id := s.RegisterExec(ch, "laptop", "laptop", "remote")
-	s.Enqueue("run a tool")
+	s.Enqueue("run a tool", nil)
 
 	// Act as the execution client: wait for the tool call, then disconnect
 	// mid-flight. UnregisterExec closes the agent's pipe with
@@ -1566,7 +1566,7 @@ func TestCommitAutoHumanizesLongReply(t *testing.T) {
 	ctx, stop := context.WithCancel(context.Background())
 	defer stop()
 	stream := s.From(ctx, 0)
-	s.Enqueue("hello")
+	s.Enqueue("hello", nil)
 
 	started, ready := waitVariant(t, stream, 0)
 	if started == nil || started.Index != 0 || started.Source != -1 {

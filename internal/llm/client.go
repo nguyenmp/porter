@@ -14,11 +14,14 @@ import (
 )
 
 // chatRequest is the subset of the Chat Completions request body we send.
+// Messages are pre-encoded (see wireMessages) because a message carrying
+// images has to be rewritten into content parts on the way out, and pre-encoded
+// messages let that rewrite touch only the messages that need it.
 type chatRequest struct {
-	Model    string        `json:"model"`
-	Messages []ChatMessage `json:"messages"`
-	Tools    []Tool        `json:"tools,omitempty"`
-	Stream   bool          `json:"stream"`
+	Model    string            `json:"model"`
+	Messages []json.RawMessage `json:"messages"`
+	Tools    []Tool            `json:"tools,omitempty"`
+	Stream   bool              `json:"stream"`
 	// StreamOptions requests the provider's token usage on the final streamed
 	// chunk. OpenAI-compatible providers (and LiteLLM in front of them) omit
 	// `usage` from a streaming response unless include_usage is set, so without
@@ -87,9 +90,13 @@ func (c *Client) After() io.Closer {
 // so the endpoint join is predictable. When tools is non-empty it is declared
 // to the model so it may respond with tool calls.
 func (c *Client) Stream(ctx context.Context, messages []ChatMessage, tools []Tool) (io.ReadCloser, error) {
+	wire, err := wireMessages(messages)
+	if err != nil {
+		return nil, fmt.Errorf("encode messages: %w", err)
+	}
 	body, err := json.Marshal(chatRequest{
 		Model:         c.cfg.Model,
-		Messages:      messages,
+		Messages:      wire,
 		Tools:         tools,
 		Stream:        true,
 		StreamOptions: &streamOptions{IncludeUsage: true},
@@ -102,7 +109,14 @@ func (c *Client) Stream(ctx context.Context, messages []ChatMessage, tools []Too
 
 	endpoint := strings.TrimSuffix(c.cfg.BaseURL, "/") + "/chat/completions"
 	c.debugf("uploading %d byte prompt to %s (model=%s)", len(body), endpoint, c.cfg.Model)
-	c.debugf("payload: %s", body)
+	if HasImages(messages) {
+		// A request that carries an image holds megabytes of base64 inline;
+		// printing it would bury the rest of the log, so only the size is
+		// reported.
+		c.debugf("payload omitted (%d bytes): the request carries an attached image", len(body))
+	} else {
+		c.debugf("payload: %s", body)
+	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {

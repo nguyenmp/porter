@@ -245,8 +245,21 @@ var templates = template.Must(template.New("").Funcs(template.FuncMap{
 	"contextMeta":    contextMeta,
 	"fmtBytes":       fmtBytes,
 	"genMeta":        genMeta,
+	"imageURL":       imageURL,
 	"add1":           func(n int) int { return n + 1 },
 }).ParseFS(webFS, "web/*.tmpl"))
+
+// imageURL marks an attached image's data URL as safe to put in an <img src>.
+// html/template strips `data:` URLs from src attributes by default (it replaces
+// them with #ZgotmplZ), so this opt-out is needed to show an uploaded picture.
+//
+// It is safe because these URLs are built on the server from bytes the server
+// itself inspected (see readImagePart): the media type comes from the file's
+// own bytes and only raster image types are accepted, so the browser renders a
+// picture and never a script. SVG, which can carry script, is not accepted.
+func imageURL(u string) template.URL {
+	return template.URL(u)
+}
 
 // pageData is the data passed to every page template.
 type pageData struct {
@@ -616,22 +629,25 @@ func readCreateRequest(r *http.Request) (api.CreateRequest, error) {
 }
 
 // handleAppend queues a user message for the session's scheduler. It accepts
-// both JSON (api.AppendRequest) and form-encoded ("content" field) bodies so
-// HTMX forms can post directly without a JS shim. Live updates reach the page
-// over the SSE stream, so nothing else is needed here beyond accepting the
-// message.
+// JSON (api.AppendRequest), multipart form data (the web UI's composer, whose
+// "images" file fields carry attachments), and form-encoded ("content" field)
+// bodies so HTMX forms can post directly without a JS shim. Live updates reach
+// the page over the SSE stream, so nothing else is needed here beyond accepting
+// the message.
 func (s *Server) handleAppend(w http.ResponseWriter, r *http.Request) {
 	ses, ok := s.store.Get(chi.URLParam(r, "id"))
 	if !ok {
 		http.Error(w, "session not found", http.StatusNotFound)
 		return
 	}
-	content, err := readAppendContent(r)
+	content, images, err := readAppendContent(r)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if strings.TrimSpace(content) == "" {
+	// An image on its own is a valid message ("look at this"); a message with
+	// neither text nor images is not.
+	if strings.TrimSpace(content) == "" && len(images) == 0 {
 		http.Error(w, "empty message", http.StatusBadRequest)
 		return
 	}
@@ -654,26 +670,44 @@ func (s *Server) handleAppend(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, reason, http.StatusConflict)
 		return
 	}
-	ses.Enqueue(content)
+	ses.Enqueue(content, images)
 	w.WriteHeader(http.StatusAccepted)
 }
 
-// readAppendContent extracts the user's message from either a JSON body
-// (api.AppendRequest) or a form-encoded body ("content" field), depending on
-// the request's Content-Type.
-func readAppendContent(r *http.Request) (string, error) {
+// readAppendContent extracts the user's message — its text and any attached
+// images — from the request body. The shape depends on the Content-Type:
+// multipart form data from the web UI's composer, form-encoded from a plain
+// HTMX form, or JSON from a scripted client.
+func readAppendContent(r *http.Request) (string, []llm.ImagePart, error) {
 	ct := r.Header.Get("Content-Type")
+	if strings.HasPrefix(ct, "multipart/form-data") {
+		// Keep small parts in memory; larger ones spill to a temp file, which
+		// the server removes when the request ends.
+		if err := r.ParseMultipartForm(maxImageBytes); err != nil {
+			return "", nil, fmt.Errorf("invalid form: %w", err)
+		}
+		images, err := readUploadedImages(r)
+		if err != nil {
+			return "", nil, err
+		}
+		return r.FormValue("content"), images, nil
+	}
 	if strings.HasPrefix(ct, "application/x-www-form-urlencoded") {
 		if err := r.ParseForm(); err != nil {
-			return "", fmt.Errorf("invalid form: %w", err)
+			return "", nil, fmt.Errorf("invalid form: %w", err)
 		}
-		return r.PostForm.Get("content"), nil
+		return r.PostForm.Get("content"), nil, nil
 	}
 	var req api.AppendRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		return "", fmt.Errorf("invalid request: %w", err)
+		return "", nil, fmt.Errorf("invalid request: %w", err)
 	}
-	return req.Content, nil
+	for _, img := range req.Images {
+		if err := checkImageDataURL(img.URL); err != nil {
+			return "", nil, err
+		}
+	}
+	return req.Content, req.Images, nil
 }
 
 // handleHumanize starts a manual plain-language pass on a committed assistant

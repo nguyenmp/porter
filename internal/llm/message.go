@@ -58,6 +58,12 @@ type ChatMessage struct {
 	// so the SSE replay and /view can render the run as timed out instead of a
 	// normal exit. It only appears when true.
 	TimedOut bool `json:"timed_out,omitempty"`
+	// Images are pictures the user attached to this message. They ride on the
+	// message (not in Content) so the text stays a plain string everywhere the
+	// app already reads it — storage, the sidebar preview, the renderer, and
+	// the model-view projection. The LLM client merges them into Content as
+	// Chat Completions content parts on the way out; see wireMessages.
+	Images []ImagePart `json:"images,omitempty"`
 	// ToolOutput is structured metadata about a tool result's size and model-view
 	// presentation (see ToolOutputMeta): total/shown bytes, whether the model
 	// view truncated the result, and recall details for recall_tool_output results. It
@@ -106,6 +112,19 @@ func AssistantMessage(content, reasoning string, calls []ToolCall) ChatMessage {
 // keyed to the assistant's calling tool call by id.
 func ToolResult(id, result string) ChatMessage {
 	return ChatMessage{Role: "tool", ToolCallID: id, Content: result}
+}
+
+// ImagePart is one image attached to a user message: the original file name
+// (for display) and the bytes inline as a data URL, for example
+// "data:image/png;base64,iVBORw0KGgo...".
+//
+// The bytes travel inline because the porter server is usually not reachable
+// from the model provider, so a link to a hosted asset would be a dead link.
+// URL holds the complete data URL, prefix included, so it can be handed to the
+// provider as-is.
+type ImagePart struct {
+	Name string `json:"name,omitempty"`
+	URL  string `json:"url"`
 }
 
 // UserMessage builds a plain user message.

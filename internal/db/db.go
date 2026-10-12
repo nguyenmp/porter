@@ -22,7 +22,7 @@ var ErrNotFound = errors.New("db: session not found")
 
 // schemaVersion is the current schema revision, tracked in PRAGMA user_version.
 // Bump it and extend migrate when the schema changes.
-const schemaVersion = 12
+const schemaVersion = 13
 
 // DB wraps the SQLite database handle. It deliberately uses a single
 // connection: pragmas like foreign_keys are per-connection, and a single
@@ -322,6 +322,22 @@ CREATE TABLE IF NOT EXISTS providers (
 			return fmt.Errorf("set user_version: %w", err)
 		}
 	}
+	if v < 13 {
+		// v13: images on messages, holding a JSON array of llm.ImagePart —
+		// pictures the user attached to a user message, with their bytes inline
+		// as data URLs. They live in their own column rather than inside
+		// content so the text column stays plain prose everywhere it is read
+		// (the sidebar preview, the search, the renderer, the model-view
+		// projection) and so an unchanged content column keeps meaning what it
+		// always meant. Empty for every message without images.
+		const ddl = "ALTER TABLE messages ADD COLUMN images TEXT NOT NULL DEFAULT ''"
+		if _, err := d.db.Exec(ddl); err != nil {
+			return fmt.Errorf("apply schema v13: %w", err)
+		}
+		if _, err := d.db.Exec("PRAGMA user_version=13"); err != nil {
+			return fmt.Errorf("set user_version: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -457,15 +473,33 @@ func (d *DB) AppendMessage(sessionID int64, m Message) error {
 	if err != nil {
 		return err
 	}
+	images, err := marshalImages(m.Images)
+	if err != nil {
+		return err
+	}
 	_, err = d.db.Exec(
-		`INSERT INTO messages (session_id, seq, role, content, reasoning, tool_call_id, tool_calls, started_at, finished_at, cancelled, tool_output, output_tokens)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		sessionID, m.Seq, m.Role, m.Content, m.Reasoning, m.ToolCallID, string(calls), m.StartedAt, m.FinishedAt, boolInt(m.Cancelled), toolOutput, m.Output,
+		`INSERT INTO messages (session_id, seq, role, content, reasoning, tool_call_id, tool_calls, started_at, finished_at, cancelled, tool_output, output_tokens, images)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		sessionID, m.Seq, m.Role, m.Content, m.Reasoning, m.ToolCallID, string(calls), m.StartedAt, m.FinishedAt, boolInt(m.Cancelled), toolOutput, m.Output, images,
 	)
 	if err != nil {
 		return fmt.Errorf("insert message: %w", err)
 	}
 	return nil
+}
+
+// marshalImages encodes the images attached to a message to their stored JSON
+// form, or "" for none (the column default). Images hold base64 data URLs, so
+// this is what puts the picture bytes in the database.
+func marshalImages(imgs []llm.ImagePart) (string, error) {
+	if len(imgs) == 0 {
+		return "", nil
+	}
+	b, err := json.Marshal(imgs)
+	if err != nil {
+		return "", fmt.Errorf("marshal images: %w", err)
+	}
+	return string(b), nil
 }
 
 // marshalToolOutput encodes a ToolOutputMeta to its stored JSON form, or ""
@@ -526,7 +560,7 @@ func (d *DB) LoadSession(id int64) (Session, error) {
 		return Session{}, fmt.Errorf("load session %d: %w", id, err)
 	}
 	rows, err := d.db.Query(
-		`SELECT seq, role, content, reasoning, tool_call_id, tool_calls, started_at, finished_at, cancelled, tool_output, output_tokens
+		`SELECT seq, role, content, reasoning, tool_call_id, tool_calls, started_at, finished_at, cancelled, tool_output, output_tokens, images
 		 FROM messages WHERE session_id = ? ORDER BY seq ASC`, id)
 	if err != nil {
 		return Session{}, fmt.Errorf("load messages for %d: %w", id, err)
@@ -536,11 +570,18 @@ func (d *DB) LoadSession(id int64) (Session, error) {
 		var calls string
 		var cancelled int
 		var toolOutput string
-		if err := rows.Scan(&m.Seq, &m.Role, &m.Content, &m.Reasoning, &m.ToolCallID, &calls, &m.StartedAt, &m.FinishedAt, &cancelled, &toolOutput, &m.Output); err != nil {
+		var images string
+		if err := rows.Scan(&m.Seq, &m.Role, &m.Content, &m.Reasoning, &m.ToolCallID, &calls, &m.StartedAt, &m.FinishedAt, &cancelled, &toolOutput, &m.Output, &images); err != nil {
 			rows.Close()
 			return Session{}, fmt.Errorf("scan message: %w", err)
 		}
 		m.Cancelled = cancelled != 0
+		if images != "" {
+			if err := json.Unmarshal([]byte(images), &m.Images); err != nil {
+				rows.Close()
+				return Session{}, fmt.Errorf("decode images for seq %d: %w", m.Seq, err)
+			}
+		}
 		if toolOutput != "" {
 			if err := json.Unmarshal([]byte(toolOutput), &m.ToolOutput); err != nil {
 				rows.Close()

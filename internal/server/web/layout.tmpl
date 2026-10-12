@@ -139,6 +139,32 @@
 		}
 		.tool-result + .msg-meta { margin: 0.1rem 0 0.35rem; }
 		.msg-content { white-space: normal; }
+		/* Images attached to a user message. Capped in height so a screenshot
+		   never pushes the conversation out of view, and object-fit keeps the
+		   aspect ratio when the cap bites. A message with images and no text
+		   has an empty .msg-content, which is hidden rather than left as a gap. */
+		.msg-image {
+			display: block;
+			max-width: 100%;
+			max-height: 360px;
+			border-radius: 4px;
+			margin: 0.2rem 0;
+			background: #fff;
+		}
+		.msg-user .msg-content:empty { display: none; }
+		/* The composer's attachment strip: one thumbnail per chosen image, each
+		   with a remove button, above the input row. */
+		.attach-strip { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-bottom: 0.35rem; }
+		.attach-strip:empty { display: none; }
+		.attach-thumb { position: relative; }
+		.attach-thumb img { display: block; height: 56px; max-width: 96px; object-fit: cover; border-radius: 4px; border: 1px solid #ccc; }
+		.attach-thumb button {
+			position: absolute; top: -6px; right: -6px;
+			width: 18px; height: 18px; line-height: 1;
+			border: 1px solid #bbb; border-radius: 50%;
+			background: #fff; color: #666; cursor: pointer;
+			font-size: 12px; padding: 0;
+		}
 		.tool-call, .tool-result { margin-top: 0.5rem; }
 		.tool-call summary, .tool-result summary { cursor: pointer; font-size: 0.85em; color: #555; }
 		.tool-call pre, .tool-result pre { background: #1e1e1e; color: #d4d4d4; padding: 0.5rem; border-radius: 4px; overflow-x: auto; white-space: pre-wrap; }
@@ -248,10 +274,18 @@
 		   list indent so checkboxes align like goldmark's committed output. */
 		.msg-content ul.contains-task-list { list-style: none; padding-left: 0.2em; }
 		/* Message form */
-		.msg-form { display: flex; gap: 0.5rem; width: 100%; max-width: 1000px; margin: 0 auto; padding: 1rem 0.5rem; box-sizing: border-box; }
+		/* The composer stacks: the attachment strip on top, then the input row.
+		   Keeping the form a column means the strip can grow without pushing
+		   the buttons sideways. */
+		.msg-form { display: flex; flex-direction: column; gap: 0.5rem; width: 100%; max-width: 1000px; margin: 0 auto; padding: 1rem 0.5rem; box-sizing: border-box; }
+		.msg-input-row { display: flex; gap: 0.5rem; align-items: center; }
 		.msg-form input[type="text"] { flex: 1; padding: 0.5rem; border: 1px solid #ccc; border-radius: 4px; font-size: 1rem; }
 		.msg-form button { padding: 0.5rem 1rem; border: none; border-radius: 4px; background: #007bff; color: #fff; font-size: 1rem; cursor: pointer; }
 		.msg-form button:hover { background: #0056b3; }
+		/* Attach is a secondary action next to Send, so it reads as neutral
+		   rather than as a second primary button. */
+		.msg-form .attach-btn { background: #6c757d; }
+		.msg-form .attach-btn:hover { background: #5a6268; }
 		/* The Stop button in the message form: a red control that appears only
 		   while a turn is running (JS toggles hidden), so the user can abort the
 		   whole agent loop — the model stream and any running tool — not just

@@ -130,14 +130,27 @@
 		<form hx-post="/api/sessions/{{.Session}}/messages"
 		      hx-target="#chat"
 		      hx-swap="none"
+		      enctype="multipart/form-data"
+		      hx-encoding="multipart/form-data"
 		      class="msg-form">
-			<input type="text" name="content" placeholder="Type a message…" autocomplete="off" autofocus>
-			{{/* Stop button: aborts the running agent loop (model stream + any
-			     running tool) and ends the turn with a stopped marker. type="button"
-			     so it never submits the form. Visible only while a turn is running
-			     (JS toggles hidden, seeded by the page-load Running flag). */}}
-			<button type="button" id="stop-btn" class="stop-btn" hidden>Stop</button>
-			<button type="submit">Send</button>
+			{{/* Attachment strip: thumbnails of the images chosen but not yet
+			     sent, each with a remove button. Filled by the page script, empty
+			     (and hidden, via :empty) until an image is attached. */}}
+			<div class="attach-strip" id="attach-strip"></div>
+			<div class="msg-input-row">
+				<input type="text" name="content" placeholder="Type a message…" autocomplete="off" autofocus>
+				{{/* Attach an image: opens the file picker. type="button" so it never
+				     submits the form. Pasting a screenshot also attaches it (see the
+				     paste handler), which is the usual way in. */}}
+				<input type="file" name="images" id="image-input" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden>
+				<button type="button" id="attach-btn" class="attach-btn" title="Attach an image (or paste a screenshot)">Image</button>
+				{{/* Stop button: aborts the running agent loop (model stream + any
+				     running tool) and ends the turn with a stopped marker. type="button"
+				     so it never submits the form. Visible only while a turn is running
+				     (JS toggles hidden, seeded by the page-load Running flag). */}}
+				<button type="button" id="stop-btn" class="stop-btn" hidden>Stop</button>
+				<button type="submit">Send</button>
+			</div>
 		</form>
 		{{/* Session total below the input box: seeded at page render from the
 		     session's accumulated completed-turn usage, then updated in place by
@@ -772,6 +785,12 @@
   const chat = document.getElementById('chat');
   const form = document.querySelector('.msg-form');
   const input = form ? form.querySelector('input[name="content"]') : null;
+  const imageInput = document.getElementById('image-input');
+  const imageStrip = document.getElementById('attach-strip');
+  // MAX_IMAGES mirrors the server's per-message cap (maxImagesPerMessage), so
+  // the composer refuses an over-limit message before it is sent rather than
+  // letting the server reject it.
+  const MAX_IMAGES = 4;
 
   // Track the currently streaming assistant message and reasoning block so
   // deltas can append in place instead of creating new elements each time.
@@ -1508,12 +1527,30 @@
     if (!el) return;
     stampCommitted(el, run.startedAt, run.finishedAt, run.status === 'cancelled', 0, run.status === 'timed out');
   }
-  function appendMessage(role, html) {
+  function appendMessage(role, html, images) {
     const div = document.createElement('div');
     div.className = 'msg msg-' + role;
     div.innerHTML = '<span class="msg-role">' + role + '</span><div class="msg-content">' + html + '</div>';
+    appendImages(div, images);
     chat.appendChild(div);
     return div;
+  }
+
+  // appendImages puts one <img> per attached image above the message text, so a
+  // reloaded page and the live stream show a message the same way. src is set
+  // as a property, never concatenated into HTML, so a data URL cannot break out
+  // of the attribute.
+  function appendImages(div, images) {
+    if (!images || !images.length) return;
+    const content = div.querySelector('.msg-content');
+    for (const img of images) {
+      const el = document.createElement('img');
+      el.className = 'msg-image';
+      el.alt = img.name || 'attached image';
+      el.loading = 'lazy';
+      el.src = img.url;
+      div.insertBefore(el, content);
+    }
   }
 
   function ensureAssistant() {
@@ -2426,7 +2463,7 @@
         if (m.role === 'user') {
           currentAssistant = null;
           currentReasoning = null;
-          const uDiv = appendMessage('user', escapeHTML(m.content).replace(/\n/g, '<br>'));
+          const uDiv = appendMessage('user', escapeHTML(m.content).replace(/\n/g, '<br>'), m.images);
           stampCommitted(uDiv, env.started_at, env.finished_at, false);
           // A user commit marks the start of its turn; the server reports how
           // many turns are still queued behind this one.
@@ -2688,14 +2725,105 @@
     if (followMode) chat.scrollTop = chat.scrollHeight;
   };
 
-  // After sending a message, clear the input and keep focus. The form only
-  // exists when a session is selected (the empty state has none). Sending a
-  // message to an archived session unarchives it server-side; when that
-  // happens, flip the page's archive button back to Archive and move the
-  // session back into the active sidebar list.
+  // --- Attachments ---------------------------------------------------------
+  // Images chosen in the composer but not yet sent. They live on the file
+  // input's FileList — which is what the form posts — and the strip above the
+  // input is only a preview, redrawn from that list so the two never disagree.
+  //
+  // A screenshot is usually pasted rather than picked from disk, so the paste
+  // handler below turns clipboard images into the same attachments.
+
+  function currentFiles() {
+    return imageInput && imageInput.files ? Array.from(imageInput.files) : [];
+  }
+
+  // setFiles replaces the input's file list. A FileList is read-only, so the
+  // new set is built in a DataTransfer and assigned whole.
+  function setFiles(files) {
+    if (!imageInput) return;
+    const dt = new DataTransfer();
+    for (const f of files) dt.items.add(f);
+    imageInput.files = dt.files;
+    renderAttachments();
+  }
+
+  // addFiles appends images to the composer, up to the cap, and says what it
+  // refused so a rejected screenshot is never a silent no-op.
+  function addFiles(files) {
+    if (!imageInput) return;
+    const kept = currentFiles();
+    const refused = [];
+    for (const f of files) {
+      if (kept.length >= MAX_IMAGES) { refused.push(f.name || 'image'); continue; }
+      kept.push(f);
+    }
+    setFiles(kept);
+    if (refused.length) {
+      alert('One message can carry ' + MAX_IMAGES + ' images. Not attached: ' + refused.join(', '));
+    }
+  }
+
+  // renderAttachments redraws the preview strip from the input's file list.
+  // Preview URLs are revoked as the strip is rebuilt, so previewing a big
+  // screenshot does not leak memory.
+  function renderAttachments() {
+    if (!imageStrip) return;
+    for (const img of imageStrip.querySelectorAll('img')) URL.revokeObjectURL(img.src);
+    imageStrip.textContent = '';
+    currentFiles().forEach(function(file, idx) {
+      const thumb = document.createElement('div');
+      thumb.className = 'attach-thumb';
+      const img = document.createElement('img');
+      img.src = URL.createObjectURL(file);
+      img.alt = file.name || 'attached image';
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.title = 'Remove ' + (file.name || 'this image');
+      remove.textContent = '×';
+      remove.addEventListener('click', function() {
+        const rest = currentFiles();
+        rest.splice(idx, 1);
+        setFiles(rest);
+      });
+      thumb.appendChild(img);
+      thumb.appendChild(remove);
+      imageStrip.appendChild(thumb);
+    });
+  }
+
+  if (imageInput) {
+    imageInput.addEventListener('change', renderAttachments);
+  }
+  const attachBtn = document.getElementById('attach-btn');
+  if (attachBtn && imageInput) {
+    attachBtn.addEventListener('click', function() { imageInput.click(); });
+  }
+  // Paste a screenshot straight into the composer. A text paste is left alone,
+  // so the browser inserts it normally.
+  document.addEventListener('paste', function(evt) {
+    if (!imageInput) return;
+    const items = (evt.clipboardData && evt.clipboardData.items) || [];
+    const files = [];
+    for (const item of items) {
+      if (item.kind === 'file' && item.type.indexOf('image/') === 0) {
+        const f = item.getAsFile();
+        if (f) files.push(f);
+      }
+    }
+    if (!files.length) return;
+    evt.preventDefault();
+    addFiles(files);
+  });
+
+  // After sending a message, clear the input and any attachments, and keep
+  // focus. The form only exists when a session is selected (the empty state has
+  // none). Sending a message to an archived session unarchives it server-side;
+  // when that happens, flip the page's archive button back to Archive and move
+  // the session back into the active sidebar list.
   if (form) {
     form.addEventListener('htmx:afterRequest', function(evt) {
       input.value = '';
+      setFiles([]);
       input.focus();
       if (evt.detail && evt.detail.successful && archiveBtn && archiveBtn.dataset.archived === 'true') {
         archiveBtn.dataset.archived = 'false';
