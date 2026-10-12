@@ -13,8 +13,8 @@
 // rule base means the background pass and the loadable skill can never drift apart;
 // each mode appends only the behavior its own job needs. The standing style
 // the agent injects into every request (Directive) stays lean: instead of
-// restating the rules, it tells the model to load this skill and apply its
-// rules to everything it writes, so replies, drafted reports, and code
+// restating the rules, it tells the model to load this skill and thoroughly
+// apply its rules to everything it writes, so replies, drafted reports, and code
 // comments are written plainly the first time and the rewrite pass is a safety
 // net rather than the only plain-language path. A one-line reminder
 // (UserMessageReminder) rides on the conversation too: the model view appends
@@ -137,7 +137,7 @@ const interactiveSuffix = "\n\nWhen used interactively:if you have no text,ask w
 
 // Directive returns the standing writing-style instruction the agent injects
 // into every model request: a short pointer to the built-in plain-language
-// skill. It tells the model to load the skill and apply its rules to
+// skill. It tells the model to load the skill and thoroughly apply its rules to
 // everything it writes — replies to the user, drafted reports and documents,
 // and comments on code — so assistant output is written plainly the first
 // time. The rules themselves live in one copy (plain_rules.md, served as the
@@ -151,7 +151,7 @@ func Directive() string { return systemDirective }
 // the background pass (humanizePrompt); the directive only tells the model to
 // load that skill. Keeping the rules out of the standing prefix keeps it
 // small, and the one-copy rule base keeps every mode on the same page.
-var systemDirective = `Always write in plain language. Load the plain-language skill and apply its rules to everything you write: replies to the user, reports and documents you draft, code comments you write or edit, web pages you build, UI text you write, and documentation you create. Replies go to a working developer, so keep the technical terms they already know and define each term they might not, the first time it appears.
+var systemDirective = `Always write in plain language. Load the plain-language skill and thoroughly apply its rules to everything you write: replies to the user, reports and documents you draft, code comments you write or edit, web pages you build, UI text you write, and documentation you create. Replies go to a working developer, so keep the technical terms they already know and define each term they might not, the first time it appears.
 `
 
 // UserMessageReminder is the one-line reminder the model view appends to every
