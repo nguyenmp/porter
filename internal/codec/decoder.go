@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -66,10 +67,13 @@ type itemContentPart struct {
 }
 
 // responseBody is the response object the terminal events carry. porter reads
-// its token totals, and its error when the response failed.
+// its token totals, and its error when the response failed. Its output list is
+// the last-resort source for a function call some upstreams never announce with
+// output_item events (see collectFinalCalls).
 type responseBody struct {
-	Usage *usage    `json:"usage"`
-	Error *apiError `json:"error"`
+	Usage  *usage        `json:"usage"`
+	Output []*outputItem `json:"output"`
+	Error  *apiError     `json:"error"`
 }
 
 // apiError is a provider-reported failure.
@@ -212,6 +216,9 @@ func (d *Decoder) Process(line string) (bool, error) {
 	case ev.Type == "response.completed", ev.Type == "response.incomplete":
 		d.finished = true
 		d.captureUsage(ev)
+		if err := d.collectFinalCalls(ev); err != nil {
+			return false, err
+		}
 		return d.finalize(), nil
 	case ev.Type == "response.failed", ev.Type == "error":
 		d.finished = true
@@ -269,6 +276,38 @@ func (d *Decoder) captureUsage(ev streamEvent) {
 	d.inTokens = ev.Response.Usage.InputTokens
 	d.outTokens = ev.Response.Usage.OutputTokens
 	d.cachedIn = ev.Response.Usage.cachedInput()
+}
+
+// collectFinalCalls takes any function call the terminal response's output list
+// carries that the stream never announced with output_item events. Some
+// upstreams (LiteLLM's chat-completions bridge among them) deliver the call only
+// here; ignoring the list dropped the call, porter saw a plain reply, and the
+// turn ended — the chat "stopped" though the model was mid-task. A call the
+// stream did announce is left alone: its slot already holds the id, name, and
+// arguments, and rewriting it could only lose or duplicate pieces.
+func (d *Decoder) collectFinalCalls(ev streamEvent) error {
+	if ev.Response == nil {
+		return nil
+	}
+	for idx, item := range ev.Response.Output {
+		if item == nil || item.Type != "function_call" {
+			continue
+		}
+		if cur, ok := d.toolCalls[idx]; ok && cur.ID != "" && cur.Name != "" {
+			continue
+		}
+		cur := d.slot(idx)
+		if cur.ID == "" {
+			cur.ID = firstNonEmpty(item.CallID, item.ID)
+		}
+		if cur.Name == "" {
+			cur.Name = item.Name
+		}
+		if cur.Arguments == "" && item.Arguments != "" {
+			cur.Arguments = item.Arguments
+		}
+	}
+	return nil
 }
 
 // emitText accumulates a piece of the model's prose and reports it as a live
@@ -330,6 +369,15 @@ func (d *Decoder) startItem(ev streamEvent) error {
 		return d.liveDelta(ev.OutputIndex, ev.Item.CallID, ev.Item.Name, ev.Item.Arguments)
 	case "reasoning":
 		return d.emitReasoning(reasoningContent(ev.Item))
+	case "message":
+		// Some upstreams deliver the whole reply with the item's first
+		// appearance and never stream output_text.delta at all; take the text
+		// here so a reply that is only ever announced once still lands. A
+		// provider that also streams deltas is unaffected: finalize uses this
+		// copy only when no delta ever arrived.
+		if d.full.Len() == 0 && d.messageItemText == "" {
+			d.messageItemText = proseContent(ev.Item)
+		}
 	}
 	return nil
 }
@@ -433,13 +481,19 @@ func (d *Decoder) liveDelta(index int, id, name, args string) error {
 	})
 }
 
-// completedToolCalls returns the accumulated tool calls in output order.
+// completedToolCalls returns the accumulated tool calls in output order. The
+// indexes are the stream's output indexes, which are sparse — a message or
+// reasoning item occupies an index without ever becoming a tool-call slot — so
+// the map is walked in sorted key order rather than by position.
 func (d *Decoder) completedToolCalls() []ToolCall {
-	out := make([]ToolCall, 0, len(d.toolCalls))
-	for i := 0; i < len(d.toolCalls); i++ {
-		if c, ok := d.toolCalls[i]; ok {
-			out = append(out, *c)
-		}
+	indexes := make([]int, 0, len(d.toolCalls))
+	for i := range d.toolCalls {
+		indexes = append(indexes, i)
+	}
+	sort.Ints(indexes)
+	out := make([]ToolCall, 0, len(indexes))
+	for _, i := range indexes {
+		out = append(out, *d.toolCalls[i])
 	}
 	return out
 }

@@ -398,3 +398,93 @@ func TestDecoderStreamedTextWinsOverItemEcho(t *testing.T) {
 		t.Errorf("the streamed reply is missing; got:\n%s", got)
 	}
 }
+
+// TestDecoderCollectsCallFromFinalOutput covers the shape that made porter stop
+// the chat mid-task: an upstream (LiteLLM's chat-completions bridge) announces
+// no output_item events for a function call; the call rides only in the
+// terminal response's output list. The decoder must take it from there, or
+// porter sees a plain reply, ends the turn, and the model's follow-up call is
+// never run.
+func TestDecoderCollectsCallFromFinalOutput(t *testing.T) {
+	got, err := feed(t,
+		`data: {"type":"response.output_item.added","output_index":0,"item":{"id":"rs_1","type":"reasoning","content":[{"text":"recall the rest","type":"reasoning_text"}]}}`,
+		`data: {"type":"response.output_item.added","output_index":1,"item":{"id":"msg_1","content":[{"text":"Reading the rest of it now.","type":"output_text"}],"role":"assistant","type":"message"}}`,
+		`data: {"type":"response.completed","response":{"output":[{"id":"rs_1","type":"reasoning"},{"id":"msg_1","type":"message"},{"id":"fc_1","call_id":"call_x9","type":"function_call","name":"recall_tool_output","arguments":"{\"call_id\":\"chatcmpl-tool-847\",\"offset\":0}"}],"usage":{"input_tokens":10,"output_tokens":77}}}`,
+	)
+	if err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	for _, want := range []string{
+		`"type":"tool_call"`, `"tool_call_id":"call_x9"`, `"name":"recall_tool_output"`,
+		`"arguments":"{\"call_id\":\"chatcmpl-tool-847\",\"offset\":0}"`,
+		`"content":"Reading the rest of it now."`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("output missing %q; got:\n%s", want, got)
+		}
+	}
+}
+
+// TestDecoderKeepsAnnouncedCallOverFinalEcho keeps a call the stream announced
+// from being clobbered or doubled by the terminal payload's copy.
+func TestDecoderKeepsAnnouncedCallOverFinalEcho(t *testing.T) {
+	got, err := feed(t,
+		`data: {"type":"response.output_item.added","output_index":0,"item":{"id":"fc_1","call_id":"call_live","type":"function_call","name":"shell"}}`,
+		`data: {"type":"response.function_call_arguments.delta","output_index":0,"delta":"{\"command\":\"ls\"}"}`,
+		`data: {"type":"response.completed","response":{"output":[{"id":"fc_1","call_id":"call_final","type":"function_call","name":"OTHER","arguments":"{\"command\":\"rm\"}"}],"usage":{"input_tokens":1,"output_tokens":1}}}`,
+	)
+	if err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	for _, want := range []string{
+		`"tool_call_id":"call_live"`, `"name":"shell"`, `"arguments":"{\"command\":\"ls\"}"`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("output missing %q; got:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, `"call_final"`) || strings.Contains(got, `"rm"`) {
+		t.Errorf("the final payload overwrote the announced call; got:\n%s", got)
+	}
+}
+
+// TestDecoderHandlesMixedItemStream is the whole shape from the production hunt,
+// in the order that stream used: a reasoning item, a message item carrying the
+// reply whole, a function call announced by output_item events, and a terminal
+// response that repeats all three in its output list. Every part must survive:
+// the reasoning, the reply text, and the call — and the call must not be
+// dropped, because a dropped call ends the turn while the model is mid-task.
+func TestDecoderHandlesMixedItemStream(t *testing.T) {
+	got, err := feed(t,
+		`data: {"type":"response.created","response":{"id":"resp_m","status":"in_progress"}}`,
+		`data: {"type":"response.output_item.added","output_index":0,"item":{"id":"rs_1","type":"reasoning","content":[{"text":"recall the rest","type":"reasoning_text"}]}}`,
+		`data: {"type":"response.output_item.added","output_index":1,"item":{"id":"msg_1","content":[{"text":"Reading the rest of it now.","type":"output_text"}],"role":"assistant","type":"message"}}`,
+		`data: {"type":"response.output_item.added","output_index":2,"item":{"id":"fc_1","call_id":"call_x1","type":"function_call","name":"recall_tool_output","arguments":""}}`,
+		`data: {"type":"response.function_call_arguments.delta","output_index":2,"item_id":"fc_1","delta":"{\"call_id\":\"call_1\",\"offset\":0}"}`,
+		`data: {"type":"response.function_call_arguments.done","output_index":2,"item_id":"fc_1","arguments":"{\"call_id\":\"call_1\",\"offset\":0}"}`,
+		`data: {"type":"response.output_item.done","output_index":1,"item":{"id":"msg_1","content":[{"text":"Reading the rest of it now.","type":"output_text"}],"role":"assistant","type":"message"}}`,
+		`data: {"type":"response.output_item.done","output_index":2,"item":{"id":"fc_1","call_id":"call_x1","type":"function_call","name":"recall_tool_output","arguments":"{\"call_id\":\"call_1\",\"offset\":0}"}}`,
+		`data: {"type":"response.completed","response":{"output":[{"id":"rs_1","type":"reasoning"},{"id":"msg_1","type":"message"},{"id":"fc_1","call_id":"call_x1","type":"function_call","name":"recall_tool_output","arguments":"{\"call_id\":\"call_1\",\"offset\":0}"}],"usage":{"input_tokens":10,"output_tokens":77}}}`,
+	)
+	if err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	for _, want := range []string{
+		`"reasoning":"recall the rest"`,
+		`"content":"Reading the rest of it now."`,
+		`"type":"tool_call"`, `"tool_call_id":"call_x1"`, `"name":"recall_tool_output"`,
+		`"arguments":"{\"call_id\":\"call_1\",\"offset\":0}"`,
+		`"type":"usage"`, `"output_tokens":77`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("output missing %q; got:\n%s", want, got)
+		}
+	}
+	// The reply text is committed once, and the call is emitted once.
+	if n := strings.Count(got, `"content":"Reading the rest of it now."`); n != 1 {
+		t.Errorf("reply committed %d times, want 1; got:\n%s", n, got)
+	}
+	if n := strings.Count(got, `"type":"tool_call"`); n != 1 {
+		t.Errorf("tool call emitted %d times, want 1; got:\n%s", n, got)
+	}
+}
