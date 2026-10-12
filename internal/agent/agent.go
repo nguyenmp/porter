@@ -286,7 +286,7 @@ func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage,
 		// the required porter_action_description and porter_timeout_seconds
 		// arguments — on every tool the model sees, in one place, so no tool
 		// definition site needs to know about it.
-		defs := llm.AddToolContract(append([]llm.Tool{recall.Def(), spool.Def(), asset.Def(), asset.IframeDef()}, js.Defs()...))
+		defs := llm.AddToolContract(append([]llm.Tool{recall.Def(), spool.Def(), asset.Def(), asset.IframeDef(), asset.ReadImageDef()}, js.Defs()...))
 		// Wall-clock bounds of this model request: started just before the
 		// stream opens, finished once it closes. They are stamped on the
 		// assistant message(s) this request commits so the UI can show when
@@ -504,6 +504,23 @@ func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage,
 				if timedOut {
 					m.TimedOut = true
 				}
+				return commit(m)
+			}
+			// finishToolWithImages is finishTool plus the pictures the result
+			// carries for the model to look at (read_image). The images ride on
+			// the result's metadata, never on the wire: a role-"tool" message
+			// holds text only, and the model-view projection moves them onto a
+			// user message that follows the turn's tool results.
+			finishToolWithImages := func(content string, images []llm.ImagePart, startedAt, finishedAt int64) error {
+				meta := recall.Meta(content)
+				meta.Images = images
+				if emit != nil {
+					emit(api.Envelope{Kind: api.KindToolResult, ToolCallID: c.ID, Name: c.Name, Arguments: c.Arguments, StartedAt: startedAt, FinishedAt: finishedAt, Result: content, ToolOutput: meta})
+				}
+				m := llm.ToolResult(c.ID, content)
+				m.StartedAt = startedAt
+				m.FinishedAt = finishedAt
+				m.ToolOutput = meta
 				return commit(m)
 			}
 			// recall_tool_output is served by the agent itself from the turn's history:
@@ -864,6 +881,56 @@ func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage,
 				}
 				continue
 			}
+			// read_image is served by the agent like publish_asset: the file
+			// read runs on the active execution provider through the same
+			// private tool, and the bytes are published as an asset. Unlike
+			// publish_asset the picture is also handed to the model. It rides
+			// on the tool result's metadata, because a role-"tool" message
+			// holds text only; the model-view projection attaches it to a user
+			// message that follows the turn's tool results.
+			if c.Name == asset.ReadImageTool {
+				startedAt := time.Now().UnixMilli()
+				path, perr := asset.ParseReadImageArgs(c.Arguments)
+				if perr != nil {
+					if err := finishTool("error: "+perr.Error(), false, startedAt, startedAt); err != nil {
+						return res, err
+					}
+					continue
+				}
+				if h.PublishAsset == nil {
+					if err := finishTool("error: read_image: no asset store is configured on this server", false, startedAt, startedAt); err != nil {
+						return res, err
+					}
+					continue
+				}
+				data, resolved, failure := readProviderFile(runCtx, js, path)
+				finishedAt := time.Now().UnixMilli()
+				if data == nil {
+					if err := finishTool(failure, false, startedAt, finishedAt); err != nil {
+						return res, err
+					}
+					if cause := classifyRun(ctx, callCtx, runCtx); cause == runStopped {
+						return res, ErrTurnStopped
+					} else if cause == runCancelled {
+						return res, ErrToolCancelled
+					}
+					continue
+				}
+				name := asset.SanitizeFilename(filepath.Base(resolved))
+				url, aerr := h.PublishAsset(name, data)
+				if aerr != nil {
+					if err := finishTool("error: read_image: "+aerr.Error(), false, startedAt, finishedAt); err != nil {
+						return res, err
+					}
+					continue
+				}
+				result := fmt.Sprintf("read_image: %s saved as %s (%d bytes). The picture is attached in the next user message.",
+					name, url, len(data))
+				if err := finishToolWithImages(result, []llm.ImagePart{{Name: name, URL: url}}, startedAt, finishedAt); err != nil {
+					return res, err
+				}
+				continue
+			}
 			if h.OnRunStarted != nil {
 				h.OnRunStarted(c.ID, callCancel)
 			}
@@ -1183,4 +1250,55 @@ func writeDimmed(w io.Writer, dim bool, s string) {
 		return
 	}
 	io.WriteString(w, "\x1b[2m"+s+"\x1b[0m")
+}
+
+// readProviderFile runs the provider's private file read (tools.AssetReadTool)
+// on the active execution provider and returns the decoded bytes together with
+// the resolved absolute path.
+//
+// When the read cannot produce picture bytes, data is nil and failure is a
+// result string the model can read: the read never started, the provider's
+// answer was malformed, the file was over the size cap, or the bytes are not a
+// picture type the providers accept. The caller decides whether the turn also
+// ends (a cancelled or stopped run), because that depends on the run's cause.
+func readProviderFile(runCtx context.Context, js tools.Provider, path string) (data []byte, resolved string, failure string) {
+	rstream, err := js.Run(runCtx, tools.AssetReadTool, asset.ReadPayload(path))
+	if err != nil {
+		return nil, "", "error: read_image: " + err.Error()
+	}
+	var raw strings.Builder
+	buf := make([]byte, 32*1024)
+	for {
+		n, rerr := rstream.Read(buf)
+		if n > 0 {
+			raw.Write(buf[:n])
+		}
+		if rerr != nil {
+			break
+		}
+	}
+	_ = rstream.Close()
+	final := raw.String()
+	if strings.TrimSpace(final) == "" {
+		return nil, "", "error: read_image: " + path + " could not be read (the run ended before the file arrived)"
+	}
+	var rd struct {
+		Path string `json:"path"`
+		Size int    `json:"size"`
+		Data string `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(final), &rd); err != nil {
+		return nil, "", fmt.Sprintf("error: read_image: %s could not be read (malformed provider response: %v)", path, err)
+	}
+	if rd.Size < 0 || rd.Size > asset.MaxBytes {
+		return nil, "", fmt.Sprintf("error: read_image: %s is %d bytes; the limit is %d bytes (%d MiB)", path, rd.Size, asset.MaxBytes, asset.MaxBytes/(1<<20))
+	}
+	decoded, derr := base64.StdEncoding.DecodeString(rd.Data)
+	if derr != nil || len(decoded) != rd.Size {
+		return nil, "", fmt.Sprintf("error: read_image: %s could not be decoded (size mismatch)", path)
+	}
+	if asset.ImageMimeType(decoded) == "" {
+		return nil, "", fmt.Sprintf("error: read_image: %s is not a png, jpeg, gif, or webp picture", path)
+	}
+	return decoded, rd.Path, ""
 }

@@ -291,6 +291,15 @@ descriptions point at each other — `publish_asset` says to pass HTML URLs to
 `render_iframe`, and `render_iframe` says to publish first — so the model
 learns them as one flow: create a file, publish it, show it.
 
+To *look* at a picture rather than show it, the model calls `read_image` with a
+path. The file becomes an asset as well, and the result names its URL. The
+picture is also attached to the model's own view of the conversation, on a user
+message that follows the turn's tool results — a tool result holds text only, so
+the picture cannot ride there. The model therefore sees the picture on its next
+turn and can keep referring to it. Nothing is added to the saved history: the
+attachment exists only in the copy sent to the model, so it never shows as a
+message the user did not write.
+
 ### Plain language
 
 Porter writes in plain language by default. Every model request leads with a
@@ -480,6 +489,8 @@ Build order:
 - [ ] Metrics & performance (tokens/sec, tool timing, worktree cache)
 - [x] Tool output trimming (`tool_output` head+tail model view, `read_output` recall) — full output kept in History/DB, only the model view trimmed
 - [x] Image attachments (web UI only: paste a screenshot or pick a file, up to 4 per message, 5 MiB each). An upload is published as an asset, and the message names it by that URL; the LLM client turns the URL back into inline base64 bytes when it builds a request, so the provider never has to reach the porter server. The media type comes from the file's own bytes, and only raster images are accepted. A server with no asset store refuses an upload with a clear message. The image rides along with the history on every later request, so an old image costs on every turn — dropping old images in the model view is the waiting improvement.
+- [x] `read_image` — the model reads a picture from the execution environment and sees it on its next turn. The picture is published as an asset, so the result names its URL, and it is attached to the model's view of the conversation only: the saved history keeps the result as text.
+- [ ] `generate_image` — make a picture from a prompt and optional input pictures, iterating on earlier results.
 - [ ] Token budget before send
 - [x] Dynamic MCP
 

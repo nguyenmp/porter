@@ -463,3 +463,85 @@ func TestProjectModelViewSpoolHints(t *testing.T) {
 		t.Errorf("truncated header missing the spool_output clause:\n%.200s", out[6].Content)
 	}
 }
+
+// TestProjectModelViewAttachesToolImages checks that a picture a tool result
+// carries (read_image) is attached to a user message that follows the turn's
+// tool results, because a role-"tool" message holds text only. The committed
+// history is left alone, and a second pass adds no duplicate.
+func TestProjectModelViewAttachesToolImages(t *testing.T) {
+	call := llm.ToolCall{ID: "call_1", Type: "function", Function: llm.ToolFunction{Name: "read_image", Arguments: "{}"}}
+	toolMsg := llm.ToolResult("call_1", "read_image: shot.png saved as /assets/sessions/s/abc/shot.png (12 bytes).")
+	toolMsg.ToolOutput = &llm.ToolOutputMeta{Images: []llm.ImagePart{{Name: "shot.png", URL: "/assets/sessions/s/abc/shot.png"}}}
+	history := []llm.ChatMessage{
+		llm.UserMessage("look"),
+		llm.AssistantMessage("", "", []llm.ToolCall{call}),
+		toolMsg,
+		llm.AssistantMessage("the picture shows a cat", "", nil),
+	}
+
+	out := ProjectModelView(history)
+	if len(out) != len(history)+1 {
+		t.Fatalf("projected %d messages, want %d", len(out), len(history)+1)
+	}
+	note := out[3]
+	if !isAttachedImagesNote(note) {
+		t.Fatalf("message 3 = %+v, want the attached-images note", note)
+	}
+	if len(note.Images) != 1 || note.Images[0].URL != "/assets/sessions/s/abc/shot.png" {
+		t.Errorf("note images = %+v, want the asset the tool result named", note.Images)
+	}
+	if !strings.Contains(note.Content, "shot.png") {
+		t.Errorf("note does not name the picture: %q", note.Content)
+	}
+	if !strings.HasPrefix(out[4].Content, "the picture shows a cat") {
+		t.Errorf("message 4 = %q, want the assistant reply", out[4].Content)
+	}
+	// The stored history must never gain the note: it lives only in the model
+	// view.
+	if len(history) != 4 {
+		t.Errorf("projection mutated its input; history has %d messages", len(history))
+	}
+	// A second pass reuses the note rather than attaching a duplicate.
+	again := ProjectModelView(out)
+	if len(again) != len(out) {
+		t.Fatalf("re-projection produced %d messages, want %d", len(again), len(out))
+	}
+	for _, m := range again {
+		if isAttachedImagesNote(m) && m.Role == "user" && strings.Contains(m.Content, "shot.png") && len(m.Images) == 0 {
+			t.Errorf("re-projection dropped the note's images: %+v", m)
+		}
+	}
+}
+
+// TestProjectModelViewGroupsParallelToolImages checks that pictures from several
+// tool results in one turn land in a single note after the whole run, never
+// between a tool call and its results.
+func TestProjectModelViewGroupsParallelToolImages(t *testing.T) {
+	callA := llm.ToolCall{ID: "call_a", Type: "function", Function: llm.ToolFunction{Name: "read_image", Arguments: "{}"}}
+	callB := llm.ToolCall{ID: "call_b", Type: "function", Function: llm.ToolFunction{Name: "read_image", Arguments: "{}"}}
+	msgA := llm.ToolResult("call_a", "read_image: a.png saved as /assets/sessions/s/1/a.png")
+	msgA.ToolOutput = &llm.ToolOutputMeta{Images: []llm.ImagePart{{Name: "a.png", URL: "/assets/sessions/s/1/a.png"}}}
+	msgB := llm.ToolResult("call_b", "read_image: b.png saved as /assets/sessions/s/1/b.png")
+	msgB.ToolOutput = &llm.ToolOutputMeta{Images: []llm.ImagePart{{Name: "b.png", URL: "/assets/sessions/s/1/b.png"}}}
+
+	history := []llm.ChatMessage{
+		llm.UserMessage("look at both"),
+		llm.AssistantMessage("", "", []llm.ToolCall{callA, callB}),
+		msgA,
+		msgB,
+	}
+	out := ProjectModelView(history)
+	if len(out) != 5 {
+		t.Fatalf("projected %d messages, want 5 (both results, then one note)", len(out))
+	}
+	if out[2].Role != "tool" || out[3].Role != "tool" {
+		t.Fatalf("tool results are not adjacent: %q, %q", out[2].Role, out[3].Role)
+	}
+	note := out[4]
+	if !isAttachedImagesNote(note) || len(note.Images) != 2 {
+		t.Fatalf("note = %+v, want both pictures on one message", note)
+	}
+	if note.Images[0].Name != "a.png" || note.Images[1].Name != "b.png" {
+		t.Errorf("note images = %+v, want a.png then b.png", note.Images)
+	}
+}

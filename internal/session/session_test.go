@@ -960,7 +960,7 @@ func TestCommittedToolEnvelopeCarriesToolOutput(t *testing.T) {
 	if live.Kind != api.KindMessage || live.Message == nil || live.Message.Role != "tool" {
 		t.Fatalf("live first envelope = %+v, want the tool message", live)
 	}
-	if live.ToolOutput == nil || *live.ToolOutput != *meta {
+	if live.ToolOutput == nil || !live.ToolOutput.Equal(meta) {
 		t.Errorf("live committed envelope ToolOutput = %+v, want %+v", live.ToolOutput, meta)
 	}
 
@@ -983,7 +983,7 @@ func TestCommittedToolEnvelopeCarriesToolOutput(t *testing.T) {
 	if replayed.Kind != api.KindMessage || replayed.Message == nil || replayed.Message.Role != "tool" {
 		t.Fatalf("replay first envelope = %+v, want the tool message", replayed)
 	}
-	if replayed.ToolOutput == nil || *replayed.ToolOutput != *meta {
+	if replayed.ToolOutput == nil || !replayed.ToolOutput.Equal(meta) {
 		t.Errorf("replayed envelope ToolOutput = %+v, want %+v", replayed.ToolOutput, meta)
 	}
 }

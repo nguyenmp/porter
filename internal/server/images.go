@@ -40,22 +40,11 @@ func readImageUpload(name string, data []byte) (imageUpload, error) {
 	if len(data) > maxImageBytes {
 		return imageUpload{}, fmt.Errorf("image %s is %d bytes; the limit is %d bytes (%d MiB)", name, len(data), maxImageBytes, maxImageBytes/(1<<20))
 	}
-	mime := http.DetectContentType(data)
-	if !allowedImageType(mime) {
-		return imageUpload{}, fmt.Errorf("image %s looks like %s, which is not an accepted image type (png, jpeg, gif, or webp)", name, mime)
+	mime := asset.ImageMimeType(data)
+	if mime == "" {
+		return imageUpload{}, fmt.Errorf("image %s is not an accepted image type (png, jpeg, gif, or webp)", name)
 	}
 	return imageUpload{Name: asset.SanitizeFilename(name), Data: data}, nil
-}
-
-// allowedImageType reports whether the detected media type is one the model
-// providers accept as an image input.
-func allowedImageType(mime string) bool {
-	switch mime {
-	case "image/png", "image/jpeg", "image/gif", "image/webp":
-		return true
-	default:
-		return false
-	}
 }
 
 // readUploadedImages reads the "images" file fields of a parsed multipart form
@@ -112,7 +101,7 @@ func checkImageURL(url string) error {
 		return fmt.Errorf("image data URL is missing its comma")
 	}
 	mime, encoding, _ := strings.Cut(header, ";")
-	if !allowedImageType(mime) {
+	if !asset.IsImageMimeType(mime) {
 		return fmt.Errorf("image type %s is not an accepted image type (png, jpeg, gif, or webp)", mime)
 	}
 	if encoding != "base64" {

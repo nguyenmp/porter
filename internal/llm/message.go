@@ -1,5 +1,7 @@
 package llm
 
+import "reflect"
+
 // ChatMessage is a single conversation turn sent to the model.
 //
 // A message carries text, a tool call request (role "assistant"), or a tool
@@ -169,4 +171,26 @@ type ToolOutputMeta struct {
 	Offset int `json:"offset,omitempty"`
 	// MaxBytes is the size of the window served to the model (Recall only).
 	MaxBytes int `json:"max_bytes,omitempty"`
+	// Images are pictures this tool result carries for the model to look at
+	// (read_image). A role-"tool" message holds text only — Chat Completions
+	// rejects image parts on a tool result — so the model-view projection moves
+	// these onto a user message that follows the turn's tool results. They are
+	// persisted with the rest of this metadata so the model view can rebuild
+	// that message on every later request.
+	Images []ImagePart `json:"images,omitempty"`
+}
+
+// Equal reports whether two metadata records describe the same presentation.
+// A plain struct compare no longer compiles now that Images holds a slice, so
+// callers that compare two records use this instead.
+func (m *ToolOutputMeta) Equal(o *ToolOutputMeta) bool {
+	if m == nil || o == nil {
+		return m == o
+	}
+	if m.Truncated != o.Truncated || m.TotalBytes != o.TotalBytes || m.ShownBytes != o.ShownBytes ||
+		m.Recall != o.Recall || m.SourceCallID != o.SourceCallID ||
+		m.Offset != o.Offset || m.MaxBytes != o.MaxBytes {
+		return false
+	}
+	return reflect.DeepEqual(m.Images, o.Images)
 }

@@ -1,20 +1,21 @@
-// Package asset defines the tools that move files the model creates in the
-// execution environment onto the server, where the session can serve them:
-// publish_asset uploads a file and returns its hosted URL (so the model can
-// show it as an <img> in a reply), and render_iframe displays an HTML asset
-// in a sandboxed iframe. publish_asset is the mirror image of spool_output:
-// spool writes server-side bytes to the provider's disk; publish_asset reads
-// a provider-side file and stores the bytes on the server, keyed by session.
-// The read is executed by the active provider through a private provider tool
-// (tools.AssetReadTool), so publish_asset works for any execution context —
-// local sandbox or a remote host — and the file never has to stay on the
-// machine that made it.
+// Package asset defines the tools that move files between the execution
+// environment and the server: publish_asset uploads a file and returns its
+// hosted URL (so the model can show it as an <img> in a reply), read_image
+// reads a picture and hands it to the model to look at, and render_iframe
+// displays an HTML asset in a sandboxed iframe. publish_asset and read_image
+// are the mirror image of spool_output: spool writes server-side bytes to the
+// provider's disk; they read a provider-side file and store the bytes on the
+// server, keyed by session. The read is executed by the active provider through
+// a private provider tool (tools.AssetReadTool), so both work for any execution
+// context — local sandbox or a remote host — and the file never has to stay on
+// the machine that made it.
 package asset
 
 import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -103,6 +104,53 @@ func Def() llm.Tool {
 	}
 }
 
+// ReadImageTool is the model-facing name of the tool that reads a picture from
+// the execution environment so the model can look at it. Like publish_asset it
+// is served by the agent: the file read runs on the active execution provider
+// (the same private _porter_asset_read tool), and the bytes are published as an
+// asset. Unlike publish_asset the picture is also handed to the model.
+const ReadImageTool = "read_image"
+
+// ParseReadImageArgs validates a read_image call and returns the file path to
+// read. The path is resolved by the provider against its working directory,
+// exactly like the file tools, so a relative path names a picture next to the
+// ones shell and the editors touch.
+func ParseReadImageArgs(raw string) (string, error) {
+	var in publishArgs
+	if err := json.Unmarshal([]byte(raw), &in); err != nil {
+		return "", fmt.Errorf("parse read_image arguments: %w", err)
+	}
+	if strings.TrimSpace(in.Path) == "" {
+		return "", errors.New("read_image: path is required (the picture to read, relative to the working directory or absolute)")
+	}
+	return in.Path, nil
+}
+
+// ReadImageDef is the model-facing definition of the read_image tool.
+func ReadImageDef() llm.Tool {
+	return llm.Tool{
+		Type: "function",
+		Function: llm.Function{
+			Name: ReadImageTool,
+			Description: "Look at a picture that is already a file in the execution environment (a screenshot, a chart, a photo). " +
+				"Pass its path, relative to the working directory or absolute. " +
+				"The picture is saved as an asset and attached to your context, so you see it in your next turn; the result is the asset's hosted URL. " +
+				"You cannot see the picture in the same turn you ask for it — call this, then answer once the picture arrives. " +
+				"To show a picture to the user instead of only looking at it yourself, use publish_asset.",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"path": map[string]any{
+						"type":        "string",
+						"description": "The picture file to read: relative to the working directory, or absolute. Must be a png, jpeg, gif, or webp.",
+					},
+				},
+				"required": []string{"path"},
+			},
+		},
+	}
+}
+
 // IframeArgs is the parsed render_iframe call: the asset URL publish_asset
 // returned, and an optional height in px.
 type IframeArgs struct {
@@ -183,6 +231,30 @@ func SanitizeFilename(name string) string {
 		out = out[len(out)-80:]
 	}
 	return out
+}
+
+// ImageMimeType returns the media type of picture bytes, or "" when the bytes
+// are not a raster image the model providers accept. The type comes from the
+// bytes themselves, never from a file name, so a text file called .png is not
+// an image. SVG is left out on purpose: it is a script-carrying document
+// rather than a picture.
+func ImageMimeType(data []byte) string {
+	mime := http.DetectContentType(data)
+	if IsImageMimeType(mime) {
+		return mime
+	}
+	return ""
+}
+
+// IsImageMimeType reports whether a media type is one the model providers
+// accept as an image input.
+func IsImageMimeType(mime string) bool {
+	switch mime {
+	case "image/png", "image/jpeg", "image/gif", "image/webp":
+		return true
+	default:
+		return false
+	}
 }
 
 // MimeType returns the Content-Type for a published asset by extension. The

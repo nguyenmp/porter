@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1875,5 +1876,141 @@ func TestRunTurnTimesOutTool(t *testing.T) {
 	}
 	if !strings.Contains(committed.Content, "(timed out after 1s)") {
 		t.Errorf("committed content = %q, want the timeout marker", committed.Content)
+	}
+}
+
+// readImageProvider answers the provider's private file read
+// (tools.AssetReadTool) with one payload, the way a real execution provider
+// does: the resolved path, the size, and the bytes base64-encoded.
+type readImageProvider struct {
+	path string
+	data []byte
+}
+
+func (readImageProvider) Defs() []llm.Tool    { return tools.Defs() }
+func (readImageProvider) Environment() string { return "" }
+
+func (p readImageProvider) Run(_ context.Context, name string, _ []byte) (io.ReadCloser, error) {
+	if name != tools.AssetReadTool {
+		return nil, fmt.Errorf("unexpected tool %q", name)
+	}
+	payload, err := json.Marshal(map[string]any{
+		"path": p.path,
+		"size": len(p.data),
+		"data": base64.StdEncoding.EncodeToString(p.data),
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &chunkStream{chunks: []string{string(payload)}}, nil
+}
+
+// pngBytes is a minimal PNG: the signature alone is enough for the bytes to be
+// recognized as a picture.
+func pngBytes() []byte { return []byte("\x89PNG\r\n\x1a\nand pixels") }
+
+// readImageServer serves a model that calls read_image once and then replies
+// plainly, so a test can drive the whole read_image path.
+func readImageServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "text/event-stream")
+		if calls == 1 {
+			fmt.Fprint(w,
+				`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"read_image","arguments":"{\"path\":\"shot.png\",\"porter_action_description\":\"look at the screenshot\",\"porter_timeout_seconds\":30}"}}]},"finish_reason":"tool_calls"}]}`+"\n\n"+
+					`data: [DONE]`+"\n")
+			return
+		}
+		fmt.Fprint(w,
+			`data: {"choices":[{"delta":{"content":"a cat"},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":3}}`+"\n\n"+
+				`data: [DONE]`+"\n")
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// TestRunTurnReadImagePublishesAndCarriesPicture covers the whole read_image
+// path: the model asks for a picture, the provider reads it, the agent publishes
+// it as an asset, and the tool result names that asset and carries the picture
+// for the model view — while the committed history stays text only.
+func TestRunTurnReadImagePublishesAndCarriesPicture(t *testing.T) {
+	srv := readImageServer(t)
+	client := llm.NewClient(config.Config{BaseURL: srv.URL + "/v1", Model: "test", APIKey: "k"}, nil)
+
+	var publishedName string
+	hooks := RunHooks{PublishAsset: func(name string, data []byte) (string, error) {
+		publishedName = name
+		return "/assets/sessions/s/abc/" + name, nil
+	}}
+	res, err := RunTurn(context.Background(), client, []llm.ChatMessage{llm.UserMessage("look at shot.png")},
+		readImageProvider{path: "/tmp/shot.png", data: pngBytes()}, nil, nil, hooks)
+	if err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+	if publishedName != "shot.png" {
+		t.Errorf("published %q, want shot.png", publishedName)
+	}
+	var toolMsg *llm.ChatMessage
+	for i := range res.History {
+		if res.History[i].Role == "tool" {
+			toolMsg = &res.History[i]
+		}
+	}
+	if toolMsg == nil {
+		t.Fatal("no tool result was committed")
+	}
+	if toolMsg.ToolOutput == nil || len(toolMsg.ToolOutput.Images) != 1 {
+		t.Fatalf("tool result carries no picture: %+v", toolMsg.ToolOutput)
+	}
+	if got := toolMsg.ToolOutput.Images[0].URL; got != "/assets/sessions/s/abc/shot.png" {
+		t.Errorf("image URL = %q, want the published asset URL", got)
+	}
+	if !strings.Contains(toolMsg.Content, "saved as /assets/sessions/s/abc/shot.png") {
+		t.Errorf("result text = %q, want it to name the asset URL", toolMsg.Content)
+	}
+	// The committed history keeps the result as text; the picture rides on the
+	// metadata and the model view attaches it, so no note is stored.
+	for _, m := range res.History {
+		if m.Role == "user" && strings.HasPrefix(m.Content, "[read_image:") {
+			t.Errorf("the model-view note leaked into committed history: %+v", m)
+		}
+	}
+}
+
+// TestRunTurnReadImageRejectsNonPicture checks that bytes that are not a picture
+// type the providers accept are reported as a tool error, and never published.
+func TestRunTurnReadImageRejectsNonPicture(t *testing.T) {
+	srv := readImageServer(t)
+	client := llm.NewClient(config.Config{BaseURL: srv.URL + "/v1", Model: "test", APIKey: "k"}, nil)
+
+	published := false
+	hooks := RunHooks{PublishAsset: func(name string, data []byte) (string, error) {
+		published = true
+		return "/assets/sessions/s/abc/" + name, nil
+	}}
+	res, err := RunTurn(context.Background(), client, []llm.ChatMessage{llm.UserMessage("look at shot.png")},
+		readImageProvider{path: "/tmp/notes.txt", data: []byte("this is not a picture")}, nil, nil, hooks)
+	if err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+	if published {
+		t.Error("a non-picture file was published as an asset")
+	}
+	var toolMsg *llm.ChatMessage
+	for i := range res.History {
+		if res.History[i].Role == "tool" {
+			toolMsg = &res.History[i]
+		}
+	}
+	if toolMsg == nil {
+		t.Fatal("no tool result was committed")
+	}
+	if !strings.Contains(toolMsg.Content, "is not a png, jpeg, gif, or webp picture") {
+		t.Errorf("result = %q, want a clear refusal naming the accepted types", toolMsg.Content)
+	}
+	if toolMsg.ToolOutput != nil && len(toolMsg.ToolOutput.Images) > 0 {
+		t.Errorf("a refused read still carried a picture: %+v", toolMsg.ToolOutput)
 	}
 }

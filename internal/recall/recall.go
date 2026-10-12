@@ -95,8 +95,29 @@ func ProjectModelView(msgs []llm.ChatMessage) []llm.ChatMessage {
 			}
 		}
 	}
-	out := make([]llm.ChatMessage, len(msgs))
+	out := make([]llm.ChatMessage, 0, len(msgs))
+	// pending holds the pictures a run of tool messages has produced but not
+	// yet attached. They are attached once, on a user message after the whole
+	// run: a provider rejects a message that breaks up a tool call and its
+	// results.
+	var pending []llm.ImagePart
+	var pendingNames []string
+	flushImages := func() {
+		if len(pending) == 0 {
+			return
+		}
+		out = append(out, llm.ChatMessage{
+			Role:    "user",
+			Content: attachedImagesNote(pendingNames),
+			Images:  pending,
+		})
+		pending = nil
+		pendingNames = nil
+	}
 	for i, m := range msgs {
+		if m.Role != "tool" {
+			flushImages()
+		}
 		if m.Role == "tool" {
 			if meta := m.ToolOutput; meta != nil && meta.Recall {
 				// recall_tool_output window: keep the full bytes in the model view.
@@ -118,14 +139,26 @@ func ProjectModelView(msgs []llm.ChatMessage) []llm.ChatMessage {
 					m.Content += spool.FooterHint(m.ToolCallID)
 				}
 			}
+			// Pictures this result carries (read_image) ride along to the user
+			// message after the run. A second pass over an already-projected
+			// view already has that note, so the projection reuses it instead
+			// of attaching a duplicate.
+			if m.ToolOutput != nil && len(m.ToolOutput.Images) > 0 && !imagesAlreadyAttached(msgs, i) {
+				pending = append(pending, m.ToolOutput.Images...)
+				for _, img := range m.ToolOutput.Images {
+					pendingNames = append(pendingNames, imageLabel(img))
+				}
+			}
 		}
 		// Every user message carries the one-line plain-language reminder. It is
 		// added here and nowhere else: the stored message, the database, and the
 		// UI keep exactly what the user typed. The HasSuffix guard keeps the
 		// projection idempotent, so a message that already ends with the
 		// reminder (typically a second pass, in a test or a retry) is not
-		// doubled.
-		if m.Role == "user" && m.Content != "" && !strings.HasSuffix(m.Content, humanize.UserMessageReminder) {
+		// doubled. The attached-images note is excluded: it is the harness's
+		// text, not the user's.
+		if m.Role == "user" && m.Content != "" && !isAttachedImagesNote(m) &&
+			!strings.HasSuffix(m.Content, humanize.UserMessageReminder) {
 			m.Content += "\n\n" + humanize.UserMessageReminder
 		}
 		// Timing annotation comes last so it always sits in front of any
@@ -135,9 +168,50 @@ func ProjectModelView(msgs []llm.ChatMessage) []llm.ChatMessage {
 				m.Content = note + "\n" + m.Content
 			}
 		}
-		out[i] = m
+		out = append(out, m)
 	}
+	flushImages()
 	return out
+}
+
+// attachedImagesPrefix marks the user message the projection adds to carry the
+// pictures a tool result produced (read_image). The note is never stored in
+// history and never shown to the user: it exists only on the outgoing copy, so
+// the model can see the picture a tool handed it.
+const attachedImagesPrefix = "[read_image:"
+
+// isAttachedImagesNote reports whether a message is the projection's attached
+// images note.
+func isAttachedImagesNote(m llm.ChatMessage) bool {
+	return m.Role == "user" && strings.HasPrefix(m.Content, attachedImagesPrefix)
+}
+
+// attachedImagesNote is the text of the note, naming the pictures so the model
+// can tie each one to the tool result that produced it.
+func attachedImagesNote(names []string) string {
+	return attachedImagesPrefix + " the pictures a tool read are attached here: " + strings.Join(names, ", ") + "]"
+}
+
+// imageLabel names one attached image for the note: its file name, or its
+// location when it has none.
+func imageLabel(img llm.ImagePart) string {
+	if img.Name != "" {
+		return img.Name
+	}
+	return img.URL
+}
+
+// imagesAlreadyAttached reports whether the images note for the run of tool
+// messages containing msgs[i] is already present in the input. That is true on
+// a second pass over an already-projected view, where the note the first pass
+// added is still there; the projection then reuses it rather than attaching a
+// duplicate.
+func imagesAlreadyAttached(msgs []llm.ChatMessage, i int) bool {
+	j := i
+	for j+1 < len(msgs) && msgs[j+1].Role == "tool" {
+		j++
+	}
+	return j+1 < len(msgs) && isAttachedImagesNote(msgs[j+1])
 }
 
 // timingNote returns the bracketed timing annotation for a committed message,

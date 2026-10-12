@@ -592,7 +592,7 @@ func TestToolOutputRoundTrip(t *testing.T) {
 			t.Errorf("message %d: got ToolOutput %+v, want nil", i, g.ToolOutput)
 			continue
 		}
-		if g.ToolOutput != nil && *g.ToolOutput != *w.ToolOutput {
+		if g.ToolOutput != nil && !g.ToolOutput.Equal(w.ToolOutput) {
 			t.Errorf("message %d: ToolOutput = %+v, want %+v", i, g.ToolOutput, w.ToolOutput)
 		}
 	}
@@ -679,7 +679,7 @@ func TestMigratesFromV5ToV6(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadSession after write: %v", err)
 	}
-	if len(got.Messages) != 2 || got.Messages[1].ToolOutput == nil || *got.Messages[1].ToolOutput != *meta {
+	if len(got.Messages) != 2 || got.Messages[1].ToolOutput == nil || !got.Messages[1].ToolOutput.Equal(meta) {
 		t.Errorf("tool_output metadata did not round-trip after migration: %+v", got.Messages[1].ToolOutput)
 	}
 }
