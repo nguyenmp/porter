@@ -27,6 +27,7 @@ import (
 	"porter/internal/asset"
 	"porter/internal/config"
 	"porter/internal/db"
+	"porter/internal/imagegen"
 	"porter/internal/llm"
 	"porter/internal/mcp"
 	mdr "porter/internal/render"
@@ -415,6 +416,12 @@ func newServer(cfg config.Config, dbPath, mcpPath string) (*Server, error) {
 	// cannot reach this server, so the client turns each URL into inline bytes
 	// when it builds a request (see llm.ResolveImage).
 	client.ResolveImage = store.AssetDataURL
+	// The image model the generate_image tool calls. It usually sits behind the
+	// same gateway and key as the chat model, under a different model name; an
+	// unset piece of the image settings falls back to the chat setting.
+	if model, baseURL, apiKey, ok := cfg.Image(); ok {
+		store.SetImageClient(imagegen.NewClient(baseURL, apiKey, model, nil))
+	}
 	if err := store.Load(client); err != nil {
 		_ = d.Close()
 		return nil, fmt.Errorf("load persisted sessions: %w", err)

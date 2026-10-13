@@ -1,6 +1,7 @@
 package session
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
@@ -12,6 +13,7 @@ import (
 	"strings"
 
 	"porter/internal/asset"
+	"porter/internal/imagegen"
 )
 
 // SetAssetRoot configures where published assets are stored: every file the
@@ -22,6 +24,24 @@ import (
 // error instead of silently dropping bytes.
 func (st *Store) SetAssetRoot(root string) {
 	st.assetRoot = root
+}
+
+// SetImageClient configures the image model the generate_image tool calls. The
+// server calls this once at startup, beside SetAssetRoot, before Load. A nil
+// client leaves the tool with no model, and a call says so plainly instead of
+// failing obscurely.
+func (st *Store) SetImageClient(c *imagegen.Client) {
+	st.images = c
+}
+
+// configureSession copies the store's session-scoped asset and image settings
+// onto a session: where published assets live, how to read one back by its URL,
+// and which image model generate_image should call. It is called whenever the
+// store creates or loads a session, so the two paths cannot drift apart.
+func (st *Store) configureSession(s *Session) {
+	s.assetRoot = st.assetRoot
+	s.images = st.images
+	s.readAsset = st.AssetBytes
 }
 
 // assetDirFor returns the asset folder for a session id ("" when no asset
@@ -119,26 +139,82 @@ func (s *Session) publishAsset(filename string, content []byte) (string, error) 
 // A message names an image by that URL, but the model provider cannot reach the
 // porter server, so the bytes have to travel inside the request. The media type
 // comes from the bytes themselves, the same way an upload is checked.
-//
-// The URL is untrusted (it can come from a client), so every segment is
-// validated by AssetFilePath before any file is opened.
 func (st *Store) AssetDataURL(url string) (string, error) {
-	rest, ok := strings.CutPrefix(url, asset.URLPrefix)
-	if !ok {
-		return "", fmt.Errorf("not a published asset URL: %q", url)
-	}
-	parts := strings.Split(rest, "/")
-	if len(parts) != 3 {
-		return "", fmt.Errorf("malformed asset URL: %q", url)
-	}
-	path, err := st.AssetFilePath(parts[0], parts[1], parts[2])
+	_, data, err := st.AssetBytes(url)
 	if err != nil {
 		return "", err
 	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return "", fmt.Errorf("read asset: %w", err)
-	}
 	mime := http.DetectContentType(data)
 	return "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(data), nil
+}
+
+// AssetBytes reads a published asset's bytes, given the hosted URL a message
+// carries: "/assets/sessions/<session>/<id>/<file>". It returns the file name
+// and the bytes.
+//
+// The URL is untrusted (it can come from a client or from the model), so every
+// segment is validated by AssetFilePath before any file is opened.
+func (st *Store) AssetBytes(url string) (string, []byte, error) {
+	rest, ok := strings.CutPrefix(url, asset.URLPrefix)
+	if !ok {
+		return "", nil, fmt.Errorf("not a published asset URL: %q", url)
+	}
+	parts := strings.Split(rest, "/")
+	if len(parts) != 3 {
+		return "", nil, fmt.Errorf("malformed asset URL: %q", url)
+	}
+	path, err := st.AssetFilePath(parts[0], parts[1], parts[2])
+	if err != nil {
+		return "", nil, err
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", nil, fmt.Errorf("read asset: %w", err)
+	}
+	return parts[2], data, nil
+}
+
+// generateImage is the Session's hook for the agent's generate_image tool: it
+// reads any input pictures out of the session's own assets, asks the image
+// model for a new picture, and stores the result as a new asset.
+//
+// The model never carries the picture bytes: inputs are named by asset URL on
+// the way in, and the answer is an asset URL on the way out. That keeps a
+// generation off the model's context and inside the server's own storage.
+func (s *Session) generateImage(ctx context.Context, prompt string, images []string) (string, error) {
+	if s.images == nil {
+		return "", errors.New("generate_image: no image model is configured on this server (set PORTER_IMAGE_MODEL)")
+	}
+	if s.assetRoot == "" || s.readAsset == nil {
+		return "", errors.New("generate_image: no asset store is configured on this server, so the picture could not be saved")
+	}
+	inputs := make([]imagegen.Input, 0, len(images))
+	for _, url := range images {
+		name, data, err := s.readAsset(url)
+		if err != nil {
+			return "", fmt.Errorf("generate_image: input picture %s: %w", url, err)
+		}
+		inputs = append(inputs, imagegen.Input{Name: name, Data: data})
+	}
+	result, err := s.images.Generate(ctx, prompt, inputs)
+	if err != nil {
+		return "", fmt.Errorf("generate_image: %w", err)
+	}
+	return s.publishAsset(generatedName(result.MediaType), result.Data)
+}
+
+// generatedName names a stored picture from the media type the provider
+// reported, so it serves back with the right type. The type is often missing,
+// and png is what the image models return by default.
+func generatedName(mediaType string) string {
+	switch mediaType {
+	case "image/jpeg":
+		return "generated.jpg"
+	case "image/webp":
+		return "generated.webp"
+	case "image/gif":
+		return "generated.gif"
+	default:
+		return "generated.png"
+	}
 }

@@ -300,6 +300,17 @@ turn and can keep referring to it. Nothing is added to the saved history: the
 attachment exists only in the copy sent to the model, so it never shows as a
 message the user did not write.
 
+To *make* a picture, the model calls `generate_image` with a prompt. The picture
+is stored as an asset and the result names its URL, which the model embeds in a
+reply to show it. Pass input pictures as asset URLs — a photo the user attached,
+or a picture from an earlier call — to guide the result or edit it, which is how
+a model iterates on its own work. The model never carries the bytes: inputs are
+named by URL on the way in, and the answer is a URL on the way out, so a
+generation stays out of the model's context. Set the model with
+`PORTER_IMAGE_MODEL` (and `PORTER_IMAGE_BASE_URL` / `PORTER_IMAGE_API_KEY` when
+it lives elsewhere than the chat model); with none set, the tool says so instead
+of failing obscurely.
+
 ### Plain language
 
 Porter writes in plain language by default. Every model request leads with a
@@ -490,7 +501,7 @@ Build order:
 - [x] Tool output trimming (`tool_output` head+tail model view, `read_output` recall) — full output kept in History/DB, only the model view trimmed
 - [x] Image attachments (web UI only: paste a screenshot or pick a file, up to 4 per message, 5 MiB each). An upload is published as an asset, and the message names it by that URL; the LLM client turns the URL back into inline base64 bytes when it builds a request, so the provider never has to reach the porter server. The media type comes from the file's own bytes, and only raster images are accepted. A server with no asset store refuses an upload with a clear message. The image rides along with the history on every later request, so an old image costs on every turn — dropping old images in the model view is the waiting improvement.
 - [x] `read_image` — the model reads a picture from the execution environment and sees it on its next turn. The picture is published as an asset, so the result names its URL, and it is attached to the model's view of the conversation only: the saved history keeps the result as text.
-- [ ] `generate_image` — make a picture from a prompt and optional input pictures, iterating on earlier results.
+- [x] `generate_image` — make a picture from a prompt, with optional input pictures named by asset URL to guide or edit it. The picture is stored as an asset and the result names its URL; the model never carries the bytes.
 - [ ] Token budget before send
 - [x] Dynamic MCP
 

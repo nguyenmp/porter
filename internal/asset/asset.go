@@ -151,6 +151,66 @@ func ReadImageDef() llm.Tool {
 	}
 }
 
+// GenerateImageTool is the model-facing name of the tool that makes a picture
+// from a prompt, optionally guided by input pictures.
+const GenerateImageTool = "generate_image"
+
+// GenerateImageArgs is the parsed generate_image call: the prompt, and any
+// input pictures named by their asset URLs.
+type GenerateImageArgs struct {
+	Prompt string   `json:"prompt"`
+	Images []string `json:"images"`
+}
+
+// ParseGenerateImageArgs validates a generate_image call. A prompt is required;
+// the input pictures are asset URLs the server already holds, so the bytes
+// never have to travel through the model.
+func ParseGenerateImageArgs(raw string) (GenerateImageArgs, error) {
+	var in GenerateImageArgs
+	if err := json.Unmarshal([]byte(raw), &in); err != nil {
+		return GenerateImageArgs{}, fmt.Errorf("parse generate_image arguments: %w", err)
+	}
+	if strings.TrimSpace(in.Prompt) == "" {
+		return GenerateImageArgs{}, errors.New("generate_image: prompt is required (describe the picture you want)")
+	}
+	for _, u := range in.Images {
+		if !strings.HasPrefix(u, URLPrefix) {
+			return GenerateImageArgs{}, fmt.Errorf("generate_image: input picture %q must be an asset URL (a %s path), not a file path", u, URLPrefix)
+		}
+	}
+	return in, nil
+}
+
+// GenerateImageDef is the model-facing definition of the generate_image tool.
+func GenerateImageDef() llm.Tool {
+	return llm.Tool{
+		Type: "function",
+		Function: llm.Function{
+			Name: GenerateImageTool,
+			Description: "Make a picture from a text prompt. " +
+				"Pass input pictures (as asset URLs, the same /assets/sessions/... paths publish_asset and read_image return) to guide the result or to edit one of them; with no input pictures you get a fresh picture. " +
+				"The new picture is saved as an asset, and the result is its hosted URL. " +
+				"To show it to the user, reference that URL in your reply the usual markdown way: ![alt text](URL). " +
+				"To change a picture you already made, call this again and pass its asset URL as an input picture.",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"prompt": map[string]any{
+						"type":        "string",
+						"description": "What the picture should show. Be specific: subject, style, colors, framing, and any text to render.",
+					},
+					"images": map[string]any{
+						"type":        "array",
+						"items":       map[string]any{"type": "string"},
+						"description": "Optional input pictures, as asset URLs, to guide or edit. Omit for a brand new picture.",
+					},
+				},
+				"required": []string{"prompt"},
+			},
+		},
+	}
+}
+
 // IframeArgs is the parsed render_iframe call: the asset URL publish_asset
 // returned, and an optional height in px.
 type IframeArgs struct {

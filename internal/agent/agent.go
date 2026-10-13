@@ -119,6 +119,11 @@ type RunHooks struct {
 	// agent reads the file through the active provider and hands the bytes
 	// here, so storage lives wherever the caller (the session) decides.
 	PublishAsset func(filename string, content []byte) (string, error)
+	// GenerateImage makes a picture from a prompt and optional input pictures,
+	// the inputs named by their asset URLs, and returns the new picture's asset
+	// URL. It backs the generate_image tool. A nil hook means no image model is
+	// configured, and a call says so plainly.
+	GenerateImage func(ctx context.Context, prompt string, images []string) (string, error)
 }
 
 // RunTurn drives one conversation turn. It reads history and extends it so the
@@ -286,7 +291,7 @@ func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage,
 		// the required porter_action_description and porter_timeout_seconds
 		// arguments — on every tool the model sees, in one place, so no tool
 		// definition site needs to know about it.
-		defs := llm.AddToolContract(append([]llm.Tool{recall.Def(), spool.Def(), asset.Def(), asset.IframeDef(), asset.ReadImageDef()}, js.Defs()...))
+		defs := llm.AddToolContract(append([]llm.Tool{recall.Def(), spool.Def(), asset.Def(), asset.IframeDef(), asset.ReadImageDef(), asset.GenerateImageDef()}, js.Defs()...))
 		// Wall-clock bounds of this model request: started just before the
 		// stream opens, finished once it closes. They are stamped on the
 		// assistant message(s) this request commits so the UI can show when
@@ -927,6 +932,47 @@ func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage,
 				result := fmt.Sprintf("read_image: %s saved as %s (%d bytes). The picture is attached in the next user message.",
 					name, url, len(data))
 				if err := finishToolWithImages(result, []llm.ImagePart{{Name: name, URL: url}}, startedAt, finishedAt); err != nil {
+					return res, err
+				}
+				continue
+			}
+			// generate_image is served by the agent: the prompt and any input
+			// pictures (named by asset URL, so the bytes stay on the server)
+			// go to the image model through the caller's hook, and the result
+			// is stored as a new asset. The model sees the returned URL, not
+			// the picture, so a generation adds nothing to its context; the
+			// model can pass that URL back in to change the picture, or embed
+			// it in a reply to show it.
+			if c.Name == asset.GenerateImageTool {
+				startedAt := time.Now().UnixMilli()
+				args, perr := asset.ParseGenerateImageArgs(c.Arguments)
+				if perr != nil {
+					if err := finishTool("error: "+perr.Error(), false, startedAt, startedAt); err != nil {
+						return res, err
+					}
+					continue
+				}
+				if h.GenerateImage == nil {
+					if err := finishTool("error: generate_image: no image model is configured on this server", false, startedAt, startedAt); err != nil {
+						return res, err
+					}
+					continue
+				}
+				url, gerr := h.GenerateImage(runCtx, args.Prompt, args.Images)
+				finishedAt := time.Now().UnixMilli()
+				if gerr != nil {
+					if err := finishTool("error: "+gerr.Error(), false, startedAt, finishedAt); err != nil {
+						return res, err
+					}
+					if cause := classifyRun(ctx, callCtx, runCtx); cause == runStopped {
+						return res, ErrTurnStopped
+					} else if cause == runCancelled {
+						return res, ErrToolCancelled
+					}
+					continue
+				}
+				result := fmt.Sprintf("generate_image: saved as %s. Reference that URL in your reply to show the picture to the user.", url)
+				if err := finishTool(result, false, startedAt, finishedAt); err != nil {
 					return res, err
 				}
 				continue

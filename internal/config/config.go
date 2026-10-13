@@ -24,6 +24,14 @@ type Config struct {
 	// of Model may answer, and in what order the gateway tries them. Nil lets
 	// the gateway decide.
 	Provider *ProviderPreferences
+	// Image settings back the generate_image tool. An image model usually sits
+	// on a different endpoint from the chat model, so each piece can be set on
+	// its own; an unset piece falls back to the chat setting, which suits a
+	// gateway that serves both behind one key. An empty ImageModel means no
+	// image model is configured, and the tool says so instead of guessing.
+	ImageModel   string
+	ImageBaseURL string
+	ImageAPIKey  string
 	// providerErr holds a bad PORTER_PROVIDER value. Env records it and
 	// Validate reports it, so a misspelled routing field stops the server at
 	// startup rather than sending requests somewhere you did not intend.
@@ -35,13 +43,34 @@ type Config struct {
 func Env() Config {
 	provider, providerErr := ParseProvider(os.Getenv(ProviderEnv))
 	return Config{
-		Addr:        getenv("PORTER_ADDR", DefaultAddr),
-		BaseURL:     getenv("PORTER_BASE_URL", DefaultBaseURL),
-		Model:       getenv("PORTER_MODEL", DefaultModel),
-		APIKey:      os.Getenv("PORTER_API_KEY"),
-		Provider:    provider,
-		providerErr: providerErr,
+		Addr:         getenv("PORTER_ADDR", DefaultAddr),
+		BaseURL:      getenv("PORTER_BASE_URL", DefaultBaseURL),
+		Model:        getenv("PORTER_MODEL", DefaultModel),
+		APIKey:       os.Getenv("PORTER_API_KEY"),
+		Provider:     provider,
+		providerErr:  providerErr,
+		ImageModel:   os.Getenv("PORTER_IMAGE_MODEL"),
+		ImageBaseURL: os.Getenv("PORTER_IMAGE_BASE_URL"),
+		ImageAPIKey:  os.Getenv("PORTER_IMAGE_API_KEY"),
 	}
+}
+
+// Image returns the image generation settings, filling each unset piece from
+// the chat settings. ok is false when no image model is configured, which
+// disables the generate_image tool.
+func (c Config) Image() (model, baseURL, apiKey string, ok bool) {
+	if c.ImageModel == "" {
+		return "", "", "", false
+	}
+	baseURL = c.ImageBaseURL
+	if baseURL == "" {
+		baseURL = c.BaseURL
+	}
+	apiKey = c.ImageAPIKey
+	if apiKey == "" {
+		apiKey = c.APIKey
+	}
+	return c.ImageModel, baseURL, apiKey, true
 }
 
 // Validate checks that required fields are present and meaningful.
@@ -57,6 +86,12 @@ func (c Config) Validate() error {
 	}
 	if c.providerErr != nil {
 		return c.providerErr
+	}
+	// An image model on the default endpoint needs a key of its own, so a
+	// misconfiguration stops the server at startup instead of at the first
+	// generate_image call.
+	if _, baseURL, apiKey, ok := c.Image(); ok && apiKey == "" && baseURL == DefaultBaseURL {
+		return fmt.Errorf("API key is required for the default image endpoint (set PORTER_IMAGE_API_KEY)")
 	}
 	return nil
 }

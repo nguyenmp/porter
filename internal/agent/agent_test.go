@@ -2014,3 +2014,93 @@ func TestRunTurnReadImageRejectsNonPicture(t *testing.T) {
 		t.Errorf("a refused read still carried a picture: %+v", toolMsg.ToolOutput)
 	}
 }
+
+// generateImageServer serves a model that calls generate_image once and then
+// replies, so a test can drive the tool end to end.
+func generateImageServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "text/event-stream")
+		if calls == 1 {
+			fmt.Fprint(w,
+				`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"generate_image","arguments":"{\"prompt\":\"a red apple on a wooden table\",\"porter_action_description\":\"draw the apple\",\"porter_timeout_seconds\":300}"}}]},"finish_reason":"tool_calls"}]}`+"\n\n"+
+					`data: [DONE]`+"\n")
+			return
+		}
+		fmt.Fprint(w,
+			`data: {"choices":[{"delta":{"content":"here it is"},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":3}}`+"\n\n"+
+				`data: [DONE]`+"\n")
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// TestRunTurnGenerateImageReturnsAssetURL covers the generate_image path: the
+// model asks for a picture, the caller's hook makes and stores it, and the
+// result names the asset URL so the model can show it or use it again.
+//
+// The picture is deliberately not attached to the model's context: a
+// generation returns a URL and nothing else, so repeating it costs no tokens.
+func TestRunTurnGenerateImageReturnsAssetURL(t *testing.T) {
+	srv := generateImageServer(t)
+	client := llm.NewClient(config.Config{BaseURL: srv.URL + "/v1", Model: "test", APIKey: "k"}, nil)
+
+	var gotPrompt string
+	hooks := RunHooks{GenerateImage: func(_ context.Context, prompt string, images []string) (string, error) {
+		gotPrompt = prompt
+		if len(images) != 0 {
+			t.Errorf("images = %v, want none for a plain prompt", images)
+		}
+		return "/assets/sessions/s/abc/generated.png", nil
+	}}
+	res, err := RunTurn(context.Background(), client, []llm.ChatMessage{llm.UserMessage("draw an apple")},
+		tools.NewDispatcher(), nil, nil, hooks)
+	if err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+	if gotPrompt != "a red apple on a wooden table" {
+		t.Errorf("prompt = %q, want the model's prompt", gotPrompt)
+	}
+	var toolMsg *llm.ChatMessage
+	for i := range res.History {
+		if res.History[i].Role == "tool" {
+			toolMsg = &res.History[i]
+		}
+	}
+	if toolMsg == nil {
+		t.Fatal("no tool result was committed")
+	}
+	if !strings.Contains(toolMsg.Content, "/assets/sessions/s/abc/generated.png") {
+		t.Errorf("result = %q, want it to name the asset URL", toolMsg.Content)
+	}
+	if toolMsg.ToolOutput != nil && len(toolMsg.ToolOutput.Images) > 0 {
+		t.Errorf("a generation attached a picture to the context; it should return a URL only: %+v", toolMsg.ToolOutput)
+	}
+}
+
+// TestRunTurnGenerateImageWithNoModel checks that a server with no image model
+// says so in the tool result instead of failing the turn.
+func TestRunTurnGenerateImageWithNoModel(t *testing.T) {
+	srv := generateImageServer(t)
+	client := llm.NewClient(config.Config{BaseURL: srv.URL + "/v1", Model: "test", APIKey: "k"}, nil)
+
+	res, err := RunTurn(context.Background(), client, []llm.ChatMessage{llm.UserMessage("draw an apple")},
+		tools.NewDispatcher(), nil, nil, RunHooks{})
+	if err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+	var toolMsg *llm.ChatMessage
+	for i := range res.History {
+		if res.History[i].Role == "tool" {
+			toolMsg = &res.History[i]
+		}
+	}
+	if toolMsg == nil {
+		t.Fatal("no tool result was committed")
+	}
+	if !strings.Contains(toolMsg.Content, "no image model is configured") {
+		t.Errorf("result = %q, want a clear message about the missing image model", toolMsg.Content)
+	}
+}

@@ -100,3 +100,34 @@ func TestImageMimeType(t *testing.T) {
 		t.Errorf("ImageMimeType(text) = %q, want \"\"", got)
 	}
 }
+
+// TestParseGenerateImageArgs covers the generate_image contract: a prompt is
+// required, input pictures must be asset URLs (the server already holds those
+// bytes), and a file path is refused with a message that says what to pass.
+func TestParseGenerateImageArgs(t *testing.T) {
+	got, err := ParseGenerateImageArgs(`{"prompt":"a red apple","images":["/assets/sessions/s/abc/base.png"]}`)
+	if err != nil {
+		t.Fatalf("valid args rejected: %v", err)
+	}
+	if got.Prompt != "a red apple" || len(got.Images) != 1 {
+		t.Errorf("args = %+v, want the prompt and one input picture", got)
+	}
+	if _, err := ParseGenerateImageArgs(`{}`); err == nil {
+		t.Error("a call with no prompt was accepted")
+	}
+	if _, err := ParseGenerateImageArgs(`{"prompt":"x","images":["/tmp/base.png"]}`); err == nil {
+		t.Error("a file path was accepted as an input picture")
+	}
+}
+
+// TestGenerateImageDefPointsAtPublish checks that the generate_image description
+// tells the model how to show the picture: embed the asset URL in the reply.
+func TestGenerateImageDefPointsAtPublish(t *testing.T) {
+	desc := GenerateImageDef().Function.Description
+	if !strings.Contains(desc, "![alt text](URL)") {
+		t.Errorf("generate_image description should show how to display the picture:\n%s", desc)
+	}
+	if !strings.Contains(desc, URLPrefix) {
+		t.Errorf("generate_image description should say where input pictures come from:\n%s", desc)
+	}
+}

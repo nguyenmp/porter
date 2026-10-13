@@ -23,6 +23,7 @@ import (
 	"porter/internal/db"
 	"porter/internal/exec"
 	"porter/internal/humanize"
+	"porter/internal/imagegen"
 	"porter/internal/llm"
 	"porter/internal/mcp"
 	"porter/internal/render"
@@ -144,6 +145,10 @@ type Store struct {
 	// route serves those folders back. Assets are kept when a session is
 	// archived — a reload of an archived chat must still show its images.
 	assetRoot string
+	// images is the image generation client ("" / nil disables the
+	// generate_image tool). Set once at startup, beside the asset root, and
+	// copied into every session the store creates or loads.
+	images *imagegen.Client
 }
 
 // NewStore returns an empty store backed by persist, serving MCP tools from
@@ -184,7 +189,7 @@ func (st *Store) Create(client *llm.Client) (*Session, error) {
 	}
 	id := fmt.Sprintf("session_%d", dbID)
 	s := newSession(id, client, nil, st.persist, dbID, now, 0, "", st.hub)
-	s.assetRoot = st.assetRoot
+	st.configureSession(s)
 	if err := st.createLocalSandbox(dbID, s); err != nil {
 		return nil, err
 	}
@@ -298,7 +303,7 @@ func (st *Store) Load(client *llm.Client) error {
 		}
 		id := fmt.Sprintf("session_%d", ps.ID)
 		s := newSession(id, client, nil, st.persist, ps.ID, ps.CreatedAt, ps.ArchivedAt, ps.Name, st.hub)
-		s.assetRoot = st.assetRoot
+		st.configureSession(s)
 		// A chat created since local sandboxing (the persisted flag is set)
 		// runs in its own folder; one that predates it keeps the server's
 		// working directory as-is — the flag is what tells the two apart, not
@@ -394,6 +399,14 @@ type Session struct {
 	// <assetRoot>/<session id>/, set from the store when the session is
 	// created or loaded.
 	assetRoot string
+	// images is the image generation client (set via the store before the
+	// session loads; nil disables the generate_image tool). readAsset reads a
+	// published asset back by its URL, so generate_image can hand input
+	// pictures to the model without a round trip through the model's context.
+	// Both are copied from the store when the session is created or loaded, the
+	// same way assetRoot is.
+	images    *imagegen.Client
+	readAsset func(url string) (string, []byte, error)
 	logSeq    uint64
 	turn      int64
 	running   bool // a turn has started but its completion marker is not yet committed
@@ -750,7 +763,7 @@ func (s *Session) runTurn(ctx context.Context, content string, images []llm.Imag
 	}
 	res, err := agent.RunTurn(turnCtx, s.client, s.snapshot(), s.provider(), s.emitLive, func(m llm.ChatMessage) error {
 		return s.commit(m)
-	}, agent.RunHooks{OnRunStarted: s.onRunStarted, OnQuery: onQuery, PublishAsset: s.publishAsset})
+	}, agent.RunHooks{OnRunStarted: s.onRunStarted, OnQuery: onQuery, PublishAsset: s.publishAsset, GenerateImage: s.generateImage})
 	if err != nil {
 		switch {
 		case errors.Is(err, agent.ErrTurnStopped):
