@@ -151,6 +151,16 @@
 			margin: 0.2rem 0;
 			background: #fff;
 		}
+		/* Images inside an assistant reply. The markdown renderer turns
+		   ![alt](url) into a bare <img>, which has no .msg-image class, so
+		   without this rule the browser draws it at its native pixel size and a
+		   wide image runs off the edge of the message column. height: auto keeps
+		   the aspect ratio when max-width shrinks the image, and the browser
+		   keeps the ratio when max-height bites too, because both width and
+		   height stay auto. The height cap keeps a tall screenshot from pushing
+		   the conversation off screen; the renderer wraps each reply image in a
+		   link, so a reader can still reach the full-size picture. */
+		.msg-content img { max-width: 100%; height: auto; max-height: 360px; }
 		.msg-user .msg-content:empty { display: none; }
 		/* The composer's attachment strip: one thumbnail per chosen image, each
 		   with a remove button, above the input row. */

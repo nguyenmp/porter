@@ -14,6 +14,7 @@ import (
 
 	"porter/internal/api"
 	"porter/internal/client"
+	mdr "porter/internal/render"
 )
 
 // tinyPNG encodes a 1x1 PNG, so tests exercise the real byte sniffing
@@ -238,5 +239,34 @@ func TestAppendImageWithoutAssetStore(t *testing.T) {
 	body, _ := io.ReadAll(resp.Body)
 	if !strings.Contains(string(body), "assets are not configured") {
 		t.Errorf("refusal does not explain the missing asset store; got: %s", body)
+	}
+}
+
+// TestReplyImageIsWidthBounded checks that an image in an assistant reply stays
+// inside the message column. The markdown renderer gives a reply image no
+// class, so the page must bound every <img> under .msg-content. Without that
+// rule the browser draws a wide image at its native pixel size, and the image
+// runs off the edge of the screen.
+func TestReplyImageIsWidthBounded(t *testing.T) {
+	// First, confirm the rule's assumption: a reply image is a bare <img>, with
+	// no class for a class-based rule to target.
+	html := mdr.Markdown("![shot](/assets/sessions/s/shot.png)")
+	if !strings.Contains(html, "<img") {
+		t.Fatalf("markdown image did not render as an <img>; got: %s", html)
+	}
+	if strings.Contains(html, "class=") {
+		t.Fatalf("reply image gained a class, so a class-based rule could target it; got: %s", html)
+	}
+
+	// Then, confirm the page ships the rule that bounds it.
+	srv := newTestServer(t, plainLLM())
+	resp, err := http.Get(srv.URL + "/")
+	if err != nil {
+		t.Fatalf("GET /: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), ".msg-content img { max-width: 100%; height: auto; max-height: 360px; }") {
+		t.Errorf("chat page does not bound reply images to the message column; got: %s", body)
 	}
 }
