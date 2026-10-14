@@ -227,3 +227,22 @@ func TestLoopRuleInRulesBody(t *testing.T) {
 		t.Errorf("the plain-language skill does not carry the loop rule:\n%s", Prompt())
 	}
 }
+
+// TestBrevityRuleInRulesBody checks the brevity tiebreaker — prefer fewer
+// words unless more words add clarity — lives in the shared rule body
+// (plain_rules.md), so the skill and the background pass both carry it from one
+// copy. The standing directive points at the skill rather than carrying the
+// rules, so it is not checked here.
+func TestBrevityRuleInRulesBody(t *testing.T) {
+	if !strings.Contains(plainRules, "Prefer fewer words") {
+		t.Fatalf("plain_rules.md is missing the brevity rule:\n%s", plainRules)
+	}
+	for name, prompt := range map[string]string{
+		"humanizePrompt": humanizePrompt(),
+		"Prompt":         Prompt(),
+	} {
+		if !strings.Contains(prompt, "Prefer fewer words") {
+			t.Errorf("%s does not carry the brevity rule", name)
+		}
+	}
+}
