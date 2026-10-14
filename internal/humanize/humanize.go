@@ -157,13 +157,13 @@ var systemDirective = `Always write in plain language. Load the plain-language s
 // UserMessageReminder is the one-line reminder the model view appends to every
 // user message (recall.ProjectModelView), so the standing writing style sits
 // next to the request the model is answering and not only in the static system
-// prefix (Directive). It asks for simple prose and names the plain-language
-// skill, which carries the full rule body, so the reminder stays short instead
-// of restating the rules. Like the timing note, it lives only on the outgoing
-// copy of history: the stored message, the database, and the UI keep exactly
-// what the user typed. Keep it short — it repeats on every user turn, so every
-// extra word is paid for on every request.
-const UserMessageReminder = "Please write simply, and use the plain-language skill"
+// prefix (Directive). It asks for simple, concise prose and names the
+// plain-language skill, which carries the full rule body, so the reminder stays
+// short instead of restating the rules. Like the timing note, it lives only on
+// the outgoing copy of history: the stored message, the database, and the UI
+// keep exactly what the user typed. Keep it short — it repeats on every user
+// turn, so every extra word is paid for on every request.
+const UserMessageReminder = "Please write simply and prefer fewer words, and thoroughly use the plain-language skill"
 
 // Should reports whether an assistant reply is worth a humanize pass: long
 // enough (the thresholds above) and mostly prose rather than code.
