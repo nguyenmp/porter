@@ -215,6 +215,23 @@ func TestDirectivePointsAtSkill(t *testing.T) {
 	}
 }
 
+// TestInteractiveRunsPassesOnFile checks the skill's interactive suffix tells
+// the model to run its passes on a scratch file and reread it after each pass,
+// so the loop rule works on the real text, not the model's memory of it.
+// The background pass must stay one request, so this instruction lives only in
+// the interactive suffix and never in the shared rule body.
+func TestInteractiveRunsPassesOnFile(t *testing.T) {
+	p := Prompt()
+	for _, want := range []string{"scratch file", "reread the file after every pass"} {
+		if !strings.Contains(p, want) {
+			t.Errorf("skill prompt missing %q:\n%s", want, p)
+		}
+	}
+	if strings.Contains(humanizePrompt(), "scratch file") {
+		t.Errorf("background pass prompt leaked the interactive file workflow:\n%s", humanizePrompt())
+	}
+}
+
 // TestLoopRuleInRulesBody checks the rule to work through every rule, one at a
 // time, in a loop until the text is thoroughly plain lives in the shared rule
 // body (plain_rules.md), so the skill and the background pass both carry it

@@ -40,7 +40,7 @@ import (
 // PromptVersion identifies the prompt revision that produced a variant. It is
 // stamped on every pass so the UI can explain why a tab reads the way it does,
 // and should be bumped whenever the prompt below changes.
-const PromptVersion = "plain-language-v12"
+const PromptVersion = "plain-language-v13"
 
 // SkillName is the name the built-in plain-language skill is exposed under,
 // both in the load_skill listing and as the sentinel path (api.BuiltinPrefix +
@@ -63,9 +63,10 @@ func BuiltinSkill() api.Skill {
 
 // Prompt returns the body of the built-in plain-language skill:the shared
 // rewrite rules (systemPrompt) plus an interactive-use suffix. A model
-// that loads this skill asks for text when none is given, edits files in
-// place,and reports how many passes it took and what it changed - things a
-// background pass must never do. The citation and self-review rules live in
+// that loads this skill asks for text when none is given, runs its passes on a
+// scratch file (rereading the file after each pass), edits a given file in
+// place,and reports how many passes it took - things a background pass must
+// never do. The citation and self-review rules live in
 // the shared rule body (plain_rules.md), so this prompt and the background
 // pass cannot differ on them.
 func Prompt() string { return systemPrompt + interactiveSuffix }
@@ -131,9 +132,14 @@ var systemPrompt = `Can you apply plain language to the text that follows, focus
 const silentSuffix = "\n\nThe rewrite runs unattended and lands directly in the UI as a variant tab.Never narrate the passes; return only the final text:no preamble,no summary of changes,no commentary."
 
 // interactiveSuffix is appended when the prompt is served as the built-in
-// plain-language skill:an interactive model can ask for input,edit files,
-// and report its passes - things the silent background pass must never do.
-const interactiveSuffix = "\n\nWhen used interactively:if you have no text,ask what to simplify;if the input is a file,edit the file in place. Tell the user when you start a new pass;after the rewrite,say how many passes you took,and list the main changes,each with the principle behind it."
+// plain-language skill. It carries what only an interactive model may do: ask
+// for input, run its passes on a scratch file, edit a file in place, and report
+// its passes. The scratch file makes the loop rule (plain_rules.md) checkable:
+// each pass rereads the real text, not the model's memory of it, so a pass
+// cannot drop facts and the reported pass count can be trusted. The instruction
+// lives here, not in the shared rule body, because the background pass stays
+// one request and never touches files.
+const interactiveSuffix = "\n\nWhen used interactively:if you have no text,ask what to simplify.Otherwise write the text to a scratch file.Then reread the file after every pass,so each pass works on the real text,not your memory of it.Stop when a pass changes nothing.Answer with the file's contents,copied from the file,not retyped.If the input is a file,edit it in place instead of making a scratch copy.Tell the user when each pass starts,and when you finish,say how many passes you took and list the main changes,each with the principle behind it."
 
 // Directive returns the standing writing-style instruction the agent injects
 // into every model request: a short pointer to the built-in plain-language
