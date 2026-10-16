@@ -218,6 +218,25 @@ you come back to quietly returns to the active list. The backend surface is
 `POST /api/sessions/{id}/archive` and `POST /api/sessions/{id}/unarchive`, both
 idempotent.
 
+### Rebuilding an execution environment
+
+A chat's execution environment can be rebuilt at any time. Open the command
+bar's provider picker and pick a **rebuild** row: the server releases the
+environment the chat has now — the server-local folder and any host sandbox —
+and builds a fresh one on the host you chose (or **this server**, for a new
+local folder). Rebuilding an archived chat restores it first, so one action
+brings the chat back and gives it an environment again.
+
+Two cases use this: a chat created on the wrong host, moved to the right one;
+and a chat that lost its sandbox when it was archived. Archiving a chat
+releases its environment so the repo does not collect abandoned worktrees, and
+unarchiving only brings the local folder back — a host sandbox needs a rebuild.
+
+The backend surface is `POST /api/sessions/{id}/sandbox`. Its body carries a
+`host` (empty or `"local"` for the server-local folder) and, for a host build,
+optional `repos` — the same shape as a create request. A host build that fails
+returns the reason, so you know the environment is not there yet.
+
 ### Cancelling a running task
 
 Long-running tools (tests, builds, `tail -f`) render live in the web UI with an

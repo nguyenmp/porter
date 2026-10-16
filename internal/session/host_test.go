@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -430,5 +431,151 @@ func TestProviderSeqSurvivesStoreRestart(t *testing.T) {
 	second := <-got2
 	if first == second {
 		t.Fatalf("provider id %q reused across restart", first)
+	}
+}
+
+// provisionOn runs one provision for a session on a host and resolves it the
+// way a host's provider registration does, returning the minted provider id.
+func provisionOn(t *testing.T, st *Store, ch chan api.HostRequest, sessionID, hostID string) string {
+	t.Helper()
+	got := make(chan string, 1)
+	go func() {
+		req := <-ch
+		st.ProvisionRegistered(sessionID, req.ProviderID)
+		got <- req.ProviderID
+	}()
+	if err := st.Provision(context.Background(), sessionID, hostID, api.HostRequest{}); err != nil {
+		t.Fatalf("Provision(%s): %v", sessionID, err)
+	}
+	return <-got
+}
+
+// TestReprovisionMovesSessionToNewHost covers the "created on the wrong host"
+// case: rebuilding a chat's environment releases the old sandbox (the old host
+// gets a release request for its provider) and records a fresh one on the host
+// the caller picked.
+func TestReprovisionMovesSessionToNewHost(t *testing.T) {
+	st := newTestStore(t)
+	macCh := make(chan api.HostRequest, 8)
+	vpsCh := make(chan api.HostRequest, 8)
+	if _, err := st.RegisterHost(macCh, "mac", "macbook", "host", "mac-inst"); err != nil {
+		t.Fatalf("RegisterHost mac: %v", err)
+	}
+	if _, err := st.RegisterHost(vpsCh, "vps", "vps", "host", "vps-inst"); err != nil {
+		t.Fatalf("RegisterHost vps: %v", err)
+	}
+	ses, err := st.Create(nil)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	oldPID := provisionOn(t, st, macCh, ses.ID(), "mac")
+
+	// Rebuild on vps: the mac sandbox is released and a new one is recorded.
+	vpsPID := make(chan string, 1)
+	go func() {
+		req := <-vpsCh
+		st.ProvisionRegistered(ses.ID(), req.ProviderID)
+		vpsPID <- req.ProviderID
+	}()
+	if err := st.Reprovision(context.Background(), ses.ID(), "vps", nil); err != nil {
+		t.Fatalf("Reprovision: %v", err)
+	}
+	newPID := <-vpsPID
+	select {
+	case rel := <-macCh:
+		if rel.Kind != "release" || rel.ProviderID != oldPID || rel.SessionID != ses.ID() {
+			t.Errorf("mac release = %+v, want release of %s for %s", rel, oldPID, ses.ID())
+		}
+	default:
+		t.Errorf("mac got no release request for the abandoned sandbox")
+	}
+	// The live mapping now names vps: an offer there keeps the folder under
+	// the freshly minted id, and the chat's sandbox marker names vps.
+	if ses.sandboxProvider != newPID || ses.sandboxHost != "vps" {
+		t.Errorf("sandbox = %q on %q, want %q on vps", ses.sandboxProvider, ses.sandboxHost, newPID)
+	}
+	verdicts, err := st.OfferSandboxes("vps", []string{newPID})
+	if err != nil {
+		t.Fatalf("OfferSandboxes: %v", err)
+	}
+	if !verdicts[0].Keep || verdicts[0].SessionID != ses.ID() {
+		t.Errorf("vps verdict = %+v, want keep for %s", verdicts[0], ses.ID())
+	}
+	// And the abandoned mac folder is no longer ours to keep.
+	verdicts, err = st.OfferSandboxes("mac", []string{oldPID})
+	if err != nil {
+		t.Fatalf("OfferSandboxes on mac: %v", err)
+	}
+	if verdicts[0].Keep {
+		t.Errorf("mac verdict = %+v, want refuse after the move", verdicts[0])
+	}
+}
+
+// TestReprovisionRebuildsArchivedSandbox covers the "archived and the env was
+// deleted" case: after an archive released the chat's sandbox, rebuilding it
+// provisions a new sandbox on the same host, under a fresh provider id.
+func TestReprovisionRebuildsArchivedSandbox(t *testing.T) {
+	st := newTestStore(t)
+	macCh := make(chan api.HostRequest, 8)
+	if _, err := st.RegisterHost(macCh, "mac", "macbook", "host", "mac-inst"); err != nil {
+		t.Fatalf("RegisterHost: %v", err)
+	}
+	ses, err := st.Create(nil)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	oldPID := provisionOn(t, st, macCh, ses.ID(), "mac")
+
+	// Archive releases the sandbox (the server's archive path does both).
+	if err := st.Archive(ses.ID()); err != nil {
+		t.Fatalf("Archive: %v", err)
+	}
+	st.ReleaseSession(ses.ID())
+	<-macCh // drain the release request
+
+	newPID := make(chan string, 1)
+	go func() {
+		req := <-macCh
+		st.ProvisionRegistered(ses.ID(), req.ProviderID)
+		newPID <- req.ProviderID
+	}()
+	if err := st.Reprovision(context.Background(), ses.ID(), "mac", nil); err != nil {
+		t.Fatalf("Reprovision: %v", err)
+	}
+	pid := <-newPID
+	// The rebuild minted its own id; the chat is sandboxed on mac again.
+	if ses.sandboxHost != "mac" {
+		t.Errorf("sandboxHost = %q, want mac", ses.sandboxHost)
+	}
+	if pid == oldPID || ses.sandboxProvider != pid {
+		t.Errorf("sandboxProvider = %q (rebuilt %q), want a fresh id (old %s)", ses.sandboxProvider, pid, oldPID)
+	}
+}
+
+// TestReprovisionRebuildsLocalSandbox covers the local case: rebuilding gives
+// the chat an empty server-local folder again, so files from before the
+// rebuild are gone and the chat is not paused.
+func TestReprovisionRebuildsLocalSandbox(t *testing.T) {
+	st, _ := newSandboxedStore(t)
+	ses, err := st.Create(nil)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	scratch := filepath.Join(ses.localDir, "scratch.txt")
+	if err := os.WriteFile(scratch, []byte("old"), 0o644); err != nil {
+		t.Fatalf("write scratch file: %v", err)
+	}
+
+	if err := st.Reprovision(context.Background(), ses.ID(), "local", nil); err != nil {
+		t.Fatalf("Reprovision: %v", err)
+	}
+	if _, err := os.Stat(scratch); !os.IsNotExist(err) {
+		t.Errorf("scratch file after rebuild = exists (err %v), want removed", err)
+	}
+	if fi, err := os.Stat(ses.localDir); err != nil || !fi.IsDir() {
+		t.Fatalf("rebuilt sandbox folder %s missing: %v", ses.localDir, err)
+	}
+	if reason := ses.PausedReason(); reason != "" {
+		t.Errorf("rebuilt local chat paused: %s", reason)
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"porter/internal/api"
+	"porter/internal/db"
 )
 
 // provisionTimeout bounds how long creating a session waits for a host to
@@ -356,6 +357,28 @@ func (st *Store) ReleaseSession(sessionID string) {
 	case ch <- api.HostRequest{Kind: "release", ProviderID: providerID, SessionID: sessionID}:
 	default: // host channel full: the host will reconnect; the offer/refuse flow cleans up
 	}
+}
+
+// Reprovision rebuilds a session's execution environment from scratch. It
+// tears down the environment the chat has now — the server-local folder and
+// any host sandbox — and builds a fresh one: on hostID when a host is named,
+// or a new server-local folder when hostID is "" or "local". Use it to move a
+// chat to a different host, or to rebuild a sandbox that was released when the
+// chat was archived. The teardown is best-effort (like an archive release),
+// and a host build that fails returns the reason so the caller can show it.
+func (st *Store) Reprovision(ctx context.Context, sessionID, hostID string, repos []api.RepoRef) error {
+	ses, ok := st.Get(sessionID)
+	if !ok {
+		return db.ErrNotFound
+	}
+	// Drop the old environment first, so the fresh one never runs beside a
+	// stale sandbox (two worktrees of the same repo, or two folders).
+	st.ReleaseSession(sessionID)
+	if hostID == "" || hostID == "local" {
+		st.recreateLocalSandbox(ses)
+		return nil
+	}
+	return st.Provision(ctx, sessionID, hostID, api.HostRequest{Repos: repos})
 }
 
 // HostProviderError resolves a pending provision as failed: the host could

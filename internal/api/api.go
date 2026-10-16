@@ -78,6 +78,13 @@ const (
 	// SessionExecSelectPath switches the session's active execution provider
 	// to the client named in the body ("local" for the server process): POST.
 	SessionExecSelectPath = "/api/sessions/{id}/exec/select"
+	// SessionSandboxPath rebuilds a session's execution environment: it
+	// releases whatever environment the chat has now (the server-local folder
+	// and any host sandbox) and builds a fresh one on the host named in the
+	// body ("" or "local" for a fresh server-local folder). Use it to move a
+	// chat to a different host, or to rebuild a sandbox the chat lost when it
+	// was archived. An archived chat is unarchived first. POST.
+	SessionSandboxPath = "/api/sessions/{id}/sandbox"
 
 	// HostsPath lists the registered execution hosts — persistent agents (e.g.
 	// on a laptop) that can provision execution contexts for new sessions: GET.
@@ -187,6 +194,25 @@ type SessionInfo struct {
 type CreateRequest struct {
 	Host  string    `json:"host,omitempty"`
 	Repos []RepoRef `json:"repos,omitempty"`
+}
+
+// ReprovisionRequest is the body of POST /api/sessions/{id}/sandbox: rebuild
+// the session's execution environment. Host names the execution host to build
+// the fresh sandbox on ("" or "local" rebuilds the server-local folder);
+// Repos lists the git repos to check out into a host sandbox (one worktree
+// per repo), the same as a create request. The request shape mirrors
+// CreateRequest, so the web UI posts the same form fields.
+type ReprovisionRequest struct {
+	Host  string    `json:"host,omitempty"`
+	Repos []RepoRef `json:"repos,omitempty"`
+}
+
+// ReprovisionResponse reports the outcome of POST /api/sessions/{id}/sandbox.
+// Host is the host the fresh sandbox was built on ("" or "local" for the
+// server-local folder). A build failure is returned as an error status, not a
+// warning: the caller asked for this environment on purpose.
+type ReprovisionResponse struct {
+	Host string `json:"host,omitempty"`
 }
 
 // HostSummary describes one registered execution host for the web UI's "new

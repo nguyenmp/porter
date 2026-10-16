@@ -498,6 +498,7 @@ func (s *Server) Handler() http.Handler {
 	r.Post(api.SessionStopPath, s.handleStop)
 	r.Post(api.SessionArchivePath, s.handleArchive)
 	r.Post(api.SessionUnarchivePath, s.handleUnarchive)
+	r.Post(api.SessionSandboxPath, s.handleSandbox)
 	r.Post(api.SessionRenamePath, s.handleRename)
 	r.Post(api.SessionHumanizePath, s.handleHumanize)
 	r.Post(api.SessionExecContextPath, s.handleExecContext)
@@ -998,6 +999,51 @@ func (s *Server) handleUnarchive(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusOK)
+}
+
+// handleSandbox rebuilds a session's execution environment: it releases the
+// environment the chat has now and builds a fresh one on the host named in
+// the body ("" or "local" for a new server-local folder). It unarchives an
+// archived chat first, so "restore this chat and rebuild its sandbox" is one
+// request. A host build that fails returns the reason with a 502, so the
+// caller knows the environment is not there yet.
+func (s *Server) handleSandbox(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	ses, ok := s.store.Get(id)
+	if !ok {
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+	req, err := readReprovisionRequest(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if ses.Archived() {
+		if err := s.store.Unarchive(id); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+	if err := s.store.Reprovision(r.Context(), id, req.Host, req.Repos); err != nil {
+		if errors.Is(err, db.ErrNotFound) {
+			http.Error(w, "session not found", http.StatusNotFound)
+			return
+		}
+		http.Error(w, "could not recreate execution environment: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(api.ReprovisionResponse{Host: req.Host})
+}
+
+// readReprovisionRequest parses the rebuild-environment body. It has the same
+// shape as a create request — a host and optional repos — and accepts the same
+// two encodings (JSON, or a form the web UI posts directly), so it reuses that
+// reader.
+func readReprovisionRequest(r *http.Request) (api.ReprovisionRequest, error) {
+	create, err := readCreateRequest(r)
+	return api.ReprovisionRequest{Host: create.Host, Repos: create.Repos}, err
 }
 
 // maxSessionName caps a custom session name so the sidebar and header stay

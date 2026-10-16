@@ -4049,6 +4049,101 @@ func TestSandboxedChatPausesAndOfferEndpoint(t *testing.T) {
 	}
 }
 
+// TestSessionSandboxRebuildsEnvironment covers POST /api/sessions/{id}/sandbox
+// over HTTP: rebuilding a chat's environment releases the environment it has
+// now and builds a fresh one on the host the caller names; and rebuilding an
+// archived chat restores it first, so "unarchive and rebuild" is one call.
+func TestSessionSandboxRebuildsEnvironment(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "porter.db")
+	s, ts := startServerDB(t, dbPath, plainLLM())
+	c := client.New(ts.URL)
+	ctx := context.Background()
+
+	info, err := c.Create(ctx)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	ses, ok := s.store.Get(info.ID)
+	if !ok {
+		t.Fatalf("session %s not found", info.ID)
+	}
+	localDir := filepath.Join(localSandboxRoot(dbPath), info.ID)
+	if _, err := os.Stat(localDir); err != nil {
+		t.Fatalf("local sandbox folder %s missing before rebuild: %v", localDir, err)
+	}
+
+	// Register a host and rebuild the chat's environment on it.
+	ch := make(chan api.HostRequest, 8)
+	if _, err := s.store.RegisterHost(ch, "mac", "macbook", "host", "inst-1"); err != nil {
+		t.Fatalf("RegisterHost: %v", err)
+	}
+	// resolveProvision answers the next provision request the way a host's
+	// provider registration does; the returned channel closes once the
+	// registration is fully applied (the chat's sandbox marker is set), which
+	// happens just after Reprovision returns.
+	resolveProvision := func() chan struct{} {
+		done := make(chan struct{})
+		go func() {
+			req := <-ch
+			s.store.ProvisionRegistered(info.ID, req.ProviderID)
+			close(done)
+		}()
+		return done
+	}
+	done := resolveProvision()
+	resp, err := c.Reprovision(ctx, info.ID, api.ReprovisionRequest{Host: "mac"})
+	if err != nil {
+		t.Fatalf("Reprovision: %v", err)
+	}
+	<-done
+	if resp.Host != "mac" {
+		t.Errorf("Reprovision host = %q, want mac", resp.Host)
+	}
+	// The rebuild released the server-local folder and recorded the host
+	// sandbox, so the chat now runs on mac (and pauses while mac is offline).
+	if _, err := os.Stat(localDir); !os.IsNotExist(err) {
+		t.Errorf("local folder after rebuild = exists (err %v), want removed", err)
+	}
+	if reason := ses.PausedReason(); !strings.Contains(reason, `host "mac"`) {
+		t.Errorf("PausedReason after rebuild = %q, want it to name host mac", reason)
+	}
+	if err := c.Append(ctx, info.ID, "hi"); err == nil || !strings.Contains(err.Error(), "offline") {
+		t.Fatalf("Append after rebuild = %v, want an offline error", err)
+	}
+
+	// Archive the chat, then rebuild it: one call restores the chat and
+	// provisions a fresh sandbox on the host.
+	if err := c.Archive(ctx, info.ID); err != nil {
+		t.Fatalf("Archive: %v", err)
+	}
+	<-ch // drain the release request the archive sent
+	done2 := resolveProvision()
+	if _, err := c.Reprovision(ctx, info.ID, api.ReprovisionRequest{Host: "mac"}); err != nil {
+		t.Fatalf("Reprovision after archive: %v", err)
+	}
+	<-done2
+	if ses.Archived() {
+		t.Errorf("chat still archived after rebuild")
+	}
+	if reason := ses.PausedReason(); !strings.Contains(reason, `host "mac"`) {
+		t.Errorf("PausedReason after rebuild = %q, want it to name host mac", reason)
+	}
+
+	// Rebuilding onto the server process ("local") gives the chat a fresh
+	// server-local folder again.
+	if _, err := c.Reprovision(ctx, info.ID, api.ReprovisionRequest{Host: "local"}); err != nil {
+		t.Fatalf("Reprovision local: %v", err)
+	}
+	if _, err := os.Stat(localDir); err != nil {
+		t.Errorf("local folder after local rebuild = %v, want it recreated", err)
+	}
+
+	// An unknown session is refused, not a silent success.
+	if _, err := c.Reprovision(ctx, "session_9999", api.ReprovisionRequest{Host: "mac"}); err == nil {
+		t.Errorf("Reprovision of unknown session succeeded, want an error")
+	}
+}
+
 // TestIndexPageScriptParses guards the chat page's inline JavaScript. The
 // client's whole behavior lives in one big script inside index.tmpl, so a
 // broken brace or a stray expression there ships a page that throws a syntax

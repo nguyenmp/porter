@@ -162,6 +162,18 @@ func (c *Client) Unarchive(ctx context.Context, id string) error {
 	return c.doJSON(ctx, http.MethodPost, c.path(api.SessionUnarchivePath, id), nil, nil)
 }
 
+// Reprovision rebuilds the session's execution environment: it releases the
+// environment the chat has now and builds a fresh one on the named execution
+// host ("" or "local" for a new server-local folder). An archived chat is
+// unarchived first, so one call restores the chat and rebuilds its sandbox.
+func (c *Client) Reprovision(ctx context.Context, id string, req api.ReprovisionRequest) (api.ReprovisionResponse, error) {
+	var out api.ReprovisionResponse
+	if err := c.doJSON(ctx, http.MethodPost, c.path(api.SessionSandboxPath, id), jsonMarshal(req), &out); err != nil {
+		return api.ReprovisionResponse{}, err
+	}
+	return out, nil
+}
+
 // Rename sets (or clears) a session's custom display name. An empty name
 // clears it back to the first-message preview.
 func (c *Client) Rename(ctx context.Context, id, name string) error {

@@ -611,7 +611,87 @@
       row.addEventListener('click', function() { selectExec(c.id); });
       execPicker.appendChild(row);
     }
+    appendRebuildRows();
     updateSandboxPath(status);
+  }
+
+  // --- Rebuild environment rows ---
+  // Below the provider list, the picker offers to rebuild this chat's
+  // execution environment. A rebuild tears the current environment down and
+  // builds a fresh one — on the server process ("local") or on a connected
+  // execution host — and it restores the chat first if it was archived. That
+  // fixes a chat created on the wrong host, and gives a chat back the
+  // environment it lost when it was archived.
+  let rebuildHosts = [];
+  function loadRebuildHosts() {
+    fetch('/api/hosts').then(function(r) { return r.ok ? r.json() : null; }).then(function(resp) {
+      rebuildHosts = ((resp && resp.hosts) || []).filter(function(h) { return h.connected; });
+      if (execPicker && !execPicker.hidden && execProvider) renderExecPicker(execProvider);
+    }).catch(function() {});
+  }
+
+  // appendRebuildRows adds one rebuild row per place this chat can run: the
+  // server process, then each connected execution host.
+  function appendRebuildRows() {
+    if (!execPicker) return;
+    const divider = document.createElement('div');
+    divider.className = 'exec-picker-divider';
+    divider.textContent = 'Rebuild environment';
+    execPicker.appendChild(divider);
+    appendRebuildRow('local', 'this server');
+    for (const h of rebuildHosts) appendRebuildRow(h.id, h.name || h.id);
+  }
+
+  function appendRebuildRow(host, label) {
+    const row = document.createElement('button');
+    row.type = 'button';
+    row.className = 'exec-picker-row';
+    row.dataset.rebuild = host;
+    const nameLine = document.createElement('span');
+    nameLine.className = 'row-name';
+    const kind = document.createElement('span');
+    kind.className = 'row-kind';
+    kind.textContent = 'rebuild';
+    nameLine.appendChild(kind);
+    nameLine.appendChild(document.createTextNode(' ' + label));
+    row.appendChild(nameLine);
+    const detail = document.createElement('div');
+    detail.className = 'row-detail';
+    detail.textContent = 'Start a fresh environment here';
+    row.appendChild(detail);
+    row.addEventListener('click', function() { rebuildExec(host); });
+    execPicker.appendChild(row);
+  }
+
+  // rebuildExec posts a rebuild request and refreshes the provider status.
+  // The server releases this chat's current environment, builds a fresh one
+  // on the chosen host, and restores the chat first if it was archived.
+  function rebuildExec(host) {
+    const sess = app ? app.dataset.session : null;
+    if (!sess) return;
+    closeExecPicker();
+    const label = host === 'local' ? 'this server' : host;
+    fetch('/api/sessions/' + encodeURIComponent(sess) + '/sandbox', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ host: host })
+    }).then(function(resp) {
+      if (!resp.ok) {
+        return resp.text().then(function(t) { showToast((t || 'could not rebuild the environment').trim()); });
+      }
+      showToast('Rebuilt the environment on ' + label);
+      return refreshExecStatus();
+    }).catch(function() { showToast('could not rebuild the environment on ' + label); });
+  }
+
+  // refreshExecStatus refetches the provider status and redraws the picker.
+  function refreshExecStatus() {
+    const sess = app ? app.dataset.session : null;
+    if (!sess) return Promise.resolve();
+    return fetch('/api/sessions/' + encodeURIComponent(sess) + '/exec/status')
+      .then(function(resp) { return resp.ok ? resp.json() : null; })
+      .then(function(status) { if (status) renderExecPicker(status); })
+      .catch(function() {});
   }
   // updateSandboxPath shows or hides the sandbox path bar below the exec
   // bar and fills in the path from the active provider's CWD. For local
@@ -715,13 +795,12 @@
     if (evt.key === 'Escape') closeExecPicker();
   });
 
-  // Seed on load: fetch the current provider status. The button shows "local"
-  // until then; exec_status envelopes keep it live afterward.
+  // Seed on load: fetch the current provider status, and the execution hosts
+  // the rebuild rows offer. The button shows "local" until then; exec_status
+  // envelopes keep it live afterward.
   if (app && app.dataset.session) {
-    fetch('/api/sessions/' + encodeURIComponent(app.dataset.session) + '/exec/status')
-      .then(function(resp) { return resp.ok ? resp.json() : null; })
-      .then(function(status) { if (status) renderExecPicker(status); })
-      .catch(function() {});
+    refreshExecStatus();
+    loadRebuildHosts();
   }
   // Sandbox path buttons: copy to clipboard and open in Finder.
   if (sandboxCopyBtn) {
