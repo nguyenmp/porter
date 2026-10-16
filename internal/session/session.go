@@ -110,6 +110,13 @@ type Store struct {
 	hub      *mcp.Hub
 	sessions map[string]*Session
 
+	// listSubs are channels woken when the session list's visible state
+	// changes — a turn starts or ends, or a chat is created, archived,
+	// unarchived, or renamed — so a client (the web sidebar) can refresh live
+	// instead of polling. Guarded by mu; a watcher is added by WatchList and
+	// removed by the stop func WatchList returns.
+	listSubs map[chan struct{}]struct{}
+
 	// Execution hosts: persistent agents (e.g. on a laptop) that can
 	// provision execution contexts for new sessions. hosts maps every
 	// registered host by id; pendingHostCtx holds a host's base context for
@@ -169,6 +176,7 @@ func NewStore(persist Persister, hub *mcp.Hub, ctxs ...context.Context) *Store {
 		hosts:     map[string]*host{},
 		pending:   map[string]*pendingProvision{},
 		sandboxes: map[string]*sandbox{},
+		listSubs:  map[chan struct{}]struct{}{},
 	}
 }
 
@@ -197,6 +205,7 @@ func (st *Store) Create(client *llm.Client) (*Session, error) {
 	st.sessions[id] = s
 	st.mu.Unlock()
 	go s.loop(st.ctx)
+	st.notifyListChanged()
 	return s, nil
 }
 
@@ -211,13 +220,15 @@ func (st *Store) Get(id string) (*Session, bool) {
 // List returns a summary of every session, newest first, read from the
 // persister. It is what the web sidebar renders; because every session lives in
 // the persister, the list survives restarts unchanged. The preview is derived
-// from the persisted first user message.
+// from the persisted first user message, and Running comes from the live
+// in-memory session (the persister does not track turn state).
 func (st *Store) List() []api.SessionSummary {
 	summaries, err := st.persist.ListSessions()
 	if err != nil {
 		log.Printf("list sessions: %v", err)
 		return []api.SessionSummary{}
 	}
+	running := st.runningIDs()
 	out := make([]api.SessionSummary, 0, len(summaries))
 	for _, s := range summaries {
 		out = append(out, api.SessionSummary{
@@ -226,9 +237,63 @@ func (st *Store) List() []api.SessionSummary {
 			Name:       s.Name,
 			Preview:    previewOf(s.FirstUser),
 			ArchivedAt: s.ArchivedAt,
+			Running:    running[s.ID],
 		})
 	}
 	return out
+}
+
+// runningIDs returns the db row ids whose in-memory session has a turn in
+// progress. The session map is copied under the store lock, then each
+// session's own lock is taken outside it, so the two locks are never held at
+// the same time.
+func (st *Store) runningIDs() map[int64]bool {
+	st.mu.Lock()
+	sessions := make([]*Session, 0, len(st.sessions))
+	for _, s := range st.sessions {
+		sessions = append(sessions, s)
+	}
+	st.mu.Unlock()
+	out := make(map[int64]bool, len(sessions))
+	for _, s := range sessions {
+		if s.Running() {
+			out[s.dbID] = true
+		}
+	}
+	return out
+}
+
+// WatchList returns a channel that receives a signal each time the session
+// list's visible state changes, plus a stop func that removes the watcher. The
+// signal carries no data: a client re-reads GET /api/sessions on each one. The
+// channel is buffered to one, so a watcher that has not yet drained its
+// previous signal is skipped rather than blocked — a signal only means "the
+// list changed", and a re-read always sees the latest state.
+func (st *Store) WatchList() (<-chan struct{}, func()) {
+	ch := make(chan struct{}, 1)
+	st.mu.Lock()
+	st.listSubs[ch] = struct{}{}
+	st.mu.Unlock()
+	return ch, func() {
+		st.mu.Lock()
+		delete(st.listSubs, ch)
+		st.mu.Unlock()
+	}
+}
+
+// notifyListChanged wakes every list watcher. It never blocks: each send is
+// non-blocking, so a slow or disappeared watcher cannot stall a turn. Called
+// from Archive, Unarchive, Rename, Create, and a session when its run state
+// changes.
+func (st *Store) notifyListChanged() {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	for ch := range st.listSubs {
+		select {
+		case ch <- struct{}{}:
+		default:
+		}
+	}
 }
 
 // Archive marks a session archived at the current time, folding it out of the
@@ -247,6 +312,7 @@ func (st *Store) Archive(id string) error {
 		return fmt.Errorf("archive session: %w", err)
 	}
 	ses.setArchived(now)
+	st.notifyListChanged()
 	return nil
 }
 
@@ -265,6 +331,7 @@ func (st *Store) Unarchive(id string) error {
 	}
 	ses.setArchived(0)
 	st.recreateLocalSandbox(ses)
+	st.notifyListChanged()
 	return nil
 }
 
@@ -285,6 +352,7 @@ func (st *Store) Rename(id, name string) error {
 	}
 	ses.setName(name)
 	ses.publish(api.Envelope{Kind: api.KindSessionRenamed, SessionName: name})
+	st.notifyListChanged()
 	return nil
 }
 
@@ -410,6 +478,12 @@ type Session struct {
 	logSeq    uint64
 	turn      int64
 	running   bool // a turn has started but its completion marker is not yet committed
+	// notifyChange wakes the store's sidebar watchers when this session's
+	// run/idle state flips, so the web sidebar updates the moment a chat starts
+	// or finishes instead of polling. Set by the store when it creates or loads
+	// the session; nil for a session with no store (a bare test session), in
+	// which case the session simply has no watchers to wake.
+	notifyChange func()
 	// totalCached/totalUncached/totalOutput are the session's accumulated
 	// token usage across completed turns, kept in memory and rebuilt from
 	// the persister at startup (a restarted server has no in-flight turns,
@@ -1383,6 +1457,9 @@ func (s *Session) endTurn(env api.Envelope) {
 	subs := s.subs
 	s.mu.Unlock()
 	s.sendTo(subs, env)
+	if s.notifyChange != nil {
+		s.notifyChange()
+	}
 }
 
 // publish broadcasts a live envelope (an LLM event or a system-side fact like a
@@ -1677,10 +1754,18 @@ func (s *Session) detach(sub chan api.Envelope) {
 	}
 }
 
+// nextTurn commits the turn counter and marks the session running. It wakes
+// the store's watchers when the running flag flips (a turn behind a queued one
+// leaves it set), so the sidebar's run/idle icon turns to "running" the moment
+// work starts.
 func (s *Session) nextTurn() int64 {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	wasRunning := s.running
 	s.turn++
 	s.running = true
+	s.mu.Unlock()
+	if !wasRunning && s.notifyChange != nil {
+		s.notifyChange()
+	}
 	return s.turn
 }

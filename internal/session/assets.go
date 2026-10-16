@@ -42,6 +42,9 @@ func (st *Store) configureSession(s *Session) {
 	s.assetRoot = st.assetRoot
 	s.images = st.images
 	s.readAsset = st.AssetBytes
+	// The sidebar watchers live on the store; point the session at them so a
+	// turn starting or ending can wake them (see notifyListChanged).
+	s.notifyChange = st.notifyListChanged
 }
 
 // assetDirFor returns the asset folder for a session id ("" when no asset

@@ -739,6 +739,150 @@ func TestIndexReportsRunningAndQueue(t *testing.T) {
 	_ = pw.Close()
 }
 
+// TestSessionListReportsRunning covers the sidebar's run/idle source: while a
+// chat's turn has a tool in flight, its row in GET /api/sessions carries
+// running=true; an idle chat's row does not; and the flag clears once the turn
+// finishes. The sidebar icon reads exactly this field.
+func TestSessionListReportsRunning(t *testing.T) {
+	srv := newTestServer(t, toolThenReplyLLM())
+	c := client.New(srv.URL)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	idle, err := c.Create(ctx)
+	if err != nil {
+		t.Fatalf("Create idle: %v", err)
+	}
+	info, err := c.Create(ctx)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// Hold a tool open (the exec provider's pipe) so the turn stays running
+	// while we read the list.
+	pr, pw := io.Pipe()
+	dispatch := func(ctx context.Context, name string, args []byte) (io.ReadCloser, error) {
+		return pr, nil
+	}
+	go func() { _ = c.ServeExec(ctx, info.ID, dispatch) }()
+	time.Sleep(100 * time.Millisecond)
+
+	if err := c.Append(ctx, info.ID, "run it"); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	// Wait until the tool is in flight (the turn is running).
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		rr, err := c.Runs(ctx, info.ID)
+		if err != nil {
+			t.Fatalf("Runs: %v", err)
+		}
+		if len(rr.Runs) > 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	read := func() map[string]api.SessionSummary {
+		t.Helper()
+		var list api.SessionsResponse
+		if err := fetchJSON(srv.URL+api.SessionsPath, &list); err != nil {
+			t.Fatalf("list: %v", err)
+		}
+		rows := map[string]api.SessionSummary{}
+		for _, s := range list.Sessions {
+			rows[s.ID] = s
+		}
+		return rows
+	}
+
+	rows := read()
+	if !rows[info.ID].Running {
+		t.Errorf("running chat row = %+v, want running=true", rows[info.ID])
+	}
+	if rows[idle.ID].Running {
+		t.Errorf("idle chat row = %+v, want running false", rows[idle.ID])
+	}
+
+	// Release the tool; the turn finishes and the flag clears.
+	_, _ = pw.Write([]byte("rest\n"))
+	_ = pw.Close()
+	deadline = time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		rows = read()
+		if !rows[info.ID].Running {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if rows[info.ID].Running {
+		t.Errorf("chat row still reports running after the turn ended: %+v", rows[info.ID])
+	}
+}
+
+// TestSessionsStreamNotifiesChange covers the live sidebar stream: a client
+// connected to GET /api/sessions/stream gets an event on connect and another
+// whenever the list changes (here, an archive), so the sidebar refreshes
+// without polling.
+func TestSessionsStreamNotifiesChange(t *testing.T) {
+	srv := newTestServer(t, plainLLM())
+	c := client.New(srv.URL)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	info, err := c.Create(ctx)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	resp, err := http.Get(srv.URL + api.SessionsStreamPath)
+	if err != nil {
+		t.Fatalf("GET stream: %v", err)
+	}
+	defer resp.Body.Close()
+	if ct := resp.Header.Get("Content-Type"); ct != "text/event-stream" {
+		t.Errorf("Content-Type = %q, want text/event-stream", ct)
+	}
+
+	// readEvent blocks until one SSE event is assembled and returns its name.
+	// The payload is empty; the "sessions" event name is the whole signal.
+	br := bufio.NewReader(resp.Body)
+	readEvent := func() string {
+		t.Helper()
+		var name string
+		for {
+			line, err := br.ReadString('\n')
+			if err != nil {
+				t.Fatalf("read stream: %v", err)
+			}
+			line = strings.TrimRight(line, "\n")
+			if line == "" {
+				if name != "" {
+					return name
+				}
+				continue
+			}
+			if strings.HasPrefix(line, "event: ") {
+				name = strings.TrimPrefix(line, "event: ")
+			}
+		}
+	}
+
+	// The event sent on connect.
+	if got := readEvent(); got != "sessions" {
+		t.Errorf("first event = %q, want sessions", got)
+	}
+
+	// A change to the list (the archive below) wakes the watcher, so the
+	// connected client sees another event.
+	if err := c.Archive(ctx, info.ID); err != nil {
+		t.Fatalf("Archive: %v", err)
+	}
+	if got := readEvent(); got != "sessions" {
+		t.Errorf("event after archive = %q, want sessions", got)
+	}
+}
+
 func TestCreateReturnsAllFields(t *testing.T) {
 	srv := newTestServer(t, plainLLM())
 	c := client.New(srv.URL)

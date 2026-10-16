@@ -278,9 +278,11 @@
 
   // --- Sidebar sessions (Step 5) ---
   // The server is the source of truth for which sessions exist: GET /api/sessions
-  // returns every session (newest first) with a preview of its first message, and
-  // the sidebar renders that. Nothing is kept client-side — the page is fully
-  // web-reliant, so every load (and the New chat jump) refetches the list.
+  // returns every session (newest first) with a preview of its first message and
+  // whether a turn is in progress, and the sidebar renders that. Nothing is kept
+  // client-side — the page is fully web-reliant: every load (and the New chat
+  // jump) refetches the list, and a live stream keeps it current between loads
+  // (see "Live sidebar state" below). Each active row carries a run/idle icon.
   const app = document.getElementById('app');
   const activeSession = app ? app.dataset.session || '' : '';
 
@@ -323,11 +325,13 @@
       .catch(function() {}); // page is web-reliant; leave the list empty on failure
   }
 
-  // One sidebar row: a plain link to the session. Rows carry no per-session
-  // actions — rename and archive live on the chat page for the current
-  // session only, keeping the sidebar uncluttered. The label is the custom
-  // name when set, else the first-message preview, else the id. Archived rows
-  // are dimmed (the .archived class) but stay fully clickable.
+  // One sidebar row: a plain link to the session, plus a run/idle icon on
+  // active rows. Rows carry no per-session actions — rename and archive live on
+  // the chat page for the current session only, keeping the sidebar
+  // uncluttered. The label is the custom name when set, else the first-message
+  // preview, else the id. Archived rows are dimmed (the .archived class) but
+  // stay fully clickable, and carry no icon: the icon answers "which active
+  // chat needs a reply", which archived chats don't.
   function sessionLink(s, activeId) {
     const li = document.createElement('li');
     li.className = 'session-row';
@@ -337,7 +341,30 @@
     a.title = s.id;
     a.className = 'session-link' + (s.id === activeId ? ' active' : '') + (s.archived_at ? ' archived' : '');
     li.appendChild(a);
+    if (!s.archived_at) {
+      const icon = document.createElement('span');
+      setStateIcon(icon, !!s.running);
+      li.appendChild(icon);
+    }
     return li;
+  }
+
+  // stateIcon is the at-a-glance run state: 🏃🏾‍♀️ while a turn runs, ✅ when the
+  // chat is idle and ready for a reply.
+  function stateIcon(running) {
+    return running ? '\u{1F3C3}\u{1F3FE}\u200D\u2640\uFE0F' : '\u2705';
+  }
+
+  // setStateIcon paints one icon element for the given run state. The label
+  // rides as a tooltip and an accessible name, so the state is not conveyed by
+  // color or glyph alone.
+  function setStateIcon(icon, running) {
+    const label = running ? 'Running' : 'Idle';
+    icon.className = 'session-state' + (running ? ' running' : '');
+    icon.textContent = stateIcon(running);
+    icon.title = label;
+    icon.setAttribute('role', 'img');
+    icon.setAttribute('aria-label', label);
   }
 
   // --- Archived folder ---
@@ -461,6 +488,24 @@
   // Render the list on load (empty state has no active session). The New chat
   // flow navigates with ?session=, so a fresh load always refetches.
   renderSidebar(activeSession || null);
+
+  // --- Live sidebar state ---
+  // The sidebar list and its run/idle icons refresh the moment any chat's state
+  // changes: the server pings /api/sessions/stream when a turn starts or ends,
+  // or a chat is created, archived, unarchived, or renamed. EventSource
+  // reconnects on its own, so a dropped stream heals without a reload. A slow
+  // safety poll covers a connection the network has silently stopped
+  // delivering, and a refresh on regaining focus makes a backgrounded tab's
+  // icons current on return.
+  function refreshSidebar() { renderSidebar(activeSession || null); }
+  if (window.EventSource) {
+    const sidebarStream = new EventSource('/api/sessions/stream');
+    sidebarStream.addEventListener('sessions', refreshSidebar);
+  }
+  setInterval(function() { if (!document.hidden) refreshSidebar(); }, 20000);
+  document.addEventListener('visibilitychange', function() {
+    if (!document.hidden) refreshSidebar();
+  });
 
   // --- Connection / turn status (Step 6) ---
   // The sidebar indicator shows three signals. SSE connection comes from the

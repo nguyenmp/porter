@@ -46,6 +46,11 @@
 		#session-list a, #archived-list a { display: block; padding: 0.35rem 0.5rem; border-radius: 4px; color: #333; text-decoration: none; font-size: 0.9em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 		#session-list a:hover, #archived-list a:hover { background: #f0f0f0; }
 		#session-list a.active, #archived-list a.active { background: #e0e0e0; font-weight: bold; }
+		/* A sidebar row is the title link plus its run/idle icon on the right.
+		   The link flexes and truncates; the icon keeps its size. */
+		.session-row { display: flex; align-items: center; gap: 0.35rem; }
+		.session-row .session-link { flex: 1 1 auto; min-width: 0; }
+		.session-state { flex: none; font-size: 0.8em; line-height: 1; }
 		/* Archived rows read as filed-away: dimmed, but fully clickable —
 		   chatting with one unarchives it server-side. */
 		#archived-list a { color: #999; }

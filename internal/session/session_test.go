@@ -393,6 +393,74 @@ func TestRunningAndQueueDepth(t *testing.T) {
 	}
 }
 
+// TestWatchListSignalsRunStateChange covers the live sidebar watcher: the store
+// wakes it when a chat's run/idle state changes — one signal as a turn starts
+// and another as it ends — which is what lets the sidebar icon flip without
+// polling.
+func TestWatchListSignalsRunStateChange(t *testing.T) {
+	release := make(chan struct{})
+	llmSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fl, _ := w.(http.Flusher)
+		fmt.Fprint(w, `data: {"choices":[{"delta":{"content":"hi"}}]}`+"\n\n")
+		if fl != nil {
+			fl.Flush()
+		}
+		<-release // hold the turn open until the test lets it finish
+		fmt.Fprint(w,
+			`data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`+"\n\n"+
+				`data: [DONE]`+"\n")
+		if fl != nil {
+			fl.Flush()
+		}
+	}))
+	defer llmSrv.Close()
+
+	client := llm.NewClient(config.Config{BaseURL: llmSrv.URL + "/v1", Model: "m", APIKey: "k"}, nil)
+	nctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	st := NewStore(memPersister(t), nil, nctx)
+
+	ch, stop := st.WatchList()
+	defer stop()
+	drain := func() {
+		for {
+			select {
+			case <-ch:
+			default:
+				return
+			}
+		}
+	}
+	wait := func(what string) {
+		t.Helper()
+		select {
+		case <-ch:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("timed out waiting for a list-change signal (%s)", what)
+		}
+	}
+
+	// Creating a chat is itself a list change.
+	s, err := st.Create(client)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	drain()
+
+	s.Enqueue("hello", nil)
+	wait("turn started")
+	if !s.Running() {
+		t.Errorf("session should report running while the turn is held open")
+	}
+
+	close(release)
+	wait("turn ended")
+	if s.Running() {
+		t.Errorf("session should report idle after the turn ended")
+	}
+}
+
 func TestSetProviderDefaultsToLocal(t *testing.T) {
 	st := NewStore(memPersister(t), nil)
 	s, err := st.Create(nil)

@@ -15,6 +15,12 @@ const (
 	// SessionsPath is the session collection: POST creates a session,
 	// GET lists them (newest first).
 	SessionsPath = "/api/sessions"
+	// SessionsStreamPath streams a ping whenever the session list's visible
+	// state changes — a turn starts or ends, or a chat is created, archived,
+	// unarchived, or renamed — so the web sidebar can refresh live instead of
+	// polling: GET (Server-Sent Events; the payload is a "sessions" event with
+	// no data, and the client re-reads SessionsPath on each one).
+	SessionsStreamPath = "/api/sessions/stream"
 	// SessionHistoryPath returns a session's authoritative history and seq: GET.
 	SessionHistoryPath = "/api/sessions/{id}"
 	// SessionViewPath renders a session's committed history as an HTML
@@ -500,6 +506,13 @@ type SessionSummary struct {
 	// is active. Omitted from the JSON for active sessions so the sidebar
 	// response stays terse.
 	ArchivedAt int64 `json:"archived_at,omitempty"`
+	// Running is true while a turn is in progress in this session (its user
+	// message committed, its completion marker not yet committed). The sidebar
+	// shows it as a run/idle icon so the user can tell at a glance which of
+	// several chats is busy and which is waiting for a reply. Omitted from the
+	// JSON when false (the common idle case), keeping the response terse; a
+	// client reads a missing value as idle.
+	Running bool `json:"running,omitempty"`
 }
 
 // SessionsResponse is returned by GET /api/sessions, newest first. The server

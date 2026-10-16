@@ -484,6 +484,7 @@ func (s *Server) Handler() http.Handler {
 	// before any file is touched.
 	r.Get("/assets/sessions/{id}/{asset_id}/{filename}", s.handleAsset)
 	r.Get(api.SessionsPath, s.handleList)
+	r.Get(api.SessionsStreamPath, s.handleSessionsStream)
 	r.Post(api.SessionsPath, s.handleCreate)
 	r.Post(api.SessionMessagesPath, s.handleAppend)
 	r.Get(api.SessionHistoryPath, s.handleHistory)
@@ -564,6 +565,40 @@ func (s *Server) handleAsset(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(api.SessionsResponse{Sessions: s.store.List()})
+}
+
+// handleSessionsStream streams a "sessions" event whenever the session list's
+// visible state changes (a turn starts or ends, or a chat is created,
+// archived, unarchived, or renamed), so the web sidebar refreshes live
+// instead of polling. The event carries no data — the client re-reads
+// GET /api/sessions on each one — and the first event is sent on connect so a
+// client that missed a change while disconnected catches up immediately.
+func (s *Server) handleSessionsStream(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.WriteHeader(http.StatusOK)
+
+	fw := flushWriter{w}
+	ch, stop := s.store.WatchList()
+	defer stop()
+	ping := func() bool {
+		_, err := fw.Write([]byte("event: sessions\ndata: {}\n\n"))
+		return err == nil
+	}
+	if !ping() {
+		return
+	}
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-ch:
+			if !ping() {
+				return
+			}
+		}
+	}
 }
 
 // handleCreate makes a new session and returns its id, history, and resume
