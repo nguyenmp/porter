@@ -65,8 +65,9 @@ func BuiltinSkill() api.Skill {
 // rewrite rules (systemPrompt) plus an interactive-use suffix. A model
 // that loads this skill asks for text when none is given, runs its passes on a
 // scratch file (rereading the file after each pass), edits a given file in
-// place,and reports how many passes it took - things a background pass must
-// never do. The citation and self-review rules live in
+// place, answers in chat with no code block or quotation marks, and reports how
+// many passes it took when the user asked for plain language - things a
+// background pass must never do. The citation and self-review rules live in
 // the shared rule body (plain_rules.md), so this prompt and the background
 // pass cannot differ on them.
 func Prompt() string { return systemPrompt + interactiveSuffix }
@@ -133,13 +134,15 @@ const silentSuffix = "\n\nThe rewrite runs unattended and lands directly in the 
 
 // interactiveSuffix is appended when the prompt is served as the built-in
 // plain-language skill. It carries what only an interactive model may do: ask
-// for input, run its passes on a scratch file, edit a file in place, and report
-// its passes. The scratch file makes the loop rule (plain_rules.md) checkable:
-// each pass rereads the real text, not the model's memory of it, so a pass
-// cannot drop facts and the reported pass count can be trusted. The instruction
-// lives here, not in the shared rule body, because the background pass stays
-// one request and never touches files.
-const interactiveSuffix = "\n\nWhen used interactively:if you have no text,ask what to simplify.Otherwise write the text to a scratch file.Then reread the file after every pass,so each pass works on the real text,not your memory of it.Stop when a pass changes nothing.Answer with the file's contents,copied from the file,not retyped.If the input is a file,edit it in place instead of making a scratch copy.Tell the user when each pass starts,and when you finish,say how many passes you took and list the main changes,each with the principle behind it."
+// for input, run its passes on a scratch file, edit a file in place, answer
+// directly in chat, and report its passes when asked. The scratch file makes
+// the loop rule (plain_rules.md) checkable: each pass rereads the real text,
+// not the model's memory of it, so a pass cannot drop facts and the reported
+// pass count can be trusted. The answer goes straight into chat, with no code
+// block and no quotation marks, so the reader gets text they can use. The
+// instruction lives here, not in the shared rule body, because the background
+// pass stays one request and never touches files.
+const interactiveSuffix = "\n\nWhen used interactively: if you have no text, ask what to simplify. If the user gives you a file, edit that file in place. Otherwise write the text to a scratch file. Then reread the file after every pass, so each pass works on the real text and not on your memory of it. Stop when a pass changes nothing. Answer with the file's contents, copied from the file, not retyped. Write that answer directly in chat. Do not wrap it in a code block or in quotation marks. Report the passes only when the user asked for plain language by name: say how many passes you took and list the main changes, each with the principle behind it."
 
 // Directive returns the standing writing-style instruction the agent injects
 // into every model request: a short pointer to the built-in plain-language
@@ -160,16 +163,16 @@ func Directive() string { return systemDirective }
 var systemDirective = `Always write in plain language. Load the plain-language skill and thoroughly apply its rules to everything you write: replies to the user, reports and documents you draft, code comments you write or edit, web pages you build, UI text you write, and documentation you create. Replies go to a working developer, so keep the technical terms they already know and define each term they might not, the first time it appears.
 `
 
-// UserMessageReminder is the one-line reminder the model view appends to every
-// user message (recall.ProjectModelView), so the standing writing style sits
-// next to the request the model is answering and not only in the static system
-// prefix (Directive). It asks for simple, concise prose and names the
-// plain-language skill, which carries the full rule body, so the reminder stays
-// short instead of restating the rules. Like the timing note, it lives only on
-// the outgoing copy of history: the stored message, the database, and the UI
-// keep exactly what the user typed. Keep it short — it repeats on every user
-// turn, so every extra word is paid for on every request.
-const UserMessageReminder = "Please write simply and prefer fewer words, and thoroughly use the plain-language skill"
+// UserMessageReminder is the reminder the model view appends to every user
+// message (recall.ProjectModelView), so the standing writing style sits next to
+// the request the model is answering and not only in the static system prefix
+// (Directive). It tells the model to reload the plain-language skill and apply
+// it before it writes, and to stay quiet about the rewrite unless the user asks
+// for plain language. Like the timing note, it lives only on the outgoing copy
+// of history: the stored message, the database, and the UI keep exactly what the
+// user typed. Keep it short — it repeats on every user turn, so every extra word
+// is paid for on every request.
+const UserMessageReminder = "System Hint: Before writing or responding, please reload the plain-language skill and apply it. Do so without noting to the user that you applied plain-language unless the user explicitly asked you to apply plain-language."
 
 // Should reports whether an assistant reply is worth a humanize pass: long
 // enough (the thresholds above) and mostly prose rather than code.
