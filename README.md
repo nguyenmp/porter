@@ -349,13 +349,15 @@ needs and defines them the first time each appears.
 The style also rides on the conversation itself. The model view appends a
 short reminder (`UserMessageReminder`, also in `internal/humanize`) to every
 user message, so the instruction sits next to the request the model is
-answering and not only in the static system prefix. The reminder tells the
-model to loop over the text until a pass changes nothing, so the skill's reread
-loop runs on a question as well as on a rewrite. It also names the outputs the
-rules cover — replies, files, code comments, and PR text — and says to leave
-code and quoted text exact. Like the timing headers on the same model view, the
-reminder exists only on the outgoing copy: what you typed is what is stored,
-and what the UI shows.
+answering and not only in the static system prefix. The reminder names the
+outputs the rules cover — replies, files, code comments, and PR text — and says
+to leave code, quoted text, and command arguments exact. It also states the
+workflow the skill adds: prose over about 100 words goes in a scratch file, gets
+at least two passes, and stops when a pass changes nothing, while shorter prose
+gets one reread. The pass floor matters, because "stop when a pass changes
+nothing" on its own is satisfied by a single clean read. Like the timing headers
+on the same model view, the reminder exists only on the outgoing copy: what you
+typed is what is stored, and what the UI shows.
 
 #### Humanized variants
 

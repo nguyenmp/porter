@@ -40,7 +40,7 @@ import (
 // PromptVersion identifies the prompt revision that produced a variant. It is
 // stamped on every pass so the UI can explain why a tab reads the way it does,
 // and should be bumped whenever the prompt below changes.
-const PromptVersion = "plain-language-v13"
+const PromptVersion = "plain-language-v14"
 
 // SkillName is the name the built-in plain-language skill is exposed under,
 // both in the load_skill listing and as the sentinel path (api.BuiltinPrefix +
@@ -115,14 +115,17 @@ var plainRules = strings.TrimSuffix(plainRulesFile, "\n")
 
 // systemPrompt is the plain-language prompt for rewriting: the shared rule
 // body (plainRules) plus the rewrite-only rules — example use and preserving
-// the message — which only make sense for a pass over given text. It opens as
-// a request rather than a bare command ("Can you apply plain language ..."),
-// which restates the effort rule that leads plainRules: aim at the
-// improvements a reader would notice rather than reworking every sentence.
+// the message — which only make sense for a pass over given text. It opens
+// with a bare command rather than a question ("Can you apply plain language
+// to the text that follows?"), because the same body is served as the
+// interactive skill, where "the text that follows" points at nothing and makes
+// the skill read like a one-off rewrite request. The command still restates the
+// effort rule that leads plainRules: aim at the improvements a reader would
+// notice rather than reworking every sentence.
 // Output behavior, silent for the background pass and reporting for
 // interactive use, is added by the suffix each mode uses (humanizePrompt vs
 // Prompt).
-var systemPrompt = `Can you apply plain language to the text that follows, focusing on the biggest improvements?
+var systemPrompt = `Apply plain language, focusing on the biggest improvements.
 ` + plainRules + `
 - Use an example only when the original already gives you the material for one, and expand it from the original; do not invent new facts.
 - Preserve the message. You are free to reformat, rephrase, and reorganize, and to add headings, lists, or simple visuals, to improve clarity, but do not change what the original conveys. Keep every fact, name, number, and date as given: do not add, drop, or alter anything in the original. Keep code, URLs, and quoted text exact.
@@ -134,15 +137,21 @@ const silentSuffix = "\n\nThe rewrite runs unattended and lands directly in the 
 
 // interactiveSuffix is appended when the prompt is served as the built-in
 // plain-language skill. It carries what only an interactive model may do: ask
-// for input, run its passes on a scratch file, edit a file in place, answer
-// directly in chat, and report its passes when asked. The scratch file makes
-// the loop rule (plain_rules.md) checkable: each pass rereads the real text,
-// not the model's memory of it, so a pass cannot drop facts and the reported
-// pass count can be trusted. The answer goes straight into chat, with no code
-// block and no quotation marks, so the reader gets text they can use. The
-// instruction lives here, not in the shared rule body, because the background
-// pass stays one request and never touches files.
-const interactiveSuffix = "\n\nWhen used interactively: if you have no text, ask what to simplify. If the user gives you a file, edit that file in place. Otherwise write the text to a scratch file. Then reread the file after every pass, so each pass works on the real text and not on your memory of it. Stop when a pass changes nothing. Answer with the file's contents, copied from the file, not retyped. Write that answer directly in chat. Do not wrap it in a code block or in quotation marks. Report the passes only when the user asked for plain language by name: say how many passes you took and list the main changes, each with the principle behind it."
+// for input, pick a workflow by length, run its passes on a scratch file, edit a
+// file in place, answer directly in chat, and report its passes when asked. The
+// length rule and the pass floor exist because the loop rule alone is not
+// checkable: "stop when a pass changes nothing" is satisfied by a single clean
+// read, and a model that rereads in its head can call that a pass. Naming a file
+// fixes both. Each pass rereads the real text, so a pass cannot drop facts and
+// the reported pass count can be trusted. The answer goes straight into chat,
+// with no code block and no quotation marks, so the reader gets text they can
+// use. The instruction lives here, not in the shared rule body, because the
+// background pass stays one request and never touches files.
+const interactiveSuffix = `
+When used interactively: if you have no text, ask what to simplify. If the user gives you a file, edit that file in place.
+
+Length decides the workflow. Under about 100 words, reread the text once against the rules and fix what breaks. No file needed. Longer text goes in a scratch file, such as .porter/plain/<name>.md, so you can reread the file after every pass and each pass works on the real text instead of your memory of it. A pass means reading the text from top to bottom, applying each rule in turn, and editing the file. Run at least two passes, then stop when a fresh pass changes nothing. Keep the file, because it shows the passes happened. Answer with the file's contents, copied from the file, not retyped. Write that answer directly in chat, with no code block and no quotation marks. Report the passes only when the user asks for plain language by name: say how many passes you took and list the main changes, each with the principle behind it.
+`
 
 // Directive returns the standing writing-style instruction the agent injects
 // into every model request: a short pointer to the built-in plain-language
@@ -167,13 +176,16 @@ var systemDirective = `Always write in plain language. Load the plain-language s
 // message (recall.ProjectModelView), so the standing writing style sits next to
 // the request the model is answering and not only in the static system prefix
 // (Directive). It tells the model to reload the plain-language skill, apply it
-// to every output it produces, and loop over the text until a pass changes
-// nothing, and it tells the model to stay quiet about the rewrite unless the
-// user asks for plain language. Like the timing note, it lives only on the
-// outgoing copy of history: the stored message, the database, and the UI keep
-// exactly what the user typed. Keep it short — it repeats on every user turn,
-// so every extra word is paid for on every request.
-const UserMessageReminder = "System Hint: Before writing or responding, reload the plain-language skill and apply it to every output: replies, files, code comments, and PR text. Loop on the text itself — reread it, apply each rule, and repeat until a pass changes nothing. Leave code and quoted text exact. Don't mention you did this unless the user asks."
+// to every output it produces, and follow the length rule: prose over about 100
+// words goes in a scratch file with at least two passes, and shorter prose gets
+// one reread. The floor matters, because "stop when a pass changes nothing" is
+// otherwise satisfied by a single clean read. It also tells the model to stay
+// quiet about the rewrite unless the user asks for plain language. Like the
+// timing note, it lives only on the outgoing copy of history: the stored
+// message, the database, and the UI keep exactly what the user typed. Keep it
+// short — it repeats on every user turn, so every extra word is paid for on
+// every request.
+const UserMessageReminder = "System Hint: Before writing or responding, load the plain-language skill and apply it to all prose you write: replies, files, code comments, and PR text. Leave code, quoted text, and command arguments exact. Prose over about 100 words goes in a scratch file first: reread it, run at least two passes, and stop when one changes nothing. Shorter prose gets one reread. Don't mention this unless the user asks."
 
 // Should reports whether an assistant reply is worth a humanize pass: long
 // enough (the thresholds above) and mostly prose rather than code.

@@ -232,6 +232,37 @@ func TestInteractiveRunsPassesOnFile(t *testing.T) {
 	}
 }
 
+// TestInteractiveSetsPassFloorAndLengthRule checks the skill sets a pass floor
+// and a length cutoff. Without the floor, "stop when a pass changes nothing" is
+// satisfied by one clean read. Without the cutoff, short replies pay for a file
+// they do not need.
+func TestInteractiveSetsPassFloorAndLengthRule(t *testing.T) {
+	p := Prompt()
+	for _, want := range []string{"at least two passes", "about 100 words", "Keep the file", "copied from the file"} {
+		if !strings.Contains(p, want) {
+			t.Errorf("skill prompt missing %q:\n%s", want, p)
+		}
+	}
+	// The background pass stays one request, so it must not carry the file
+	// workflow or the interactive length rule.
+	for _, banned := range []string{"scratch file", "100 words", "two passes"} {
+		if strings.Contains(humanizePrompt(), banned) {
+			t.Errorf("background pass prompt leaked %q:\n%s", banned, humanizePrompt())
+		}
+	}
+}
+
+// TestUserMessageReminderCarriesWorkflow checks the per-turn reminder states the
+// file, the floor, and the length rule. The reminder repeats on every turn, so
+// it has to carry them in a few words.
+func TestUserMessageReminderCarriesWorkflow(t *testing.T) {
+	for _, want := range []string{"scratch file", "at least two passes", "100 words", "one reread"} {
+		if !strings.Contains(UserMessageReminder, want) {
+			t.Errorf("UserMessageReminder missing %q: %s", want, UserMessageReminder)
+		}
+	}
+}
+
 // TestLoopRuleInRulesBody checks the rule to work through every rule, one at a
 // time, in a loop until the text is thoroughly plain lives in the shared rule
 // body (plain_rules.md), so the skill and the background pass both carry it

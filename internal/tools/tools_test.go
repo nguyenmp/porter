@@ -238,7 +238,7 @@ func TestLoadSkillReturnsBuiltinBody(t *testing.T) {
 	if res != humanize.Prompt()+"\nexit code: 0\n" {
 		t.Errorf("built-in load_skill result mismatch:\n got %q\nwant prompt body with exit line", res)
 	}
-	if !strings.Contains(res, "Can you apply plain language") {
+	if !strings.Contains(res, "Apply plain language") {
 		t.Errorf("built-in load_skill result missing prompt body: %q", res)
 	}
 	if !strings.Contains(res, "exit code: 0") {
