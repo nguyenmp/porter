@@ -166,13 +166,14 @@ var systemDirective = `Always write in plain language. Load the plain-language s
 // UserMessageReminder is the reminder the model view appends to every user
 // message (recall.ProjectModelView), so the standing writing style sits next to
 // the request the model is answering and not only in the static system prefix
-// (Directive). It tells the model to reload the plain-language skill and apply
-// it before it writes, and to stay quiet about the rewrite unless the user asks
-// for plain language. Like the timing note, it lives only on the outgoing copy
-// of history: the stored message, the database, and the UI keep exactly what the
-// user typed. Keep it short — it repeats on every user turn, so every extra word
-// is paid for on every request.
-const UserMessageReminder = "System Hint: Before writing or responding, please reload the plain-language skill and apply it. Do so without noting to the user that you applied plain-language unless the user explicitly asked you to apply plain-language."
+// (Directive). It tells the model to reload the plain-language skill, apply it
+// to every output it produces, and loop over the text until a pass changes
+// nothing, and it tells the model to stay quiet about the rewrite unless the
+// user asks for plain language. Like the timing note, it lives only on the
+// outgoing copy of history: the stored message, the database, and the UI keep
+// exactly what the user typed. Keep it short — it repeats on every user turn,
+// so every extra word is paid for on every request.
+const UserMessageReminder = "System Hint: Before writing or responding, reload the plain-language skill and apply it to every output: replies, files, code comments, and PR text. Loop on the text itself — reread it, apply each rule, and repeat until a pass changes nothing. Leave code and quoted text exact. Don't mention you did this unless the user asks."
 
 // Should reports whether an assistant reply is worth a humanize pass: long
 // enough (the thresholds above) and mostly prose rather than code.

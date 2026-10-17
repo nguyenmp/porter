@@ -347,11 +347,15 @@ undefined, while text drafted for other readers keeps the terms that audience
 needs and defines them the first time each appears.
 
 The style also rides on the conversation itself. The model view appends a
-one-line reminder (`UserMessageReminder`, also in `internal/humanize`) to every
+short reminder (`UserMessageReminder`, also in `internal/humanize`) to every
 user message, so the instruction sits next to the request the model is
-answering and not only in the static system prefix. Like the timing headers on
-the same model view, the reminder exists only on the outgoing copy: what you
-typed is what is stored, and what the UI shows.
+answering and not only in the static system prefix. The reminder tells the
+model to loop over the text until a pass changes nothing, so the skill's reread
+loop runs on a question as well as on a rewrite. It also names the outputs the
+rules cover — replies, files, code comments, and PR text — and says to leave
+code and quoted text exact. Like the timing headers on the same model view, the
+reminder exists only on the outgoing copy: what you typed is what is stored,
+and what the UI shows.
 
 #### Humanized variants
 
