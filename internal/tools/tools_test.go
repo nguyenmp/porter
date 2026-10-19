@@ -2,10 +2,15 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -121,6 +126,80 @@ func TestShellBackgroundDescendantDoesNotBlock(t *testing.T) {
 		}
 	case <-time.After(1500 * time.Millisecond):
 		t.Fatal("stream did not terminate: a backgrounded descendant kept the output open")
+	}
+}
+
+// TestShellBackgroundRecipeKeepsLateOutput follows the recipe in the shell tool
+// description: start the job in a call that returns at once, with its output
+// and exit code redirected to real files, then read those files from a later
+// call. The job waits on a gate the test opens after the starting call has
+// ended, so every byte it prints arrives later, where the tool's own temp file
+// would have dropped it. Nothing here uses wait: the job is not a child of the
+// polling shell.
+func TestShellBackgroundRecipeKeepsLateOutput(t *testing.T) {
+	dir := t.TempDir()
+	gate := filepath.Join(dir, "gate")
+	logPath := filepath.Join(dir, "job.log")
+	statusPath := filepath.Join(dir, "job.status")
+	pidPath := filepath.Join(dir, "job.pid")
+
+	start := fmt.Sprintf(
+		`nohup sh -c 'while [ ! -f %s ]; do sleep 0.05; done; sh -c "echo late output; exit 7"; echo $? > %s' `+
+			`> %s 2>&1 & echo $! > %s`,
+		gate, statusPath, logPath, pidPath)
+	args, err := json.Marshal(map[string]string{"command": start})
+	if err != nil {
+		t.Fatalf("marshal start command: %v", err)
+	}
+	if _, err := run(context.Background(), NewDispatcher(), "shell", args); err != nil {
+		t.Fatalf("start call: %v", err)
+	}
+
+	pid, err := os.ReadFile(pidPath)
+	if err != nil {
+		t.Fatalf("read pid file: %v", err)
+	}
+	pidNum, err := strconv.Atoi(strings.TrimSpace(string(pid)))
+	if err != nil {
+		t.Fatalf("pid file %q: %v", pid, err)
+	}
+	t.Cleanup(func() {
+		if _, err := os.Stat(statusPath); err != nil {
+			_ = exec.Command("kill", "-9", strconv.Itoa(pidNum)).Run()
+		}
+	})
+	if err := syscall.Kill(pidNum, 0); err != nil {
+		t.Fatalf("job %d not running after the start call returned: %v", pidNum, err)
+	}
+
+	if err := os.WriteFile(gate, nil, 0o644); err != nil {
+		t.Fatalf("open gate: %v", err)
+	}
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		if _, err := os.Stat(statusPath); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			out, _ := os.ReadFile(logPath)
+			t.Fatalf("job did not finish within 15s; log: %q", out)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	log, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read log: %v", err)
+	}
+	if !strings.Contains(string(log), "late output") {
+		t.Errorf("log = %q, want the output the job wrote after the call ended", log)
+	}
+	status, err := os.ReadFile(statusPath)
+	if err != nil {
+		t.Fatalf("read status: %v", err)
+	}
+	if got := strings.TrimSpace(string(status)); got != "7" {
+		t.Errorf("status file = %q, want the job's exit code 7", got)
 	}
 }
 
@@ -353,6 +432,28 @@ func TestShellDefSteersToDedicatedTools(t *testing.T) {
 	for _, stale := range []string{"inspect or edit files", "make network calls"} {
 		if strings.Contains(shellDesc, stale) {
 			t.Errorf("shell description still advertises %q:\n%s", stale, shellDesc)
+		}
+	}
+}
+
+// TestShellDefExplainsBackgrounding locks in the recipe the description gives
+// for a long job: send output and exit code to real files, then check the job
+// with kill -0 from a later call. It also keeps the reasons in the text: wait
+// cannot reach a process a later shell did not start, timeout cannot run the
+// wait builtin, and cancelling a call kills every process the call started.
+func TestShellDefExplainsBackgrounding(t *testing.T) {
+	var shellDesc string
+	for _, d := range NewDispatcher().Defs() {
+		if d.Function.Name == "shell" {
+			shellDesc = d.Function.Description
+		}
+	}
+	if shellDesc == "" {
+		t.Fatal("shell tool not declared")
+	}
+	for _, want := range []string{"nohup", "kill -0", "shell builtin", "temporary file", "every process the call started"} {
+		if !strings.Contains(shellDesc, want) {
+			t.Errorf("shell description missing %q:\n%s", want, shellDesc)
 		}
 	}
 }

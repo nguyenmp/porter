@@ -34,8 +34,24 @@ func shellDef() llm.Tool {
 	return llm.Tool{
 		Type: "function",
 		Function: llm.Function{
-			Name:        "shell",
-			Description: "Run a shell command in the working directory and return its output. Use it for anything the dedicated tools do not cover: run programs and CLIs, git, and create files. To read or change text in an existing file, prefer the file tools: read_with_line_numbers, line_insert, line_replace, string_replace. To fetch a URL, prefer web_fetch; use curl when you need methods, headers, auth, or downloads.",
+			Name: "shell",
+			Description: "Run a shell command in the working directory and return its output. Each call is a fresh sh -c, so nothing " +
+				"carries over to the next call. Use it for anything the dedicated tools do not cover: run programs and CLIs, git, " +
+				"and create files. To read or change text in an existing file, prefer the file tools: read_with_line_numbers, " +
+				"line_insert, line_replace, string_replace. To fetch a URL, prefer web_fetch; use curl when you need methods, " +
+				"headers, auth, or downloads.\n\n" +
+				"You get the output when the process you started exits. A process you leave running in the background keeps " +
+				"going, but anything it prints after the call ends is lost, because porter writes the output to a temporary " +
+				"file and deletes it right away.\n\n" +
+				"To background a long job, start it in a call that returns at once, and send its output and exit code to real " +
+				"files: nohup sh -c './server; echo $? > /tmp/server.status' > /tmp/server.log 2>&1 & echo $! > " +
+				"/tmp/server.pid. Then check the job from a later call with kill -0 \"$(cat /tmp/server.pid)\" and tail " +
+				"/tmp/server.log. Don't use wait: the shell in a later call did not start that process, and 'timeout 30s wait " +
+				"<pid>' can't work at all, because wait is a shell builtin that timeout cannot execute.\n\n" +
+				"To wait for the job with a time limit, run timeout 30s sh -c 'while kill -0 \"$1\" 2>/dev/null; do sleep " +
+				"0.5; done' _ \"$(cat /tmp/server.pid)\". Exit code 124 means it is still running.\n\n" +
+				"Cancelling a call kills every process the call started, so start long jobs in a short call that returns " +
+				"right away.",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
