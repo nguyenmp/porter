@@ -607,6 +607,12 @@ func (d *DB) LoadSession(id int64) (Session, error) {
 	// before issuing the queries query (a second query cannot start while a
 	// result set is still open on the one connection).
 	rows.Close()
+	// A stop or a restart can leave an assistant message whose tool calls have
+	// fewer results than calls (see llm.RepairToolCalls). Repair the history
+	// here, on the way out, so every reader gets a paired conversation: the
+	// model's next request, /view, and /api/history. The repair is derived, so
+	// the stored rows stay exactly as they were.
+	s.Messages = repairToolCalls(s.Messages)
 	vrows, err := d.db.Query(
 		`SELECT message_seq, idx, source, content, error, prompt_version, created_at
 		 FROM variants WHERE session_id = ? ORDER BY message_seq ASC, idx ASC`, id)
@@ -646,6 +652,16 @@ func (d *DB) LoadSession(id int64) (Session, error) {
 		return Session{}, fmt.Errorf("iterate queries: %w", err)
 	}
 	return s, nil
+}
+
+// repairToolCalls gives every tool call in a loaded history a result (see
+// llm.RepairToolCalls). A result the repair inserts was never written and was
+// never on the event stream, so it has no seq: 0 tells the UI it has no bus
+// position.
+func repairToolCalls(msgs []Message) []Message {
+	return llm.RepairToolCallsWith(msgs,
+		func(m Message) llm.ChatMessage { return m.ChatMessage },
+		func(m llm.ChatMessage) Message { return Message{ChatMessage: m} })
 }
 
 // ListSessions returns every session, newest first, with the raw content of each

@@ -96,13 +96,22 @@ func TestProjectModelView(t *testing.T) {
 
 	noMeta := llm.ToolResult("call_4", buildContent(500))
 
+	// The results answer these calls. The projection repairs a history that
+	// leaves a call unanswered, so the calls have to be declared.
+	assistant := llm.AssistantMessage("", "", []llm.ToolCall{
+		{ID: "call_1", Type: "function", Function: llm.ToolFunction{Name: "shell", Arguments: "{}"}},
+		{ID: "call_2", Type: "function", Function: llm.ToolFunction{Name: "shell", Arguments: "{}"}},
+		{ID: "call_3", Type: "function", Function: llm.ToolFunction{Name: "shell", Arguments: "{}"}},
+		{ID: "call_4", Type: "function", Function: llm.ToolFunction{Name: "shell", Arguments: "{}"}},
+	})
+
 	user := llm.UserMessage("hi")
-	history := []llm.ChatMessage{user, big, small, recallMsg, noMeta}
+	history := []llm.ChatMessage{user, assistant, big, small, recallMsg, noMeta}
 
 	out := ProjectModelView(history)
 
 	// Input is never mutated: history keeps the full output.
-	if history[1].Content != full {
+	if history[2].Content != full {
 		t.Errorf("ProjectModelView mutated its input; history should hold the full output")
 	}
 	// User message carries the plain-language reminder (appended after the text).
@@ -110,20 +119,20 @@ func TestProjectModelView(t *testing.T) {
 		t.Errorf("user message view = %q, want %q", out[0].Content, want)
 	}
 	// Big tool message truncated in the view.
-	if !strings.HasPrefix(out[1].Content, "[tool output:") {
-		t.Errorf("big tool message not truncated in the view: %.60s", out[1].Content)
+	if !strings.HasPrefix(out[2].Content, "[tool output:") {
+		t.Errorf("big tool message not truncated in the view: %.60s", out[2].Content)
 	}
 	// Small tool message unchanged.
-	if out[2].Content != "tiny" {
-		t.Errorf("small tool message changed: %q", out[2].Content)
+	if out[3].Content != "tiny" {
+		t.Errorf("small tool message changed: %q", out[3].Content)
 	}
 	// Recall message kept intact (the one exception to truncation).
-	if out[3].Content != "the window bytes should stay" {
-		t.Errorf("recall message truncated: %q", out[3].Content)
+	if out[4].Content != "the window bytes should stay" {
+		t.Errorf("recall message truncated: %q", out[4].Content)
 	}
 	// A tool message without metadata is truncated too (uniform model view).
-	if !strings.HasPrefix(out[4].Content, "[tool output:") {
-		t.Errorf("meta-less big tool message not truncated: %.60s", out[4].Content)
+	if !strings.HasPrefix(out[5].Content, "[tool output:") {
+		t.Errorf("meta-less big tool message not truncated: %.60s", out[5].Content)
 	}
 }
 
@@ -324,11 +333,18 @@ func TestProjectModelViewTiming(t *testing.T) {
 
 	plain := llm.ToolResult("call_plain", "tiny") // no clocks
 
-	history := []llm.ChatMessage{user, big, plain}
+	// The two results answer these calls: the projection repairs a history that
+	// leaves a call unanswered, so the calls have to be declared.
+	assistant := llm.AssistantMessage("", "", []llm.ToolCall{
+		{ID: "call_big", Type: "function", Function: llm.ToolFunction{Name: "shell", Arguments: "{}"}},
+		{ID: "call_plain", Type: "function", Function: llm.ToolFunction{Name: "shell", Arguments: "{}"}},
+	})
+
+	history := []llm.ChatMessage{user, assistant, big, plain}
 	out := ProjectModelView(history)
 
 	// Input is never mutated (history still holds untimed, full content).
-	if history[0].Content != "hi" || history[1].Content != full {
+	if history[0].Content != "hi" || history[2].Content != full {
 		t.Errorf("ProjectModelView mutated its input")
 	}
 	// A timed user message is annotated, with the reminder appended after the
@@ -337,12 +353,12 @@ func TestProjectModelViewTiming(t *testing.T) {
 		t.Errorf("user view = %q, want %q", out[0].Content, want)
 	}
 	// A big timed tool result is truncated AND annotated, timing note first.
-	if !strings.HasPrefix(out[1].Content, "[ran 3m 12s, finished 2025-09-04 15:45:23 UTC]\n[tool output:") {
-		t.Errorf("big tool view = %.120s..., want timing note before truncation header", out[1].Content)
+	if !strings.HasPrefix(out[2].Content, "[ran 3m 12s, finished 2025-09-04 15:45:23 UTC]\n[tool output:") {
+		t.Errorf("big tool view = %.120s..., want timing note before truncation header", out[2].Content)
 	}
 	// A clock-less tool message is untouched (no fabricated note).
-	if out[2].Content != "tiny" {
-		t.Errorf("clock-less tool message changed: %q", out[2].Content)
+	if out[3].Content != "tiny" {
+		t.Errorf("clock-less tool message changed: %q", out[3].Content)
 	}
 	// Re-projecting the OUTPUT would double-annotate, so the caller must always
 	// project from stored history (which the agent does fresh each request).
@@ -366,6 +382,12 @@ func TestProjectModelViewUserReminder(t *testing.T) {
 		llm.AssistantMessage("a reply", "", nil),
 		llm.SystemMessage("exec notice"),
 		llm.UserMessage("second"),
+		// A tool result goes out as committed, but it still needs the call that
+		// asked for it: the projection repairs a history that leaves a call
+		// unanswered.
+		llm.AssistantMessage("", "", []llm.ToolCall{
+			{ID: "call_1", Type: "function", Function: llm.ToolFunction{Name: "shell", Arguments: "{}"}},
+		}),
 		llm.ToolResult("call_1", "tiny"),
 	}
 	out := ProjectModelView(history)
@@ -379,7 +401,7 @@ func TestProjectModelViewUserReminder(t *testing.T) {
 		}
 	}
 	// Only user messages change; every other role goes out as committed.
-	for _, i := range []int{1, 2, 4} {
+	for _, i := range []int{1, 2, 4, 5} {
 		if out[i].Content != history[i].Content {
 			t.Errorf("out[%d] (role %s) changed: %q", i, out[i].Role, out[i].Content)
 		}

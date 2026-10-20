@@ -2104,3 +2104,62 @@ func TestRunTurnGenerateImageWithNoModel(t *testing.T) {
 		t.Errorf("result = %q, want a clear message about the missing image model", toolMsg.Content)
 	}
 }
+
+// TestRunTurnRepairsUnpairedHistory covers the history a stop or a restart
+// leaves behind: an assistant message that asks for two tool calls with a
+// result for only one. Providers reject that shape, so the request the agent
+// sends must answer both calls.
+func TestRunTurnRepairsUnpairedHistory(t *testing.T) {
+	var mu sync.Mutex
+	var sent []json.RawMessage
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Messages []json.RawMessage `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		mu.Lock()
+		sent = req.Messages
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprintf(w, `data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}`+"\n\n"+"data: [DONE]\n")
+	}))
+	defer srv.Close()
+
+	client := llm.NewClient(config.Config{BaseURL: srv.URL + "/v1", Model: "test", APIKey: "k"}, nil)
+	history := []llm.ChatMessage{
+		llm.UserMessage("run both"),
+		llm.AssistantMessage("", "", []llm.ToolCall{
+			{ID: "call_1", Type: "function", Function: llm.ToolFunction{Name: "shell", Arguments: `{"command":"echo one"}`}},
+			{ID: "call_2", Type: "function", Function: llm.ToolFunction{Name: "shell", Arguments: `{"command":"echo two"}`}},
+		}),
+		llm.ToolResult("call_1", "one"),
+	}
+	if _, err := RunTurn(context.Background(), client, history, tools.NewDispatcher(), nil, nil); err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	results := map[string]string{}
+	for _, raw := range sent {
+		var msg struct {
+			Role       string `json:"role"`
+			ToolCallID string `json:"tool_call_id"`
+			Content    string `json:"content"`
+		}
+		if err := json.Unmarshal(raw, &msg); err != nil {
+			t.Fatalf("unmarshal message: %v", err)
+		}
+		if msg.Role == "tool" {
+			results[msg.ToolCallID] = msg.Content
+		}
+	}
+	if results["call_1"] != "one" {
+		t.Errorf("call_1 result = %q, want the recorded result", results["call_1"])
+	}
+	if results["call_2"] != llm.InterruptedToolResult {
+		t.Errorf("call_2 result = %q, want the interrupted marker", results["call_2"])
+	}
+}

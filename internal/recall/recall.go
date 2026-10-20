@@ -83,6 +83,11 @@ func Meta(content string) *llm.ToolOutputMeta {
 // (derived from committed clocks and a constant), so they never bust the
 // provider's prefix cache.
 func ProjectModelView(msgs []llm.ChatMessage) []llm.ChatMessage {
+	// Every request must answer every tool call it carries: a provider rejects
+	// history where a call has no result, which is what a stop or a restart
+	// mid-run leaves behind. Repair here as well as on load, so the request the
+	// provider sees is well formed whatever produced the history.
+	msgs = llm.RepairToolCalls(msgs)
 	// producerByCall maps each tool_call id to the tool that produced it
 	// (found on the assistant message that advertised the call), so the
 	// projection can keep spool_output hints off tools whose output is prose

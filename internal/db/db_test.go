@@ -60,6 +60,16 @@ func TestMessageRoundTrip(t *testing.T) {
 						Name:      "shell",
 						Arguments: `{"command":"echo hi"}`,
 					},
+				}, {
+					// A second call, because history pairs every call with a
+					// result and LoadSession repairs any that does not (see
+					// repairToolCalls).
+					ID:   "call-2",
+					Type: "function",
+					Function: llm.ToolFunction{
+						Name:      "shell",
+						Arguments: `{"command":"sleep 30"}`,
+					},
 				}},
 			},
 		},
@@ -316,15 +326,21 @@ func TestMigratesFromV1(t *testing.T) {
 	if got.Messages[0].Cancelled {
 		t.Errorf("v1 row should load with cancelled=false")
 	}
-	// New writes use the column too.
-	if err := d.AppendMessage(id, Message{Seq: 2, ChatMessage: llm.ChatMessage{Role: "tool", Content: "x", Cancelled: true}}); err != nil {
+	// New writes use the column too. The result is paired with a call, because
+	// LoadSession repairs any result that answers no call (see repairToolCalls).
+	if err := d.AppendMessage(id, Message{Seq: 2, ChatMessage: llm.AssistantMessage("", "", []llm.ToolCall{{
+		ID: "call-1", Type: "function", Function: llm.ToolFunction{Name: "shell", Arguments: "{}"},
+	}})}); err != nil {
+		t.Fatalf("AppendMessage after migration: %v", err)
+	}
+	if err := d.AppendMessage(id, Message{Seq: 3, ChatMessage: llm.ChatMessage{Role: "tool", ToolCallID: "call-1", Content: "x", Cancelled: true}}); err != nil {
 		t.Fatalf("AppendMessage after migration: %v", err)
 	}
 	got, err = d.LoadSession(id)
 	if err != nil {
 		t.Fatalf("LoadSession after write: %v", err)
 	}
-	if !got.Messages[1].Cancelled {
+	if !got.Messages[2].Cancelled {
 		t.Errorf("cancelled flag did not round-trip after migration")
 	}
 	// The v3 migration added the queries table; it must exist and be writable.
@@ -559,15 +575,25 @@ func TestToolOutputRoundTrip(t *testing.T) {
 	meta := &llm.ToolOutputMeta{Truncated: true, TotalBytes: 2550, ShownBytes: 1536}
 	want := []Message{
 		{
-			Seq:         1,
-			ChatMessage: llm.ChatMessage{Role: "tool", ToolCallID: "call-1", Content: "big output", ToolOutput: meta},
+			// The three results below answer these calls; LoadSession repairs a
+			// history that leaves a call unanswered (see repairToolCalls).
+			Seq: 1,
+			ChatMessage: llm.AssistantMessage("", "", []llm.ToolCall{
+				{ID: "call-1", Type: "function", Function: llm.ToolFunction{Name: "shell", Arguments: "{}"}},
+				{ID: "call-2", Type: "function", Function: llm.ToolFunction{Name: "shell", Arguments: "{}"}},
+				{ID: "call-3", Type: "function", Function: llm.ToolFunction{Name: "shell", Arguments: "{}"}},
+			}),
 		},
 		{
 			Seq:         2,
+			ChatMessage: llm.ChatMessage{Role: "tool", ToolCallID: "call-1", Content: "big output", ToolOutput: meta},
+		},
+		{
+			Seq:         3,
 			ChatMessage: llm.ChatMessage{Role: "tool", ToolCallID: "call-2", Content: "small output"},
 		},
 		{
-			Seq: 3,
+			Seq: 4,
 			ChatMessage: llm.ChatMessage{Role: "tool", ToolCallID: "call-3", Content: "recall",
 				ToolOutput: &llm.ToolOutputMeta{Recall: true, SourceCallID: "call-1", Offset: 1024, MaxBytes: 1000, TotalBytes: 2550, ShownBytes: 1000}},
 		},
@@ -648,7 +674,7 @@ func TestMigratesFromV5ToV6(t *testing.T) {
 	}
 	id, _ := res.LastInsertId()
 	if _, err := raw.Exec(
-		`INSERT INTO messages (session_id, seq, role, content, tool_call_id) VALUES (?, 1, 'tool', 'old row', 'call-0')`, id); err != nil {
+		`INSERT INTO messages (session_id, seq, role, content) VALUES (?, 1, 'user', 'old row')`, id); err != nil {
 		t.Fatalf("insert v5 message: %v", err)
 	}
 	if err := raw.Close(); err != nil {
@@ -670,17 +696,24 @@ func TestMigratesFromV5ToV6(t *testing.T) {
 		t.Fatalf("v5 row after migration = %+v, want intact with nil metadata", got.Messages)
 	}
 
-	// New writes round-trip the metadata.
+	// New writes round-trip the metadata. The result is paired with a call,
+	// because LoadSession repairs any result that answers no call (see
+	// repairToolCalls).
 	meta := &llm.ToolOutputMeta{Truncated: true, TotalBytes: 2550, ShownBytes: 1536}
-	if err := d.AppendMessage(id, Message{Seq: 2, ChatMessage: llm.ChatMessage{Role: "tool", ToolCallID: "call-1", Content: "x", ToolOutput: meta}}); err != nil {
+	if err := d.AppendMessage(id, Message{Seq: 2, ChatMessage: llm.AssistantMessage("", "", []llm.ToolCall{{
+		ID: "call-1", Type: "function", Function: llm.ToolFunction{Name: "shell", Arguments: "{}"},
+	}})}); err != nil {
+		t.Fatalf("AppendMessage after migration: %v", err)
+	}
+	if err := d.AppendMessage(id, Message{Seq: 3, ChatMessage: llm.ChatMessage{Role: "tool", ToolCallID: "call-1", Content: "x", ToolOutput: meta}}); err != nil {
 		t.Fatalf("AppendMessage after migration: %v", err)
 	}
 	got, err = d.LoadSession(id)
 	if err != nil {
 		t.Fatalf("LoadSession after write: %v", err)
 	}
-	if len(got.Messages) != 2 || got.Messages[1].ToolOutput == nil || !got.Messages[1].ToolOutput.Equal(meta) {
-		t.Errorf("tool_output metadata did not round-trip after migration: %+v", got.Messages[1].ToolOutput)
+	if len(got.Messages) != 3 || got.Messages[2].ToolOutput == nil || !got.Messages[2].ToolOutput.Equal(meta) {
+		t.Errorf("tool_output metadata did not round-trip after migration: %+v", got.Messages[len(got.Messages)-1].ToolOutput)
 	}
 }
 
@@ -1095,5 +1128,58 @@ func TestSetLocalSandboxRoundTrip(t *testing.T) {
 	}
 	if len(sums) != 1 || !sums[0].LocalSandbox {
 		t.Fatalf("flagged session summaries = %+v, want LocalSandbox true", sums)
+	}
+}
+
+// TestLoadSessionRepairsUnpairedToolCalls covers the history a stop or a
+// restart leaves behind: an assistant message whose calls have fewer results
+// than calls. Every provider rejects that shape, so loading the session must
+// fill the gap rather than hand back broken history.
+func TestLoadSessionRepairsUnpairedToolCalls(t *testing.T) {
+	d := openTemp(t)
+	id, err := d.CreateSession(1)
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	// Two calls, one result: the process died after the first tool finished.
+	msgs := []Message{
+		{Seq: 1, ChatMessage: llm.UserMessage("run both")},
+		{Seq: 2, ChatMessage: llm.AssistantMessage("", "", []llm.ToolCall{
+			{ID: "call-1", Type: "function", Function: llm.ToolFunction{Name: "shell", Arguments: "{}"}},
+			{ID: "call-2", Type: "function", Function: llm.ToolFunction{Name: "shell", Arguments: "{}"}},
+		})},
+		{Seq: 3, ChatMessage: llm.ToolResult("call-1", "first done")},
+	}
+	for _, m := range msgs {
+		if err := d.AppendMessage(id, m); err != nil {
+			t.Fatalf("AppendMessage(seq %d): %v", m.Seq, err)
+		}
+	}
+
+	got, err := d.LoadSession(id)
+	if err != nil {
+		t.Fatalf("LoadSession: %v", err)
+	}
+	if len(got.Messages) != 4 {
+		t.Fatalf("got %d messages, want 4 (the missing result is filled in)", len(got.Messages))
+	}
+	if got.Messages[2].ToolCallID != "call-1" || got.Messages[2].Content != "first done" {
+		t.Errorf("real result changed: %+v", got.Messages[2])
+	}
+	last := got.Messages[3]
+	if last.ToolCallID != "call-2" || last.Content != llm.InterruptedToolResult || !last.Cancelled {
+		t.Errorf("filled result = %+v, want call-2 marked interrupted and cancelled", last)
+	}
+	if last.Seq != 0 {
+		t.Errorf("filled result seq = %d, want 0: it was never on the event stream", last.Seq)
+	}
+	// The repair is derived, so the stored rows are untouched: a second load
+	// must not add a second copy.
+	again, err := d.LoadSession(id)
+	if err != nil {
+		t.Fatalf("LoadSession again: %v", err)
+	}
+	if len(again.Messages) != 4 {
+		t.Errorf("second load returned %d messages, want 4", len(again.Messages))
 	}
 }
