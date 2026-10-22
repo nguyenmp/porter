@@ -40,7 +40,7 @@ import (
 // PromptVersion identifies the prompt revision that produced a variant. It is
 // stamped on every pass so the UI can explain why a tab reads the way it does,
 // and should be bumped whenever the prompt below changes.
-const PromptVersion = "plain-language-v14"
+const PromptVersion = "plain-language-v18"
 
 // SkillName is the name the built-in plain-language skill is exposed under,
 // both in the load_skill listing and as the sentinel path (api.BuiltinPrefix +
@@ -72,11 +72,11 @@ func BuiltinSkill() api.Skill {
 // pass cannot differ on them.
 func Prompt() string { return systemPrompt + interactiveSuffix }
 
-// humanizePrompt returns the prompt the background humanize pass uses:the
-// shared rewrite rules (systemPrompt) plus a silent-output suffix. The
-// pass runs unattended and its result lands directly in the UI as a variant
-// tab,so the model must return only the rewritten text:no preamble,no
-// summary of changes,no commentary.
+// humanizePrompt returns the prompt the background humanize pass uses: the
+// shared rewrite rules (systemPrompt) plus a silent-output suffix. The pass
+// runs unattended and its result lands directly in the UI as a variant tab, so
+// the model must return only the rewritten text, with no preamble, no summary
+// of changes, and no commentary.
 func humanizePrompt() string { return systemPrompt + silentSuffix }
 
 // Auto-pass thresholds: an assistant reply qualifies when it has at least
@@ -89,11 +89,16 @@ const (
 )
 
 // plainRules is the plain-language rule body the skill and the background pass
-// share: the definition, the rule that decides where to spend effort, and the
-// writing rules. systemPrompt wraps it with the framing both modes need (a
-// rewrite preserves the given text), so the shared guidance can never drift
-// between the skill and the pass. The standing directive (systemDirective)
-// does not wrap it: it points at the skill instead.
+// share: the definition, the rule that settles a conflict (clarity wins, and
+// length is a rule of thumb), the three rules that steer an edit (where to
+// spend effort, how many words to cut, what to protect), and the writing rules
+// grouped by words, sentences, structure, links, formatting, page layout, and
+// review.
+// Sections hold one idea per rule and run a few dozen words each, so the body
+// models the style it asks for. systemPrompt wraps it with the framing both
+// modes need (a rewrite preserves the given text), so the shared guidance can
+// never drift between the skill and the pass. The standing directive
+// (systemDirective) does not wrap it: it points at the skill instead.
 //
 // The rules live in plain_rules.md rather than in Go source, so anyone can read
 // them as prose and link to the file. The build embeds that file, so the binary
@@ -119,21 +124,21 @@ var plainRules = strings.TrimSuffix(plainRulesFile, "\n")
 // with a bare command rather than a question ("Can you apply plain language
 // to the text that follows?"), because the same body is served as the
 // interactive skill, where "the text that follows" points at nothing and makes
-// the skill read like a one-off rewrite request. The command still restates the
-// effort rule that leads plainRules: aim at the improvements a reader would
-// notice rather than reworking every sentence.
+// the skill read like a one-off rewrite request. The command names clarity as
+// the aim, because it is the first line the model reads and it has to agree
+// with the rule below that settles conflicts.
 // Output behavior, silent for the background pass and reporting for
 // interactive use, is added by the suffix each mode uses (humanizePrompt vs
 // Prompt).
-var systemPrompt = `Apply plain language, focusing on the biggest improvements.
+var systemPrompt = `Apply plain language, and make the text clearer for the reader.
 ` + plainRules + `
 - Use an example only when the original already gives you the material for one, and expand it from the original; do not invent new facts.
-- Preserve the message. You are free to reformat, rephrase, and reorganize, and to add headings, lists, or simple visuals, to improve clarity, but do not change what the original conveys. Keep every fact, name, number, and date as given: do not add, drop, or alter anything in the original. Keep code, URLs, and quoted text exact.
+- Preserve the message. You may reformat, rephrase, and reorganize the text, and you may add a heading, list, or table only where it removes words, but do not change what the original conveys. Keep every fact, name, number, and date as given: do not add, drop, or alter anything in the original. Keep code, URLs, and quoted text exact.
 `
 
-// silentSuffix is appended for the background humanize pass:it must not
-// narrate itself,ecause its output lands directly in the UI as a variant tab.
-const silentSuffix = "\n\nThe rewrite runs unattended and lands directly in the UI as a variant tab.Never narrate the passes; return only the final text:no preamble,no summary of changes,no commentary."
+// silentSuffix is appended for the background humanize pass. It must not
+// narrate itself, because its output lands directly in the UI as a variant tab.
+const silentSuffix = "\n\nThe rewrite runs unattended and lands directly in the UI as a variant tab. Never narrate the passes: return only the final text, with no preamble, no summary of changes, and no commentary."
 
 // interactiveSuffix is appended when the prompt is served as the built-in
 // plain-language skill. It carries what only an interactive model may do: ask
