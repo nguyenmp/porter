@@ -441,6 +441,8 @@ func TestShellDefSteersToDedicatedTools(t *testing.T) {
 // with kill -0 from a later call. It also keeps the reasons in the text: wait
 // cannot reach a process a later shell did not start, timeout cannot run the
 // wait builtin, and cancelling a call kills every process the call started.
+// The wait loop has to report progress, because output streams live: a silent
+// loop leaves the caller staring at a screen that looks hung.
 func TestShellDefExplainsBackgrounding(t *testing.T) {
 	var shellDesc string
 	for _, d := range NewDispatcher().Defs() {
@@ -451,7 +453,7 @@ func TestShellDefExplainsBackgrounding(t *testing.T) {
 	if shellDesc == "" {
 		t.Fatal("shell tool not declared")
 	}
-	for _, want := range []string{"nohup", "kill -0", "shell builtin", "temporary file", "every process the call started"} {
+	for _, want := range []string{"nohup", "kill -0", "shell builtin", "temporary file", "every process the call started", "print progress", "waiting"} {
 		if !strings.Contains(shellDesc, want) {
 			t.Errorf("shell description missing %q:\n%s", want, shellDesc)
 		}

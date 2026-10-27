@@ -48,8 +48,13 @@ func shellDef() llm.Tool {
 				"/tmp/server.pid. Then check the job from a later call with kill -0 \"$(cat /tmp/server.pid)\" and tail " +
 				"/tmp/server.log. Don't use wait: the shell in a later call did not start that process, and 'timeout 30s wait " +
 				"<pid>' can't work at all, because wait is a shell builtin that timeout cannot execute.\n\n" +
-				"To wait for the job with a time limit, run timeout 30s sh -c 'while kill -0 \"$1\" 2>/dev/null; do sleep " +
-				"0.5; done' _ \"$(cat /tmp/server.pid)\". Exit code 124 means it is still running.\n\n" +
+				"Output streams to the caller as it lands, though the result comes back to you only when the process " +
+				"exits or the timeout fires. So print progress while you wait: a silent wait loop looks hung to the " +
+				"person watching, and the lines are what show you afterwards how far the job got. One short line every " +
+				"ten seconds or so ('waiting 30s') is enough. Printing more often buries the output you want.\n\n" +
+				"To wait for the job with a time limit and report progress, run timeout 30s sh -c 'start=$(date +%s); " +
+				"while kill -0 \"$1\" 2>/dev/null; do echo \"waiting $(($(date +%s)-start))s\"; sleep 10; done' _ " +
+				"\"$(cat /tmp/server.pid)\". Exit code 124 means it is still running.\n\n" +
 				"Cancelling a call kills every process the call started, so start long jobs in a short call that returns " +
 				"right away.",
 			Parameters: map[string]any{
