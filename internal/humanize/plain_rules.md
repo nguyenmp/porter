@@ -3,19 +3,19 @@ Plain language means an average reader of the intended audience understands the 
 When two rules disagree, the one that makes the text clearer for the reader wins. Shorter is a rule of thumb, not the goal.
 
 These rules steer the edit:
-- Spend your effort where a reader notices: the main point, the structure, a sentence the reader has to reread. Leave text that already reads well alone.
+- Spend your effort where a reader notices: the main point, the structure, a sentence the reader has to reread. Do the structure first, because a later restructure may cut the sentences you already polished. Leave text that already reads well alone.
 - Prefer fewer words. Aim to cut about a fifth of them, and keep the clearer version even when it runs longer. Keep new text as short as the task allows. Count words, not markup: a list must replace words, not add them.
 - Protect the words that carry meaning: the ones that define a term, separate two ideas, or prevent a wrong reading. If you cannot cut a word without losing meaning, leave the text as it is and change only what breaks a rule.
+- Preserve the message. You may reformat, rephrase, and reorganize the text, and you may add a heading, list, or table only where it removes words, but do not change what the original conveys. Keep every fact, name, number, and date as given: do not add, drop, or alter anything in the original. Keep code, URLs, and quoted text exact.
 
-## Words
-- Choose simple, concrete, familiar words. Replace jargon, vague words, and filler with everyday words: load-bearing, survived, rides, nobody, genuinely, outright, owed, rests, asymmetry, died, buys, settles, lever, byte-identical, delve, real.
-- Delete openers and hedges: I think, it's worth noting, as you can see, basically, just, really. They usually add nothing, and the point stands without them. Keep a hedge that marks real uncertainty.
-- Cut whole sentences and clauses first, then trim words: "due to the fact that" becomes "because", "in order to" becomes "to". Do that before you look for a synonym.
-- The same cut handles "at this point in time" (now) and "is able to" (can).
-- Use must, not shall, for an obligation, must not for a prohibition, may for a choice, and should for a recommendation.
-- Write either, or, or both, as the meaning requires, in place of and/or. Rephrase in place of a slash, as in he/she.
-- Write out "for example" or "such as", in place of "e.g." or "i.e.", and use transition words sparingly.
-- Keep the technical terms the reader needs, such as API names and legal terms, and define each one the first time it appears. Write out an abbreviation unless it is widely known. Keep each common word in its usual meaning.
+## Structure
+- Lead with the main point, in a reply, a report, a web page, or UI text: start with the answer and the top task for the reader, then the reasoning, the exceptions, and the details. Say why it matters to the reader.
+- Write as if the reader may leave at any point. The first paragraph must stand alone, because many readers stop there. They spend about 5 seconds deciding whether a page is useful, scan the headings and the first words of each line, and read about 18% of it. Every word must earn its place.
+- Give each chunk a heading that says what it holds. Prefer a question or a specific phrase to a vague noun.
+- Use a list for steps and for parallel items, and introduce it with a sentence every item completes. Put steps in the order they happen.
+- Add a table where a rule depends on conditions. An if-then table beats a paragraph of exceptions.
+- Nest lists no more than one level deep, and headings no more than three.
+- For a longer document, give the bottom line first and keep related material together. If you must send the reader elsewhere, describe the material well enough for the reader to decide whether to follow.
 
 ## Sentences
 - Speak to the reader as you, in the present tense, and use contractions where they sound natural.
@@ -28,14 +28,15 @@ These rules steer the edit:
 - Say what is true rather than what is not, with no double negatives and no exceptions piled on exceptions.
 - Use the same term for the same thing throughout. Repeat it rather than reaching for a synonym to sound varied.
 
-## Structure
-- Lead with the main point, in a reply, a report, a web page, or UI text: start with the answer and the top task for the reader, then the reasoning, the exceptions, and the details. Say why it matters to the reader.
-- Write as if the reader may leave at any point. The first paragraph must stand alone, because many readers stop there. They spend about 5 seconds deciding whether a page is useful, scan the headings and the first words of each line, and read about 18% of it. Every word must earn its place.
-- Give each chunk a heading that says what it holds. Prefer a question or a specific phrase to a vague noun.
-- Use a list for steps and for parallel items, and introduce it with a sentence every item completes. Put steps in the order they happen.
-- Add a table where a rule depends on conditions. An if-then table beats a paragraph of exceptions.
-- Nest lists no more than one level deep, and headings no more than three.
-- For a longer document, give the bottom line first and keep related material together. If you must send the reader elsewhere, describe the material well enough for the reader to decide whether to follow.
+## Words
+- Choose simple, concrete, familiar words. Replace jargon, vague words, and filler with everyday words: load-bearing, survived, rides, nobody, genuinely, outright, owed, rests, asymmetry, died, buys, settles, lever, byte-identical, delve, real.
+- Delete openers and hedges: I think, it's worth noting, as you can see, basically, just, really. They usually add nothing, and the point stands without them. Keep a hedge that marks real uncertainty.
+- Cut whole sentences and clauses first, then trim words: "due to the fact that" becomes "because", "in order to" becomes "to". Do that before you look for a synonym.
+- The same cut handles "at this point in time" (now) and "is able to" (can).
+- Use must, not shall, for an obligation, must not for a prohibition, may for a choice, and should for a recommendation.
+- Write either, or, or both, as the meaning requires, in place of and/or. Rephrase in place of a slash, as in he/she.
+- Write out "for example" or "such as", in place of "e.g." or "i.e.", and use transition words sparingly.
+- Keep the technical terms the reader needs, such as API names and legal terms, and define each one the first time it appears. Write out an abbreviation unless it is widely known. Keep each common word in its usual meaning.
 
 ## Links
 - Hyperlink any tool, library, standard, project, product, company, person, or source the reader might not know. Link only to addresses you know.

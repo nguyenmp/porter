@@ -40,7 +40,7 @@ import (
 // PromptVersion identifies the prompt revision that produced a variant. It is
 // stamped on every pass so the UI can explain why a tab reads the way it does,
 // and should be bumped whenever the prompt below changes.
-const PromptVersion = "plain-language-v18"
+const PromptVersion = "plain-language-v20"
 
 // SkillName is the name the built-in plain-language skill is exposed under,
 // both in the load_skill listing and as the sentinel path (api.BuiltinPrefix +
@@ -90,15 +90,18 @@ const (
 
 // plainRules is the plain-language rule body the skill and the background pass
 // share: the definition, the rule that settles a conflict (clarity wins, and
-// length is a rule of thumb), the three rules that steer an edit (where to
-// spend effort, how many words to cut, what to protect), and the writing rules
-// grouped by words, sentences, structure, links, formatting, page layout, and
-// review.
+// length is a rule of thumb), the four rules that steer an edit (where to spend
+// effort and in what order, how many words to cut, what to protect, and what
+// must not change), and the writing rules grouped by structure, sentences,
+// words, links, emphasis, page layout, and review. The sections run from the
+// largest concern to the smallest, so a model reading top to bottom fixes the
+// shape of the text before it polishes words, and review comes last because it
+// loops back over every rule.
 // Sections hold one idea per rule and run a few dozen words each, so the body
-// models the style it asks for. systemPrompt wraps it with the framing both
-// modes need (a rewrite preserves the given text), so the shared guidance can
-// never drift between the skill and the pass. The standing directive
-// (systemDirective) does not wrap it: it points at the skill instead.
+// models the style it asks for. systemPrompt wraps it with the framing line both
+// modes need, so the shared guidance can never drift between the skill and the
+// pass. The standing directive (systemDirective) does not wrap it: it points at
+// the skill instead.
 //
 // The rules live in plain_rules.md rather than in Go source, so anyone can read
 // them as prose and link to the file. The build embeds that file, so the binary
@@ -118,22 +121,25 @@ var plainRulesFile string
 // own spacing.
 var plainRules = strings.TrimSuffix(plainRulesFile, "\n")
 
-// systemPrompt is the plain-language prompt for rewriting: the shared rule
-// body (plainRules) plus the rewrite-only rules — example use and preserving
-// the message — which only make sense for a pass over given text. It opens
-// with a bare command rather than a question ("Can you apply plain language
-// to the text that follows?"), because the same body is served as the
-// interactive skill, where "the text that follows" points at nothing and makes
-// the skill read like a one-off rewrite request. The command names clarity as
-// the aim, because it is the first line the model reads and it has to agree
+// systemPrompt is the plain-language prompt for rewriting: the shared rule body
+// (plainRules) plus the one rewrite-only rule, example use, which only makes
+// sense for a pass over given text. The preserve rule is not here. It sits in the
+// shared body with the steering rules, so the model reads its hardest constraint
+// before it starts editing rather than after 35 smaller rules, and the
+// interactive skill carries it too.
+//
+// The prompt opens with a bare command rather than a question ("Can you apply
+// plain language to the text that follows?"), because the same body is served as
+// the interactive skill, where "the text that follows" points at nothing and
+// makes the skill read like a one-off rewrite request. The command names clarity
+// as the aim, because it is the first line the model reads and it has to agree
 // with the rule below that settles conflicts.
-// Output behavior, silent for the background pass and reporting for
-// interactive use, is added by the suffix each mode uses (humanizePrompt vs
-// Prompt).
+//
+// Output behavior, silent for the background pass and reporting for interactive
+// use, is added by the suffix each mode uses (humanizePrompt vs Prompt).
 var systemPrompt = `Apply plain language, and make the text clearer for the reader.
 ` + plainRules + `
 - Use an example only when the original already gives you the material for one, and expand it from the original; do not invent new facts.
-- Preserve the message. You may reformat, rephrase, and reorganize the text, and you may add a heading, list, or table only where it removes words, but do not change what the original conveys. Keep every fact, name, number, and date as given: do not add, drop, or alter anything in the original. Keep code, URLs, and quoted text exact.
 `
 
 // silentSuffix is appended for the background humanize pass. It must not
