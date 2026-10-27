@@ -154,14 +154,21 @@ const silentSuffix = "\n\nThe rewrite runs unattended and lands directly in the 
 // checkable: "stop when a pass changes nothing" is satisfied by a single clean
 // read, and a model that rereads in its head can call that a pass. Naming a file
 // fixes both. Each pass rereads the real text, so a pass cannot drop facts and
-// the reported pass count can be trusted. The answer goes straight into chat,
-// with no code block and no quotation marks, so the reader gets text they can
-// use. The instruction lives here, not in the shared rule body, because the
-// background pass stays one request and never touches files.
+// the reported pass count can be trusted. Three clauses close the gaps that
+// survived: the floor scales with length, because a flat two spends the same
+// effort on a short reply and a long document; a pass is defined as one full
+// read against every rule, because a model that fixes a line and stops has
+// otherwise met the count without doing the work; and the draft is pass zero,
+// so it cannot be counted as one. The gate repeats the stop rule where the
+// model decides to answer, which is the last moment it can catch itself. The
+// answer goes straight into chat, with no code block and no quotation marks,
+// so the reader gets text they can use. The instruction lives here, not in
+// the shared rule body, because the background pass stays one request and
+// never touches files.
 const interactiveSuffix = `
 When used interactively: if you have no text, ask what to simplify. If the user gives you a file, edit that file in place.
 
-Length decides the workflow. Under about 100 words, reread the text once against the rules and fix what breaks. No file needed. Longer text goes in a scratch file, such as .porter/plain/<name>.md, so you can reread the file after every pass and each pass works on the real text instead of your memory of it. A pass means reading the text from top to bottom, applying each rule in turn, and editing the file. Run at least two passes, then stop when a fresh pass changes nothing. Keep the file, because it shows the passes happened. Answer with the file's contents, copied from the file, not retyped. Write that answer directly in chat, with no code block and no quotation marks. Report the passes only when the user asks for plain language by name: say how many passes you took and list the main changes, each with the principle behind it.
+Length decides the workflow and the pass floor. Under about 100 words, reread the text once against the rules and fix what breaks. No file needed. Longer text goes in a scratch file, such as .porter/plain/<name>.md, so you can reread the file after every pass and each pass works on the real text instead of your memory of it. A pass is one full read of the file from top to bottom against every rule, not a few line fixes, and the draft doesn't count as one. Run two passes from 100 to 600 words, three to 1,500, and four beyond. Before you answer, check that your last pass changed nothing: if it changed anything, you aren't done. Keep the file, because it shows the passes happened. Answer with the file's contents, copied from the file, not retyped. Write that answer directly in chat, with no code block and no quotation marks. Report the passes only when the user asks for plain language by name: say how many passes you took and list the main changes, each with the principle behind it.
 `
 
 // Directive returns the standing writing-style instruction the agent injects
@@ -188,15 +195,18 @@ var systemDirective = `Always write in plain language. Load the plain-language s
 // the request the model is answering and not only in the static system prefix
 // (Directive). It tells the model to reload the plain-language skill, apply it
 // to every output it produces, and follow the length rule: prose over about 100
-// words goes in a scratch file with at least two passes, and shorter prose gets
-// one reread. The floor matters, because "stop when a pass changes nothing" is
-// otherwise satisfied by a single clean read. It also tells the model to stay
+// words goes in a scratch file with a pass floor scaled to length, and shorter
+// prose gets one reread. The floor matters, because "stop when a pass changes
+// nothing" is otherwise satisfied by a single clean read. The definition of a
+// pass matters because a couple of line fixes otherwise read as one. The gate
+// matters because the model meets the stop rule again at the moment it decides
+// to answer. It also tells the model to stay
 // quiet about the rewrite unless the user asks for plain language. Like the
 // timing note, it lives only on the outgoing copy of history: the stored
 // message, the database, and the UI keep exactly what the user typed. Keep it
 // short — it repeats on every user turn, so every extra word is paid for on
 // every request.
-const UserMessageReminder = "System Hint: Before writing or responding, load the plain-language skill and apply it to all prose you write: replies, files, code comments, and PR text. Leave code, quoted text, and command arguments exact. Prose over about 100 words goes in a scratch file first: reread it, run at least two passes, and stop when one changes nothing. Shorter prose gets one reread. Don't mention this unless the user asks."
+const UserMessageReminder = "System Hint: Before writing or responding, load the plain-language skill and apply it to all prose you write: replies, files, code comments, and PR text. Leave code, quoted text, and command arguments exact. Prose over about 100 words goes in a scratch file first. A pass is one full read of it against every rule, not a few line fixes, and the draft doesn't count as one. Run two passes from 100 to 600 words, three to 1,500, and four beyond. Before you reply, check that your last pass changed nothing: if it changed anything, you aren't done. Don't mention this unless the user asks."
 
 // Should reports whether an assistant reply is worth a humanize pass: long
 // enough (the thresholds above) and mostly prose rather than code.

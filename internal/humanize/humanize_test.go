@@ -232,20 +232,29 @@ func TestInteractiveRunsPassesOnFile(t *testing.T) {
 	}
 }
 
-// TestInteractiveSetsPassFloorAndLengthRule checks the skill sets a pass floor
-// and a length cutoff. Without the floor, "stop when a pass changes nothing" is
-// satisfied by one clean read. Without the cutoff, short replies pay for a file
-// they do not need.
-func TestInteractiveSetsPassFloorAndLengthRule(t *testing.T) {
+// TestInteractiveSetsPassScheduleAndLengthRule checks the skill carries the full
+// pass schedule: the floor, what a pass is, that the draft is not one, and the
+// gate before the answer. Without the floor, "stop when a pass changes nothing"
+// is satisfied by one clean read. Without the definition, two line fixes pass
+// for a pass. Without the cutoff, short replies pay for a file they do not need.
+func TestInteractiveSetsPassScheduleAndLengthRule(t *testing.T) {
 	p := Prompt()
-	for _, want := range []string{"at least two passes", "about 100 words", "Keep the file", "copied from the file"} {
+	for _, want := range []string{
+		"A pass is one full read",
+		"the draft doesn't count as one",
+		"two passes from 100 to 600 words",
+		"Before you answer, check",
+		"about 100 words",
+		"Keep the file",
+		"copied from the file",
+	} {
 		if !strings.Contains(p, want) {
 			t.Errorf("skill prompt missing %q:\n%s", want, p)
 		}
 	}
 	// The background pass stays one request, so it must not carry the file
 	// workflow or the interactive length rule.
-	for _, banned := range []string{"scratch file", "100 words", "two passes"} {
+	for _, banned := range []string{"scratch file", "100 words", "pass is one full read"} {
 		if strings.Contains(humanizePrompt(), banned) {
 			t.Errorf("background pass prompt leaked %q:\n%s", banned, humanizePrompt())
 		}
@@ -253,12 +262,35 @@ func TestInteractiveSetsPassFloorAndLengthRule(t *testing.T) {
 }
 
 // TestUserMessageReminderCarriesWorkflow checks the per-turn reminder states the
-// file, the floor, and the length rule. The reminder repeats on every turn, so
-// it has to carry them in a few words.
+// file, the pass schedule, and the length rule. The reminder repeats on every
+// turn, so it has to carry them in a few words.
 func TestUserMessageReminderCarriesWorkflow(t *testing.T) {
-	for _, want := range []string{"scratch file", "at least two passes", "100 words", "one reread"} {
+	for _, want := range []string{
+		"scratch file",
+		"pass is one full read",
+		"draft doesn't count as one",
+		"two passes from 100 to 600 words",
+		"Before you reply, check",
+		"100 words",
+	} {
 		if !strings.Contains(UserMessageReminder, want) {
 			t.Errorf("UserMessageReminder missing %q: %s", want, UserMessageReminder)
+		}
+	}
+}
+
+// TestReminderMatchesSkillOnPassSchedule checks the reminder and the skill agree
+// on the two parts of the pass schedule a model can talk itself out of: what
+// counts as a pass, and the gate that repeats the stop rule. Both surfaces are
+// written by hand at different lengths, so a drift here would let the shorter
+// one quietly weaken the rule.
+func TestReminderMatchesSkillOnPassSchedule(t *testing.T) {
+	shared := []string{"a pass is one full read", "changed anything, you aren't done"}
+	for _, want := range shared {
+		for name, text := range map[string]string{"reminder": UserMessageReminder, "skill": Prompt()} {
+			if !strings.Contains(strings.ToLower(text), want) {
+				t.Errorf("%s missing %q: %s", name, want, text)
+			}
 		}
 	}
 }
