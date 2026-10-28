@@ -23,6 +23,12 @@ const InterruptedToolResult = "[interrupted: no result was recorded for this too
 // because providers reject those too. Messages that are already paired pass
 // through unchanged, and a second run changes nothing, so more than one caller
 // can apply it.
+//
+// A call that is still running looks exactly like a lost one from here, because
+// neither has a result row yet. A caller that knows the difference — the
+// session, from its in-flight run set — drops this placeholder before showing
+// the history to a reader, so a reload mid-run does not report the tool as
+// interrupted (see session.Session.dropRunningPlaceholders).
 func RepairToolCalls(msgs []ChatMessage) []ChatMessage {
 	return RepairToolCallsWith(msgs,
 		func(m ChatMessage) ChatMessage { return m },

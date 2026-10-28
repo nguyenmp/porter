@@ -835,7 +835,7 @@ func (s *Session) runTurn(ctx context.Context, content string, images []llm.Imag
 		}
 		return s.commitQuery(turnSeq, q)
 	}
-	res, err := agent.RunTurn(turnCtx, s.client, s.snapshot(), s.provider(), s.emitLive, func(m llm.ChatMessage) error {
+	res, err := agent.RunTurn(turnCtx, s.client, s.loadMessages(), s.provider(), s.emitLive, func(m llm.ChatMessage) error {
 		return s.commit(m)
 	}, agent.RunHooks{OnRunStarted: s.onRunStarted, OnQuery: onQuery, PublishAsset: s.publishAsset, GenerateImage: s.generateImage})
 	if err != nil {
@@ -959,34 +959,39 @@ func (s *Session) Running() bool {
 // resume from. Both come from the persister in a single read: History is every
 // committed message and Seq is the highest committed message seq, so a client
 // that replays the bus with since=seq gets exactly the messages newer than the
-// returned history — no gap, no overlap.
+// returned history — no gap, no overlap. A call that is still running has no
+// result here (see dropRunningPlaceholders); the client rebuilds it from /runs.
 func (s *Session) Snapshot() api.SessionHistory {
-	msgs, maxSeq := s.loadMessages()
-	return api.SessionHistory{History: msgs, Seq: maxSeq}
-}
-
-// snapshot returns the committed history as a slice, seeding the agent's view
-// for one turn. The agent loop reads history exactly once per turn (then
-// extends its own copy), and the persister is the source of truth, so this
-// reads the database rather than a mirror.
-func (s *Session) snapshot() []llm.ChatMessage {
-	msgs, _ := s.loadMessages()
-	return msgs
-}
-
-// loadMessages reads the session's committed history and its highest message
-// seq from the persister in one call.
-func (s *Session) loadMessages() ([]llm.ChatMessage, uint64) {
-	ps, err := s.persist.LoadSession(s.dbID)
+	ps, err := s.Persisted()
 	if err != nil {
 		log.Printf("load session %s: %v", s.id, err)
-		return nil, 0
+		return api.SessionHistory{}
 	}
 	msgs := make([]llm.ChatMessage, 0, len(ps.Messages))
 	for _, m := range ps.Messages {
 		msgs = append(msgs, m.ChatMessage)
 	}
-	return msgs, ps.MaxSeq
+	return api.SessionHistory{History: msgs, Seq: ps.MaxSeq}
+}
+
+// loadMessages reads the session's committed history as a slice, repaired so
+// every tool call has a result. It seeds the agent's view for one turn: the
+// agent loop reads history exactly once per turn (then extends its own copy),
+// and the persister is the source of truth, so this reads the database rather
+// than a mirror. A call still in flight also comes back with a placeholder
+// result here, because a request must stay paired; the display paths drop that
+// placeholder instead (see dropRunningPlaceholders).
+func (s *Session) loadMessages() []llm.ChatMessage {
+	ps, err := s.persist.LoadSession(s.dbID)
+	if err != nil {
+		log.Printf("load session %s: %v", s.id, err)
+		return nil
+	}
+	msgs := make([]llm.ChatMessage, 0, len(ps.Messages))
+	for _, m := range ps.Messages {
+		msgs = append(msgs, m.ChatMessage)
+	}
+	return msgs
 }
 
 // Turn is a derived partition of a session's message stream: one user message
@@ -1030,7 +1035,45 @@ func (t Turn) Input() int { return t.CachedInput + t.UncachedInput }
 // bus seqs, query records, max seq) in a single read. It backs the /view
 // render, which needs per-message seqs to place turn footers.
 func (s *Session) Persisted() (db.Session, error) {
-	return s.persist.LoadSession(s.dbID)
+	ps, err := s.persist.LoadSession(s.dbID)
+	if err != nil {
+		return db.Session{}, err
+	}
+	ps.Messages = s.dropRunningPlaceholders(ps.Messages)
+	return ps, nil
+}
+
+// dropRunningPlaceholders removes the placeholder result that the history
+// repair inserts for a tool call that is still running.
+//
+// The repair (llm.RepairToolCalls, applied by the persister on load) cannot
+// tell a lost result from one that has not arrived yet: it reads stored rows,
+// and a call in flight has no result row until it finishes. So a reload
+// mid-run would show the call as interrupted while the tool is still working.
+// The session does know — s.runs holds every call in flight — so its readers
+// drop the placeholder for those calls and leave them unanswered, which is
+// what the live view shows too: a running block, rebuilt from /runs.
+//
+// A placeholder is the only message with seq 0, because it was never written;
+// a committed result always keeps its row, so the match is exact.
+func (s *Session) dropRunningPlaceholders(msgs []db.Message) []db.Message {
+	s.mu.Lock()
+	running := make(map[string]bool, len(s.runs))
+	for id := range s.runs {
+		running[id] = true
+	}
+	s.mu.Unlock()
+	if len(running) == 0 {
+		return msgs
+	}
+	out := make([]db.Message, 0, len(msgs))
+	for _, m := range msgs {
+		if m.Role == "tool" && m.Seq == 0 && running[m.ToolCallID] {
+			continue
+		}
+		out = append(out, m)
+	}
+	return out
 }
 
 // DeriveTurns partitions a persisted session into its turns, in stream order.

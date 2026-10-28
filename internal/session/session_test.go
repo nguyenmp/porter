@@ -527,7 +527,7 @@ func waitForHistory(t *testing.T, s *Session, want func([]llm.ChatMessage) bool)
 	t.Helper()
 	deadline := time.After(5 * time.Second)
 	for {
-		msgs, _ := s.loadMessages()
+		msgs := s.loadMessages()
 		if want(msgs) {
 			return msgs
 		}
@@ -583,6 +583,68 @@ func TestTrackToolRunsForReconnect(t *testing.T) {
 	s.trackToolRun(api.Envelope{Kind: api.KindToolResultDelta, ToolCallID: "nope", Delta: "x"})
 	if len(s.Runs()) != 1 {
 		t.Errorf("Runs after no-ops = %+v, want still 1", s.Runs())
+	}
+}
+
+// TestSnapshotLeavesRunningCallUnanswered covers a reload while a tool is
+// running: the stored rows hold the assistant message that asked for the call
+// but no result yet, so the load-time repair fills one in. The history a client
+// reads (Snapshot, which /history and /view use) must drop that placeholder for
+// a call the session still has in flight, or the page shows a working tool as
+// interrupted. The model's view keeps the result, because an unpaired call
+// breaks the provider's request shape; and a committed result stays even while
+// its run is still in the in-flight set.
+func TestSnapshotLeavesRunningCallUnanswered(t *testing.T) {
+	s := newTestSession(t, "s")
+	if err := s.commit(llm.UserMessage("run both")); err != nil {
+		t.Fatalf("commit user: %v", err)
+	}
+	calls := []llm.ToolCall{
+		{ID: "call-1", Type: "function", Function: llm.ToolFunction{Name: "shell", Arguments: `{"command":"sleep 5"}`}},
+		{ID: "call-2", Type: "function", Function: llm.ToolFunction{Name: "shell", Arguments: `{"command":"echo done"}`}},
+	}
+	if err := s.commit(llm.AssistantMessage("", "", calls)); err != nil {
+		t.Fatalf("commit assistant: %v", err)
+	}
+	if err := s.commit(llm.ToolResult("call-2", "done")); err != nil {
+		t.Fatalf("commit result: %v", err)
+	}
+
+	resultFor := func(msgs []llm.ChatMessage, callID string) *llm.ChatMessage {
+		for i := range msgs {
+			if msgs[i].Role == "tool" && msgs[i].ToolCallID == callID {
+				return &msgs[i]
+			}
+		}
+		return nil
+	}
+
+	// Nothing in flight: the repair answers the unanswered call, so a reader
+	// that shows a result here is showing a real interruption.
+	if got := resultFor(s.Snapshot().History, "call-1"); got == nil || got.Content != llm.InterruptedToolResult {
+		t.Fatalf("call-1 result before any run = %+v, want the interrupted marker", got)
+	}
+
+	// Mid-run, both calls are in the in-flight set. call-2's result is already
+	// committed (the commit lands before the run leaves the set), so it must
+	// survive; call-1's placeholder must not.
+	s.onRunStarted("call-1", func() {})
+	s.trackToolRun(api.Envelope{Kind: api.KindToolStarted, ToolCallID: "call-1", Name: "shell", StartedAt: 1000})
+	s.onRunStarted("call-2", func() {})
+	s.trackToolRun(api.Envelope{Kind: api.KindToolStarted, ToolCallID: "call-2", Name: "shell", StartedAt: 2000})
+
+	snap := s.Snapshot().History
+	if got := resultFor(snap, "call-1"); got != nil {
+		t.Errorf("call-1 result mid-run = %q, want no result for a call still running", got.Content)
+	}
+	if got := resultFor(snap, "call-2"); got == nil || got.Content != "done" {
+		t.Errorf("call-2 result mid-run = %+v, want the committed result", got)
+	}
+
+	// The model's copy stays paired: every call has a result.
+	msgs := s.loadMessages()
+	if got := resultFor(msgs, "call-1"); got == nil || got.Content != llm.InterruptedToolResult {
+		t.Errorf("model view for call-1 = %+v, want the interrupted marker so the call stays paired", got)
 	}
 }
 

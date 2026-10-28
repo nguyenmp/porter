@@ -611,7 +611,10 @@ func (d *DB) LoadSession(id int64) (Session, error) {
 	// fewer results than calls (see llm.RepairToolCalls). Repair the history
 	// here, on the way out, so every reader gets a paired conversation: the
 	// model's next request, /view, and /api/history. The repair is derived, so
-	// the stored rows stay exactly as they were.
+	// the stored rows stay exactly as they were. It cannot tell a lost result
+	// from one that has not arrived yet, so a caller that can — the session,
+	// which tracks in-flight runs — drops the placeholder for a live call
+	// before rendering (session.Session.dropRunningPlaceholders).
 	s.Messages = repairToolCalls(s.Messages)
 	vrows, err := d.db.Query(
 		`SELECT message_seq, idx, source, content, error, prompt_version, created_at
