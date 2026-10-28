@@ -4,9 +4,10 @@
 Every (provider, case, trial) is one task in a shared thread pool, so
 slow runs drain across all threads instead of pinning a per-provider
 chain. Each provider starts its own `porter server` (or uses a running
-one); every task scores one run and writes one row to a per-provider
-results file. When all tasks finish, the per-provider files are merged
-into the main results file. Use report.py to turn the rows into a table.
+one); every task scores one run and appends one row to the results file as
+soon as it finishes. Rows therefore land while the run is still going, so
+report.py and report_html.py work on a partial file and a run you interrupt
+keeps the rows it already earned.
 
 The CLI's stdout is read line by line as the run happens, so token and
 timing numbers reflect when the model actually produced output. Reading
@@ -30,8 +31,6 @@ import sys
 import threading
 import time
 import concurrent.futures
-import shutil
-import tempfile
 import traceback
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -713,7 +712,7 @@ def _start_provider(porter, provider, args):
 
 def _run_task(porter, provider_name, server_url, work_dir, case_cfg, case,
               trial, timeout, check_states, out_f, lock):
-    """Run one (case, trial) against one provider and write its row.
+    """Run one (case, trial) against one provider and append its row.
 
     A wrong answer, timeout, or tool error is a normal row, not an
     exception. Raises only on unexpected errors (server died, crash), so
@@ -748,6 +747,8 @@ def _run_task(porter, provider_name, server_url, work_dir, case_cfg, case,
         "ok": sum(1 for t in tools if t["ok"]),
     }
     with lock:
+        # One write per row plus a flush, so another process that reads the
+        # file mid-run sees complete lines and not a half-written tail.
         out_f.write(json.dumps(row) + "\n")
         out_f.flush()
     # Name the provider on every line. The pool runs several providers at the
@@ -775,6 +776,9 @@ def _run_parallel(porter, providers, case_names, cases, args):
     drop a slow or broken endpoint before the expensive case runs. Inside a
     case, every provider runs one trial before any provider runs a second, so
     no provider waits while another repeats.
+
+    Each row reaches the results file the moment its trial ends, so you can
+    build the HTML page while the run is still going.
     """
     considered = [p for p in providers
                   if not args.only or args.only in p["name"]]
@@ -788,23 +792,25 @@ def _run_parallel(porter, providers, case_names, cases, args):
             print("  provider %s failed: %s" % (provider["name"], e),
                   file=sys.stderr)
 
-    tmp_dir = tempfile.mkdtemp(prefix="porter-eval-")
+    # Open the results file up front and append each row the moment its trial
+    # ends. That lets a report read the file while the run is still going, and
+    # a run you interrupt keeps every row it earned instead of losing them all
+    # at the merge step.
+    out_f = open(args.out, "w")
+    print("rows land in %s as each trial finishes; build the page with\n"
+          "  python3 report_html.py" % args.out)
     n_ok = 0
     n_fail = len(considered) - len(servers)  # providers that never started
-    row_count = 0
     write_lock = threading.Lock()
     try:
         by_name = {p["name"]: p for p in providers}
         trial_cap = {}
         work_dir_of = {}
         states_of = {}
-        out_files = {}
         for name, server_url, proc in servers:
             provider = by_name[name]
             trial_cap[name] = args.trials or provider.get("trials", 3)
             work_dir_of[name] = os.path.join(HERE, ".eval-work", name)
-            out_files[name] = open(
-                os.path.join(tmp_dir, name + ".jsonl"), "w")
             # Ground truth per checker, built once per provider as before.
             check_states = {}
             for case in case_names:
@@ -835,8 +841,7 @@ def _run_parallel(porter, providers, case_names, cases, args):
                     in tasks:
                 future = pool.submit(
                     _run_task, porter, name, server_url, work_dir, case_cfg,
-                    case, trial, args.timeout, states, out_files[name],
-                    write_lock)
+                    case, trial, args.timeout, states, out_f, write_lock)
                 futures[future] = name
 
             outcomes = {}  # provider name -> list of task results
@@ -854,26 +859,17 @@ def _run_parallel(porter, providers, case_names, cases, args):
                     n_ok += 1
                 else:
                     n_fail += 1
-
-        for f in out_files.values():
-            f.close()
-        # Merge per-provider files into the main output file.
-        with open(args.out, "w") as combined:
-            for provider in considered:
-                out_path = os.path.join(tmp_dir, provider["name"] + ".jsonl")
-                if os.path.exists(out_path):
-                    with open(out_path) as f:
-                        for line in f:
-                            combined.write(line)
-                            row_count += 1
-                    os.remove(out_path)
+        # Count what landed on disk rather than what the pool returned, so the
+        # number matches what a report reads.
+        with open(args.out) as f:
+            count = sum(1 for line in f if line.strip())
     finally:
         for name, server_url, proc in servers:
             stop_server(proc)
-        shutil.rmtree(tmp_dir, ignore_errors=True)
+        out_f.close()
 
     print("%d provider(s) ok, %d failed; %d row(s) in %s"
-          % (n_ok, n_fail, row_count, args.out))
+          % (n_ok, n_fail, count, args.out))
     if n_fail:
         sys.exit(1)
 

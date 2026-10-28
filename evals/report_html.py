@@ -26,6 +26,7 @@ import html
 import json
 import random
 import statistics
+import sys
 
 
 def median(values):
@@ -405,6 +406,30 @@ def build_picks(rows, providers, rounds=2000):
             "headlines": headlines, "notes": notes, "count": len(live)}
 
 
+def load_rows(path):
+    """Read the JSONL rows, skipping a line that is still being written.
+
+    run_eval.py appends a row as each trial ends, so this page can be built
+    while a run is going. A half-written last line is skipped; build again
+    and it is read.
+    """
+    rows = []
+    skipped = 0
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rows.append(json.loads(line))
+            except ValueError:
+                skipped += 1
+    if skipped:
+        print("skipped %d unreadable line(s) in %s; a run may still be "
+              "writing to it" % (skipped, path), file=sys.stderr)
+    return rows
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -414,12 +439,7 @@ def main():
                     help="where to write the HTML page")
     args = ap.parse_args()
 
-    rows = []
-    with open(args.infile) as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                rows.append(json.loads(line))
+    rows = load_rows(args.infile)
     if not rows:
         raise SystemExit("no rows in %s" % args.infile)
 

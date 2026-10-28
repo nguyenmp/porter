@@ -91,6 +91,21 @@ Each run scores six things, all read from the JSONL the one-shot CLI prints:
    python3 report.py
    ```
 
+### Read the page while the run is going
+
+`run_eval.py` appends a row to `results.jsonl` as each trial ends, so the page
+builds from a partial file:
+
+```sh
+python3 report_html.py --in results.jsonl --out results_report.html
+```
+
+- A trial still running has no row until it ends. An endpoint that hangs stays
+  missing until its `--timeout` fires.
+- An interrupted or crashed run keeps every row it already wrote.
+- A build can catch the last line half-written. It skips that line and says so;
+  build again to read it.
+
 ## Finding the endpoints to test
 
 List the endpoints that serve a model, with price, precision, and uptime:
@@ -222,7 +237,7 @@ calls a fixed judge model with a short rubric.
 
 | File | What it does |
 |---|---|
-| `run_eval.py` | Runs providers x cases x trials, parses JSONL, scores, writes `results.jsonl` |
+| `run_eval.py` | Runs providers x cases x trials, parses JSONL, scores, and appends a row to `results.jsonl` as each trial ends |
 | `report.py` | Turns `results.jsonl` into a table |
 | `report_html.py` | Turns `results.jsonl` into the comparison page with a recommendation |
 | `METHODOLOGY.md` | What the report measures, why, and how to rebuild it |

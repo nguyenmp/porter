@@ -11,6 +11,30 @@ import statistics
 import sys
 
 
+def load_rows(path):
+    """Read the JSONL rows, skipping a line that is still being written.
+
+    run_eval.py appends a row as each trial ends, so a report built while a
+    run is going can catch the last line half-written. This skips that line;
+    the next build reads it.
+    """
+    rows = []
+    skipped = 0
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rows.append(json.loads(line))
+            except ValueError:
+                skipped += 1
+    if skipped:
+        print("skipped %d unreadable line(s) in %s; a run may still be "
+              "writing to it" % (skipped, path), file=sys.stderr)
+    return rows
+
+
 def mean(items):
     items = [i for i in items if i is not None]
     return statistics.mean(items) if items else float("nan")
@@ -34,12 +58,7 @@ def main():
                     help="table rows: 'case' (one row per case, cols per provider) or 'provider'")
     args = ap.parse_args()
 
-    rows = []
-    with open(args.infile) as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                rows.append(json.loads(line))
+    rows = load_rows(args.infile)
 
     if not rows:
         sys.exit("no rows in %s" % args.infile)
