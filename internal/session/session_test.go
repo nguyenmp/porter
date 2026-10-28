@@ -1009,6 +1009,14 @@ func TestDeriveTurnsAggregatesStopped(t *testing.T) {
 // renders the badge identically whether live or from history.
 func TestCommittedToolEnvelopeCarriesToolOutput(t *testing.T) {
 	s := newTestSession(t, "s")
+	// Announce the call before its result: history must pair a tool result
+	// with the assistant message that asked for it, and LoadSession drops a
+	// result that answers no call (see llm.RepairToolCalls).
+	if err := s.commit(llm.AssistantMessage("", "", []llm.ToolCall{{
+		ID: "call-1", Type: "function", Function: llm.ToolFunction{Name: "shell", Arguments: `{"command":"echo hi"}`},
+	}})); err != nil {
+		t.Fatalf("commit assistant: %v", err)
+	}
 	meta := &llm.ToolOutputMeta{Truncated: true, TotalBytes: 2550, ShownBytes: 1536}
 	m := llm.ToolResult("call-1", "big output")
 	m.ToolOutput = meta
@@ -1018,16 +1026,7 @@ func TestCommittedToolEnvelopeCarriesToolOutput(t *testing.T) {
 
 	// The live commit path (session.commit) stamps the metadata onto the
 	// committed KindMessage envelope.
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	var live api.Envelope
-	for env := range s.From(ctx, 0) {
-		live = env
-		break
-	}
-	if live.Kind != api.KindMessage || live.Message == nil || live.Message.Role != "tool" {
-		t.Fatalf("live first envelope = %+v, want the tool message", live)
-	}
+	live := firstToolEnvelope(t, s)
 	if live.ToolOutput == nil || !live.ToolOutput.Equal(meta) {
 		t.Errorf("live committed envelope ToolOutput = %+v, want %+v", live.ToolOutput, meta)
 	}
@@ -1041,18 +1040,33 @@ func TestCommittedToolEnvelopeCarriesToolOutput(t *testing.T) {
 	s2 := newSession(s.ID(), nil, nil, s.persist, ps.ID, ps.CreatedAt, ps.ArchivedAt, ps.Name, nil)
 	s2.rebuildFromPersisted(ps)
 
-	ctx2, cancel2 := context.WithCancel(context.Background())
-	defer cancel2()
-	var replayed api.Envelope
-	for env := range s2.From(ctx2, 0) {
-		replayed = env
-		break
-	}
-	if replayed.Kind != api.KindMessage || replayed.Message == nil || replayed.Message.Role != "tool" {
-		t.Fatalf("replay first envelope = %+v, want the tool message", replayed)
-	}
+	replayed := firstToolEnvelope(t, s2)
 	if replayed.ToolOutput == nil || !replayed.ToolOutput.Equal(meta) {
 		t.Errorf("replayed envelope ToolOutput = %+v, want %+v", replayed.ToolOutput, meta)
+	}
+}
+
+// firstToolEnvelope returns the first committed tool message a fresh subscriber
+// sees. The stream stays open after the replay, so it reads with a deadline: a
+// history that lost its tool message fails the test instead of hanging.
+func firstToolEnvelope(t *testing.T, s *Session) api.Envelope {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	envs := s.From(ctx, 0)
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case env, ok := <-envs:
+			if !ok {
+				t.Fatal("stream closed before a tool envelope arrived")
+			}
+			if env.Kind == api.KindMessage && env.Message != nil && env.Message.Role == "tool" {
+				return env
+			}
+		case <-deadline:
+			t.Fatal("no tool envelope arrived within 2s")
+		}
 	}
 }
 
