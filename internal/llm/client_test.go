@@ -85,6 +85,30 @@ func TestStreamOmitsProvider(t *testing.T) {
 	}
 }
 
+// TestStreamSendsExtraParamsHeader checks every request tells the gateway to
+// forward body fields it does not recognise. Without that header a gateway such
+// as Bifrost drops the provider object, so OpenRouter never sees the pin.
+func TestStreamSendsExtraParamsHeader(t *testing.T) {
+	var got string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Get("x-bf-passthrough-extra-params")
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, "data: [DONE]\n")
+	}))
+	defer srv.Close()
+
+	client := NewClient(config.Config{BaseURL: srv.URL + "/v1", Model: "m"}, nil)
+	body, err := client.Stream(t.Context(), []ChatMessage{UserMessage("hi")}, nil)
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	body.Close()
+
+	if got != "true" {
+		t.Fatalf("x-bf-passthrough-extra-params = %q, want true", got)
+	}
+}
+
 // streamBody sends one request through a test server and returns the body the
 // client built.
 func streamBody(t *testing.T, cfg config.Config) []byte {

@@ -132,6 +132,11 @@ func (c *Client) Stream(ctx context.Context, messages []ChatMessage, tools []Too
 	if c.cfg.APIKey != "" {
 		req.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
 	}
+	// A gateway such as Bifrost drops request-body fields it does not recognise —
+	// the provider routing object among them — unless this header tells it to
+	// pass them through. The header does nothing when the body carries no such
+	// field, so it goes on every request rather than being tied to Provider.
+	req.Header.Set("x-bf-passthrough-extra-params", "true")
 
 	c.debugf("connecting to %s...", endpoint)
 	start := time.Now()
