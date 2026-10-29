@@ -232,18 +232,19 @@ func TestInteractiveRunsPassesOnFile(t *testing.T) {
 	}
 }
 
-// TestInteractiveSetsPassScheduleAndLengthRule checks the skill carries the full
-// pass schedule: the floor, what a pass is, that the draft is not one, and the
-// gate before the answer. Without the floor, "stop when a pass changes nothing"
-// is satisfied by one clean read. Without the definition, two line fixes pass
-// for a pass. Without the cutoff, short replies pay for a file they do not need.
-func TestInteractiveSetsPassScheduleAndLengthRule(t *testing.T) {
+// TestInteractiveSetsWorkflowAndLengthRule checks the skill carries the workflow
+// clauses it needs: the length cutoff that keeps short replies out of a file,
+// what a pass is, that the draft is not one, the gate before the answer, and the
+// answer format. Without the definition, two line fixes pass for a pass. Without
+// the cutoff, short replies pay for a file they do not need. It sets no count of
+// passes: the tradeoff test ends the loop.
+func TestInteractiveSetsWorkflowAndLengthRule(t *testing.T) {
 	p := Prompt()
 	for _, want := range []string{
 		"A pass is one full read",
 		"the draft doesn't count as one",
-		passSchedule,
 		"Before you answer, check",
+		"straight fix means one more pass",
 		"about 100 words",
 		"Keep the file",
 		"copied from the file",
@@ -262,15 +263,14 @@ func TestInteractiveSetsPassScheduleAndLengthRule(t *testing.T) {
 }
 
 // TestUserMessageReminderCarriesWorkflow checks the per-turn reminder states the
-// file, the pass schedule, and the length rule. The reminder repeats on every
-// turn, so it has to carry them in a few words.
+// file, the definition of a pass, the length rule, and the stop test. The
+// reminder repeats on every turn, so it has to carry them in a few words.
 func TestUserMessageReminderCarriesWorkflow(t *testing.T) {
 	for _, want := range []string{
 		"scratch file",
 		"pass is one full read",
 		"draft doesn't count as one",
-		passSchedule,
-		"Before you reply, check",
+		stopRule,
 		"100 words",
 	} {
 		if !strings.Contains(UserMessageReminder, want) {
@@ -279,17 +279,38 @@ func TestUserMessageReminderCarriesWorkflow(t *testing.T) {
 	}
 }
 
-// TestReminderMatchesSkillOnPassSchedule checks the reminder and the skill agree
-// on the two parts of the pass schedule a model can talk itself out of: what
-// counts as a pass, and the gate that repeats the stop rule. Both surfaces are
-// written by hand at different lengths, so a drift here would let the shorter
-// one quietly weaken the rule.
-func TestReminderMatchesSkillOnPassSchedule(t *testing.T) {
-	shared := []string{"a pass is one full read", "changed anything, you aren't done"}
+// TestReminderMatchesSkillOnStopRule checks the reminder and the skill agree on
+// the two parts of the stop test a model can talk itself out of: what counts as
+// a pass, and the test that ends the loop. Both surfaces are written by hand at
+// different lengths, so a drift here would let the shorter one quietly weaken
+// the rule.
+func TestReminderMatchesSkillOnStopRule(t *testing.T) {
+	shared := []string{"a pass is one full read", "trades one quality for another", "understandability first"}
 	for _, want := range shared {
 		for name, text := range map[string]string{"reminder": UserMessageReminder, "skill": Prompt()} {
 			if !strings.Contains(strings.ToLower(text), want) {
 				t.Errorf("%s missing %q: %s", name, want, text)
+			}
+		}
+	}
+}
+
+// TestPromptSetsNoPassCount checks neither surface sets a number of passes. A
+// count keyed to length spends the same passes on a short reply as on a long
+// one, and a text that reads well after two passes paid for four. The stop test
+// (stopRule) ends the loop instead, so a phrase like "four passes" here means a
+// schedule has crept back in.
+func TestPromptSetsNoPassCount(t *testing.T) {
+	numbers := []string{"two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"}
+	for name, text := range map[string]string{
+		"skill":      Prompt(),
+		"reminder":   UserMessageReminder,
+		"background": humanizePrompt(),
+	} {
+		lower := strings.ToLower(text)
+		for _, n := range numbers {
+			if strings.Contains(lower, n+" passes") {
+				t.Errorf("%s sets a pass count (%q):\n%s", name, n+" passes", text)
 			}
 		}
 	}

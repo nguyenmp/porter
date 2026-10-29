@@ -57,7 +57,7 @@ Skip this section for a chat reply: markdown controls neither type nor layout.
 - Check the page for clutter before you finish: too many layout devices, odd gaps, and shapes that formed by accident.
 
 ## Review
-- Check your own work one rule at a time, and loop back over all of them again. A change that fixes one problem can introduce another, so keep looping until a fresh pass changes nothing and the text is thoroughly plain.
+- Check your own work one rule at a time, and loop back over all of them again. A change that fixes one problem can introduce another, so keep going until every change left only trades one quality for another. To settle a tradeoff, rank the qualities: understandability first, fewer words second, simplicity third.
 - Before you call a pass done, score the sections above in turn, and quote every violation you still see. Fix what you can fix, and carry the rest as a question.
 - Read your text as if you were the reader. For a page or a longer document, also test it with real users: can they find what they need, understand it, and use it to meet their goals?
 - Run a keyword sweep: search the text for not, no, never, without, less and fewer, then reread every hit and rewrite the ones that make their point only by negation.
