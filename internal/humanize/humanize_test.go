@@ -242,7 +242,7 @@ func TestInteractiveSetsPassScheduleAndLengthRule(t *testing.T) {
 	for _, want := range []string{
 		"A pass is one full read",
 		"the draft doesn't count as one",
-		"two passes from 100 to 600 words",
+		passSchedule,
 		"Before you answer, check",
 		"about 100 words",
 		"Keep the file",
@@ -269,7 +269,7 @@ func TestUserMessageReminderCarriesWorkflow(t *testing.T) {
 		"scratch file",
 		"pass is one full read",
 		"draft doesn't count as one",
-		"two passes from 100 to 600 words",
+		passSchedule,
 		"Before you reply, check",
 		"100 words",
 	} {

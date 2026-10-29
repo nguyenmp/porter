@@ -353,7 +353,7 @@ answering and not only in the static system prefix. The reminder names the
 outputs the rules cover — replies, files, code comments, and PR text — and says
 to leave code, quoted text, and command arguments exact. It also states the
 workflow the skill adds: prose over about 100 words goes in a scratch file, gets
-at least two passes, and stops when a pass changes nothing, while shorter prose
+at least four passes, and stops when a pass changes nothing, while shorter prose
 gets one reread. The pass floor matters, because "stop when a pass changes
 nothing" on its own is satisfied by a single clean read. Like the timing headers
 on the same model view, the reminder exists only on the outgoing copy: what you
