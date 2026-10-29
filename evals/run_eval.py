@@ -507,8 +507,14 @@ LOCAL_HOSTS = ("localhost", "127.0.0.1", "::1", "0.0.0.0", "host.docker.internal
 
 
 def base_url_of(env):
-    """The gateway base URL this provider's server will use."""
-    return env.get("PORTER_BASE_URL") or "https://api.openai.com/v1"
+    """The gateway base URL: the entry's own, else the environment's.
+
+    The URL pairs with the key, which already comes from the environment, so a
+    generated provider file names the model and the endpoint pin and leaves the
+    gateway to the shell. An entry may still name one, which is how a file that
+    targets a different gateway, such as OpenRouter itself, stays explicit.
+    """
+    return env.get("PORTER_BASE_URL") or os.environ.get("PORTER_BASE_URL") or ""
 
 
 def needs_key(base_url):
@@ -527,6 +533,10 @@ def auth_problem(name, env):
     like bad model results, so say it up front instead.
     """
     base_url = base_url_of(env)
+    if not base_url:
+        return ("provider %s: no PORTER_BASE_URL, in this entry's env block or in "
+                "the environment, so its server has no gateway to call. Set it "
+                "(export PORTER_BASE_URL=https://your-gateway/v1)." % name)
     if not needs_key(base_url):
         return None
     if env.get("PORTER_API_KEY") or os.environ.get("PORTER_API_KEY"):
@@ -571,8 +581,11 @@ def wait_ready(addr, timeout=60):
 
 def start_server(porter, provider, work_dir):
     os.makedirs(work_dir, exist_ok=True)
+    block = env_of(provider)
     env = dict(os.environ)
-    env.update(env_of(provider))
+    env.update(block)
+    # The child needs the resolved URL, whatever this process inherited.
+    env["PORTER_BASE_URL"] = base_url_of(block)
     env["PORTER_ADDR"] = provider["addr"]
     log = open(os.path.join(work_dir, "server.log"), "w")
     proc = subprocess.Popen([porter, "server"], cwd=work_dir, env=env,
@@ -700,12 +713,14 @@ def _start_provider(porter, provider, args):
         print("== %s  (using running server %s)" % (name, server_url))
         return name, server_url, None
     env = env_of(provider)
+    gateway = ("gateway from %s" % ("env block" if env.get("PORTER_BASE_URL")
+                                    else "PORTER_BASE_URL"))
     auth = ("key from %s" % ("env block" if env.get("PORTER_API_KEY")
                              else "PORTER_API_KEY"))
     if not needs_key(base_url_of(env)):
         auth = "no key needed (local address)"
-    print("== %s  (starting server on %s; %s)"
-          % (name, provider["addr"], auth))
+    print("== %s  (starting server on %s; %s; %s)"
+          % (name, provider["addr"], gateway, auth))
     proc = start_server(porter, provider, work_dir)
     return name, "http://%s" % provider["addr"], proc
 

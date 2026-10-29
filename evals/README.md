@@ -11,22 +11,28 @@ to rebuild it.
 
 ## Point porter at your gateway, not at OpenRouter
 
-Porter talks to whatever `PORTER_BASE_URL` names. Point it at your LiteLLM
+Porter talks to whatever `PORTER_BASE_URL` names. Point it at your Bifrost
 proxy so the proxy holds the credentials, and porter never needs an OpenRouter
-key of its own.
+key of its own. Both scripts read `PORTER_BASE_URL` and `PORTER_API_KEY` from
+the environment, so load `.env` into your shell before you run them.
 
 ```
-PORTER_BASE_URL=https://litellm.href.cat/v1
+PORTER_BASE_URL=https://bifrost.href.cat/v1
 PORTER_MODEL=openrouter/deepseek/deepseek-v4-flash
-PORTER_API_KEY=<your LiteLLM key>
+PORTER_API_KEY=<your Bifrost key>
 ```
 
-Two things that cost me real debugging time:
+Three things that cost me real debugging time:
 
-- **The model name needs the gateway's routing prefix.** LiteLLM's convention
-  for routing a model to OpenRouter is `openrouter/<model>`. Without the
-  prefix, the same-looking name can point somewhere else entirely. On this
-  gateway `deepseek/deepseek-v4-flash` goes straight to DeepSeek's own API.
+- **The model name needs the gateway's routing prefix.** The convention for
+  routing a model to OpenRouter is `openrouter/<model>`. Without the prefix,
+  the same-looking name can point somewhere else entirely. On this gateway
+  `deepseek/deepseek-v4-flash` goes straight to DeepSeek's own API.
+- **Bifrost drops body fields it does not model unless you ask it not to.**
+  The `provider` object is one of them, so a pin arrives as no pin. Porter
+  sends `x-bf-passthrough-extra-params: true` on every request, and the value
+  must be exactly `true`; `1` and `True` do nothing. Any other client needs
+  the same header.
 - **A backend with no providers ignores your pin.** Send a `PORTER_PROVIDER`
   pin with the non-prefixed name and you get a 200 that ignored the pin. With
   the prefixed name, the same pin either works or fails with an error. So check
@@ -150,7 +156,7 @@ cannot answer:
 
 ```
 $ python3 list_providers.py deepseek/deepseek-v4-flash --probe --write providers.generated.yaml
-probing 6 endpoints against https://litellm.href.cat/v1 ...
+probing 6 endpoints against https://bifrost.href.cat/v1 ...
   ok       digitalocean               DigitalOcean
   BLOCKED  streamlake/fp8             excluded by your zero-data-retention setting
   BLOCKED  baidu/fp8                  excluded by your zero-data-retention setting
@@ -164,8 +170,8 @@ probing 6 endpoints against https://litellm.href.cat/v1 ...
 On one run of this model, three of six fp8 endpoints were blocked for that
 reason. Without the probe, half the grid would have failed with 404s.
 
-The generated file needs no key of its own: export `PORTER_API_KEY` and the
-driver passes it through.
+The generated file needs no key of its own: set `PORTER_API_KEY` in the
+environment and the driver passes it through.
 
 Two warnings about the table:
 
@@ -179,10 +185,12 @@ Two warnings about the table:
 ## Adding a provider
 
 Add an entry to `providers.yaml`. The driver starts one `porter server` per
-entry with that entry's env (`PORTER_BASE_URL`, `PORTER_MODEL`,
-`PORTER_PROVIDER`, `PORTER_API_KEY`), runs every case a few times, and shuts it
-down. Add `external: true` and set `env.PORTER_SERVER_URL` if a server is
-already running and you do not want the driver to manage one.
+entry with that entry's env (`PORTER_MODEL`, `PORTER_PROVIDER`), runs every
+case a few times, and shuts it down. `PORTER_BASE_URL` and `PORTER_API_KEY`
+come from your shell, so they stay out of the file; put either in the entry's
+env block to override it there. Add `external: true` and set
+`env.PORTER_SERVER_URL` if a server is already running and you do not want the
+driver to manage one.
 
 `PORTER_PROVIDER` pins an endpoint. Turn fallbacks off, or the measurement
 means nothing:
@@ -190,7 +198,6 @@ means nothing:
 ```yaml
   - name: deepseek-v4-flash-deepinfra-fp8
     env:
-      PORTER_BASE_URL: "https://litellm.href.cat/v1"
       PORTER_MODEL: "openrouter/deepseek/deepseek-v4-flash"
       PORTER_PROVIDER: "deepinfra/fp8"
     addr: "127.0.0.1:8801"
@@ -274,10 +281,10 @@ porter's web UI for a closer look.
 - A pinned endpoint that is down fails the run too. That result is honest:
   uptime is part of what you measure. Watch the `error` column for it, so a
   provider outage does not read as a bad answer.
-- Keep the key exported where you run the eval. The shell's `PORTER_API_KEY` and
-  the one in `~/.zshrc` were different at one point, and the stale one was
-  rejected with a 401 while the good one worked. When a whole grid fails with
-  one error, check the key before the model.
+- Keep one key in one place. The shell's `PORTER_API_KEY` and the one in
+  `~/.zshrc` were different at one point, and the stale one was rejected with a
+  401 while the good one worked. When a whole grid fails with one error, check
+  the key before the model.
 - Run `python3 test_checkers.py` after you change a checker. A checker that
   misreads a correct answer makes every result wrong in the same way, which is
   hard to spot in a table of numbers.
