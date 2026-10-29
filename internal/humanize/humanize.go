@@ -40,7 +40,7 @@ import (
 // PromptVersion identifies the prompt revision that produced a variant. It is
 // stamped on every pass so the UI can explain why a tab reads the way it does,
 // and should be bumped whenever the prompt below changes.
-const PromptVersion = "plain-language-v20"
+const PromptVersion = "plain-language-v21"
 
 // SkillName is the name the built-in plain-language skill is exposed under,
 // both in the load_skill listing and as the sentinel path (api.BuiltinPrefix +
@@ -125,7 +125,7 @@ var plainRules = strings.TrimSuffix(plainRulesFile, "\n")
 // (plainRules) plus the one rewrite-only rule, example use, which only makes
 // sense for a pass over given text. The preserve rule is not here. It sits in the
 // shared body with the steering rules, so the model reads its hardest constraint
-// before it starts editing rather than after 35 smaller rules, and the
+// before it starts editing rather than at the end of the rule list, and the
 // interactive skill carries it too.
 //
 // The prompt opens with a bare command rather than a question ("Can you apply

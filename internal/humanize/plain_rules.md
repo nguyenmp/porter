@@ -25,7 +25,9 @@ These rules steer the edit:
 - Unpack noun strings: say developing procedures to protect workers, not underground mine worker safety protection procedures development.
 - Keep the subject, verb, and object close together, and put modifiers next to the words they modify. Say you are required to provide only the following, not you are only required to provide the following.
 - Put long conditions and exceptions after the main clause.
-- Say what is true rather than what is not, with no double negatives and no exceptions piled on exceptions.
+- Say what is true rather than what is not. Flag every sentence that says what something is not, then rewrite it in the positive unless the negation is the point.
+- Count the negatives in a sentence. "Not a labor shortage but jobs that do not pay rent" makes the reader undo two; state the cause, then the fact: "the jobs pay too little to cover rent".
+- Check a paraphrase the same way. Restating someone else's claim is where a negative slips past a fact check, so put the claim in the positive and read it again.
 - Use the same term for the same thing throughout. Repeat it rather than reaching for a synonym to sound varied.
 
 ## Words
@@ -57,3 +59,5 @@ Skip this section for a chat reply: markdown controls neither type nor layout.
 ## Review
 - Check your own work one rule at a time, and loop back over all of them again. A change that fixes one problem can introduce another, so keep looping until a fresh pass changes nothing and the text is thoroughly plain.
 - Read your text as if you were the reader. For a page or a longer document, also test it with real users: can they find what they need, understand it, and use it to meet their goals?
+- Run a keyword sweep: search the text for not, no, never, without, less and fewer, then reread every hit and rewrite the ones that make their point only by negation.
+- Keep track of what each read covered, so a sentence you skipped shows up instead of slipping through.

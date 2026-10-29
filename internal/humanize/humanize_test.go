@@ -353,3 +353,28 @@ func TestRulesRunLargestConcernFirst(t *testing.T) {
 		t.Errorf("the preserve rule trails the section rules; it must sit in the steering block at the top")
 	}
 }
+
+// TestNegationRulesInRulesBody checks the negation rules live in the shared rule
+// body (plain_rules.md), so the skill and the background pass both carry them
+// from one copy: flag every sentence that says what something is not, rewrite it
+// in the positive, and reread the text for negation words before finishing. A
+// "not X but Y" sentence reads smoothly and survives a reread, which is why the
+// sweep is mechanical rather than left to the read.
+func TestNegationRulesInRulesBody(t *testing.T) {
+	for _, want := range []string{
+		"Flag every sentence that says what something is not",
+		"Run a keyword sweep",
+	} {
+		if !strings.Contains(plainRules, want) {
+			t.Fatalf("plain_rules.md is missing %q:\n%s", want, plainRules)
+		}
+		for name, prompt := range map[string]string{
+			"humanizePrompt": humanizePrompt(),
+			"Prompt":         Prompt(),
+		} {
+			if !strings.Contains(prompt, want) {
+				t.Errorf("%s does not carry %q", name, want)
+			}
+		}
+	}
+}
