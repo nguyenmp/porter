@@ -378,3 +378,35 @@ func TestNegationRulesInRulesBody(t *testing.T) {
 		}
 	}
 }
+
+// TestScorecardRuleInRulesBody checks the scorecard step lives in the shared
+// rule body, next to the loop rule it makes checkable: a writer that has to
+// quote what is left cannot call a text done on a hunch. The step names no
+// output format, because the skill keeps its scorecard in the scratch file and
+// the background pass must stay silent.
+func TestScorecardRuleInRulesBody(t *testing.T) {
+	const want = "score the sections above in turn"
+	if !strings.Contains(plainRules, want) {
+		t.Fatalf("plain_rules.md is missing the scorecard step:\n%s", plainRules)
+	}
+	for name, prompt := range map[string]string{
+		"humanizePrompt": humanizePrompt(),
+		"Prompt":         Prompt(),
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("%s does not carry the scorecard step", name)
+		}
+	}
+}
+
+// TestSilentPassSuppressesScorecard checks the unattended pass is told to keep
+// the scorecard out of its reply. The pass returns text straight into a variant
+// tab, so a card that leaks is user-visible.
+func TestSilentPassSuppressesScorecard(t *testing.T) {
+	if !strings.Contains(humanizePrompt(), "no scorecard") {
+		t.Errorf("the background pass does not suppress the scorecard:\n%s", humanizePrompt())
+	}
+	if strings.Contains(Prompt(), "no scorecard") {
+		t.Errorf("the interactive skill must not suppress the scorecard; it keeps one in the scratch file")
+	}
+}

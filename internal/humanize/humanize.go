@@ -40,7 +40,7 @@ import (
 // PromptVersion identifies the prompt revision that produced a variant. It is
 // stamped on every pass so the UI can explain why a tab reads the way it does,
 // and should be bumped whenever the prompt below changes.
-const PromptVersion = "plain-language-v21"
+const PromptVersion = "plain-language-v22"
 
 // SkillName is the name the built-in plain-language skill is exposed under,
 // both in the load_skill listing and as the sentinel path (api.BuiltinPrefix +
@@ -144,7 +144,7 @@ var systemPrompt = `Apply plain language, and make the text clearer for the read
 
 // silentSuffix is appended for the background humanize pass. It must not
 // narrate itself, because its output lands directly in the UI as a variant tab.
-const silentSuffix = "\n\nThe rewrite runs unattended and lands directly in the UI as a variant tab. Never narrate the passes: return only the final text, with no preamble, no summary of changes, and no commentary."
+const silentSuffix = "\n\nThe rewrite runs unattended and lands directly in the UI as a variant tab. Never narrate the passes: return only the final text, with no preamble, no summary of changes, no scorecard, and no commentary."
 
 // passSchedule is the pass floor both prompts state. It lives here once, because
 // the skill and the per-turn reminder have to give the same counts: a model
@@ -174,7 +174,7 @@ const passSchedule = "Run four passes from 100 to 600 words, six to 1,500, and e
 const interactiveSuffix = `
 When used interactively: if you have no text, ask what to simplify. If the user gives you a file, edit that file in place.
 
-Length decides the workflow and the pass floor. Under about 100 words, reread the text once against the rules and fix what breaks. No file needed. Longer text goes in a scratch file, such as .porter/plain/<name>.md, so you can reread the file after every pass and each pass works on the real text instead of your memory of it. A pass is one full read of the file from top to bottom against every rule, not a few line fixes, and the draft doesn't count as one. ` + passSchedule + ` Before you answer, check that your last pass changed nothing: if it changed anything, you aren't done. Keep the file, because it shows the passes happened. Answer with the file's contents, copied from the file, not retyped. Write that answer directly in chat, with no code block and no quotation marks. Report the passes only when the user asks for plain language by name: say how many passes you took and list the main changes, each with the principle behind it.
+Length decides the workflow and the pass floor. Under about 100 words, reread the text once against the rules and fix what breaks. No file needed. Longer text goes in a scratch file, such as .porter/plain/<name>.md, so you can reread the file after every pass and each pass works on the real text instead of your memory of it. A pass is one full read of the file from top to bottom against every rule, not a few line fixes, and the draft doesn't count as one. ` + passSchedule + ` Before you answer, check that your last pass changed nothing: if it changed anything, you aren't done. Keep the file, because it shows the passes happened, and write the scorecard in it too, so the answer carries none of it. Answer with the file's contents, copied from the file, not retyped. Write that answer directly in chat, with no code block and no quotation marks. Report the passes only when the user asks for plain language by name: say how many passes you took and list the main changes, each with the principle behind it.
 `
 
 // Directive returns the standing writing-style instruction the agent injects

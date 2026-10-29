@@ -58,6 +58,7 @@ Skip this section for a chat reply: markdown controls neither type nor layout.
 
 ## Review
 - Check your own work one rule at a time, and loop back over all of them again. A change that fixes one problem can introduce another, so keep looping until a fresh pass changes nothing and the text is thoroughly plain.
+- Before you call a pass done, score the sections above in turn, and quote every violation you still see. Fix what you can fix, and carry the rest as a question.
 - Read your text as if you were the reader. For a page or a longer document, also test it with real users: can they find what they need, understand it, and use it to meet their goals?
 - Run a keyword sweep: search the text for not, no, never, without, less and fewer, then reread every hit and rewrite the ones that make their point only by negation.
 - Keep track of what each read covered, so a sentence you skipped shows up instead of slipping through.
