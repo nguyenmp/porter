@@ -270,7 +270,7 @@ func TestFetchAndCall(t *testing.T) {
 	}
 	data, _ := io.ReadAll(out)
 	_ = out.Close()
-	if !strings.Contains(string(data), "server web (2 tools)") || !strings.Contains(string(data), "search") {
+	if !strings.Contains(string(data), "server: web (2 tools)") || !strings.Contains(string(data), "search") {
 		t.Errorf("FindMCP snippet output = %q", data)
 	}
 	if !strings.Contains(string(data), "[requires: q; optional: limit]") {
@@ -499,7 +499,7 @@ func TestCompositeRouting(t *testing.T) {
 	}
 	data, _ := io.ReadAll(out)
 	_ = out.Close()
-	if !strings.Contains(string(data), "server echo") {
+	if !strings.Contains(string(data), "server: echo (1 tool)") {
 		t.Errorf("composite FindMCP output = %q", data)
 	}
 
@@ -599,8 +599,8 @@ func TestCompositeRemoteRouting(t *testing.T) {
 	}
 	data, _ := io.ReadAll(out)
 	_ = out.Close()
-	if !strings.Contains(string(data), "server retool (1 tools)") ||
-		!strings.Contains(string(data), "(hosted on macbook)") {
+	if !strings.Contains(string(data), "server: retool (1 tool)") ||
+		!strings.Contains(string(data), "hosted on macbook") {
 		t.Errorf("FindMCP remote output = %q", data)
 	}
 
@@ -958,4 +958,83 @@ func equalStrings(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// TestFindListingFormat pins the shape of the FindMCP listing: a "server:"
+// header per block, "- " tool lines, a blank line between blocks, singular
+// counts, and a query that hides servers with no matches but counts them.
+func TestFindListingFormat(t *testing.T) {
+	alpha := &mockMCP{tools: []map[string]any{
+		{"name": "search", "description": "Search the web"},
+		{"name": "fetch", "description": "Fetch a page"},
+	}}
+	beta := &mockMCP{tools: []map[string]any{
+		{"name": "ping", "description": "Ping a host"},
+	}}
+	as := httptest.NewServer(alpha.handler())
+	defer as.Close()
+	bs := httptest.NewServer(beta.handler())
+	defer bs.Close()
+
+	h, err := Load(writeConfig(t,
+		serverEntry("alpha", as.URL, ""),
+		serverEntry("beta", bs.URL, ""),
+	), nil)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	find := func(args string) string {
+		t.Helper()
+		out, err := h.Run(context.Background(), FindTool, []byte(args))
+		if err != nil {
+			t.Fatalf("FindMCP(%s): %v", args, err)
+		}
+		data, _ := io.ReadAll(out)
+		_ = out.Close()
+		return string(data)
+	}
+
+	// The description carries the block template, so the model has the mapping
+	// from a listing line to CallMCP's arguments before it lists anything.
+	if desc := h.Defs()[0].Function.Description; !strings.Contains(desc, "server: <server_name>") || !strings.Contains(desc, "- <tool_name>: <description>") {
+		t.Errorf("FindMCP description missing the block template: %q", desc)
+	}
+
+	// Every server, every tool: header label, bullet lines, blank line between
+	// blocks, and a singular count.
+	all := find(`{}`)
+	for _, want := range []string{
+		"server: alpha (2 tools) — The alpha server\n- search: Search the web\n- fetch: Fetch a page\n",
+		"\n\nserver: beta (1 tool) — The beta server\n- ping: Ping a host\n",
+	} {
+		if !strings.Contains(all, want) {
+			t.Errorf("listing missing %q:\n%s", want, all)
+		}
+	}
+
+	// A query keeps matching blocks and counts the ones it hid.
+	q := find(`{"query":"search"}`)
+	if !strings.Contains(q, "server: alpha (2 tools)") || !strings.Contains(q, "- search:") {
+		t.Errorf("query output lost the matching block:\n%s", q)
+	}
+	if strings.Contains(q, "server: beta") {
+		t.Errorf("query output kept a block with no matches:\n%s", q)
+	}
+	if !strings.Contains(q, "1 other server had no matching tools.") {
+		t.Errorf("query output should count the hidden server:\n%s", q)
+	}
+
+	// Naming a server always shows it, even when its tools do not match the
+	// query, so the answer is never a silence.
+	named := find(`{"server_name":"beta","query":"search"}`)
+	if !strings.Contains(named, "server: beta (1 tool)") || !strings.Contains(named, "(no matching tools)") {
+		t.Errorf("named server with no match = %q", named)
+	}
+
+	// A query that matches nothing anywhere says so, and says what to do.
+	none := find(`{"query":"zzz-nope"}`)
+	if !strings.Contains(none, `No tools matched "zzz-nope" in 2 servers.`) {
+		t.Errorf("empty query output = %q", none)
+	}
 }

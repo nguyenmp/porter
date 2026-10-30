@@ -46,44 +46,17 @@ const (
 func (h *Hub) findDef(extra []api.MCPServer) llm.Tool {
 	var b strings.Builder
 	b.WriteString("Discover MCP (Model Context Protocol) servers and their tools, then call a tool with CallMCP. ")
-	h.mu.RLock()
-	if len(h.servers) == 0 && len(extra) == 0 {
+	entries := h.findEntries(extra, "")
+	if len(entries) == 0 {
 		b.WriteString("No MCP servers are configured.")
 	} else {
 		b.WriteString("Configured servers:\n")
-		for _, name := range h.order {
-			s := h.servers[name]
-			status, errMsg := s.Status()
-			switch status {
-			case "ok":
-				fmt.Fprintf(&b, "- %s (%d tools): %s\n", name, len(s.Tools()), s.Description)
-			case "error":
-				fmt.Fprintf(&b, "- %s (error: %s): %s\n", name, errMsg, s.Description)
-			default:
-				fmt.Fprintf(&b, "- %s (pending): %s\n", name, s.Description)
-			}
+		for _, e := range entries {
+			b.WriteString(e.header())
+			b.WriteByte('\n')
 		}
-		for _, ms := range extra {
-			status := ms.Status
-			if status == "" {
-				status = "ok"
-			}
-			switch status {
-			case "ok":
-				fmt.Fprintf(&b, "- %s (%d tools): %s", ms.Name, len(ms.Tools), ms.Description)
-			case "error":
-				fmt.Fprintf(&b, "- %s (error: %s): %s", ms.Name, ms.Error, ms.Description)
-			default:
-				fmt.Fprintf(&b, "- %s (pending): %s", ms.Name, ms.Description)
-			}
-			if ms.Host != "" {
-				fmt.Fprintf(&b, " (hosted on %s)", ms.Host)
-			}
-			b.WriteString("\n")
-		}
-		b.WriteString("Call with server_name to list one server's tools (omitting it searches all servers) and an optional query substring to filter tool names and descriptions. Pass full=true for full descriptions and input schemas — use sparingly, it is verbose.")
+		b.WriteString("Each block reads:\nserver: <server_name> (<count>) — <description>\n- <tool_name>: <description> [requires: <args>; optional: <args>]\nPass server_name and tool_name from a block to CallMCP exactly as written; a tool name may repeat its server's name. Call with server_name to list one server's tools (omitting it searches all servers) and an optional query substring to filter tool names and descriptions. Pass full=true for full descriptions and input schemas — use sparingly, it is verbose.")
 	}
-	h.mu.RUnlock()
 	return llm.Tool{
 		Type: "function",
 		Function: llm.Function{
@@ -145,6 +118,152 @@ func (h *Hub) Run(ctx context.Context, name string, args []byte) (io.ReadCloser,
 	}
 }
 
+// findArgs is a parsed FindMCP call.
+type findArgs struct {
+	ServerName string `json:"server_name"`
+	Query      string `json:"query"`
+	Full       bool   `json:"full"`
+}
+
+// serverView is one server as the listing renders it. Hub-owned and
+// provider-reported servers both flatten into this shape, so findDef and
+// runFind share one renderer and cannot drift apart.
+type serverView struct {
+	name        string
+	description string
+	status      string // "ok", "error", or "pending"
+	err         string
+	host        string // execution host, for provider-reported servers
+	tools       []Tool
+}
+
+// findEntries snapshots the hub's servers and the provider-reported ones in
+// listing order, keeping only serverName when one is given.
+func (h *Hub) findEntries(extra []api.MCPServer, serverName string) []serverView {
+	h.mu.RLock()
+	entries := make([]serverView, 0, len(h.order)+len(extra))
+	for _, name := range h.order {
+		if serverName != "" && name != serverName {
+			continue
+		}
+		s := h.servers[name]
+		status, errMsg := s.Status()
+		entries = append(entries, serverView{
+			name:        name,
+			description: s.Description,
+			status:      status,
+			err:         errMsg,
+			tools:       s.Tools(),
+		})
+	}
+	h.mu.RUnlock()
+	for _, ms := range extra {
+		if serverName != "" && ms.Name != serverName {
+			continue
+		}
+		status := ms.Status
+		if status == "" {
+			status = "ok"
+		}
+		entries = append(entries, serverView{
+			name:        ms.Name,
+			description: ms.Description,
+			status:      status,
+			err:         ms.Error,
+			host:        ms.Host,
+			tools:       providerTools(ms.Tools),
+		})
+	}
+	return entries
+}
+
+// providerTools converts provider-reported tools to the hub's Tool shape, so
+// both sources render through one path.
+func providerTools(in []api.MCPTool) []Tool {
+	out := make([]Tool, len(in))
+	for i, t := range in {
+		out[i] = Tool{Name: t.Name, Description: t.Description, InputSchema: t.InputSchema}
+	}
+	return out
+}
+
+// header renders the line that opens a server's block. The fixed "server:"
+// label keeps it distinct from the "- " tool lines below it, even when a tool
+// name repeats the server's name.
+func (e serverView) header() string {
+	var b strings.Builder
+	switch e.status {
+	case "ok":
+		fmt.Fprintf(&b, "server: %s (%s)", e.name, plural(len(e.tools), "tool", "tools"))
+	case "error":
+		fmt.Fprintf(&b, "server: %s (error: %s)", e.name, e.err)
+	default:
+		fmt.Fprintf(&b, "server: %s (pending)", e.name)
+	}
+	if e.host != "" {
+		fmt.Fprintf(&b, " — hosted on %s", e.host)
+	}
+	if e.description != "" {
+		fmt.Fprintf(&b, " — %s", e.description)
+	}
+	return b.String()
+}
+
+// plural renders "1 tool" or "5 tools" (and the same for any noun pair), so
+// counts in the listing read as English.
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return "1 " + one
+	}
+	return fmt.Sprintf("%d %s", n, many)
+}
+
+// writeServer writes one server's block: the header, a line per matching tool,
+// then a note when the per-call limit hid some. It returns how many tools
+// matched the query, so a caller can drop a block that has nothing to show.
+func writeServer(b *strings.Builder, e serverView, in findArgs) int {
+	b.WriteString(e.header())
+	b.WriteByte('\n')
+	query := strings.ToLower(in.Query)
+	limit := findSnippetMaxTools
+	if in.Full {
+		limit = findFullMax
+	}
+	matched, shown := 0, 0
+	for _, t := range e.tools {
+		if query != "" && !strings.Contains(strings.ToLower(t.Name), query) && !strings.Contains(strings.ToLower(t.Description), query) {
+			continue
+		}
+		matched++
+		if matched > limit {
+			continue
+		}
+		shown++
+		if in.Full {
+			fmt.Fprintf(b, "- %s: %s\n", t.Name, t.Description)
+			if len(t.InputSchema) > 0 {
+				schema, _ := json.Marshal(t.InputSchema)
+				fmt.Fprintf(b, "  inputSchema: %s\n", schema)
+			}
+			continue
+		}
+		fmt.Fprintf(b, "- %s: %s", t.Name, snippet(t.Description))
+		if hint := argsHint(t.InputSchema); hint != "" {
+			fmt.Fprintf(b, " [%s]", hint)
+		}
+		b.WriteByte('\n')
+	}
+	switch {
+	case matched == 0:
+		b.WriteString("  (no matching tools)\n")
+	case matched > shown && in.Full:
+		fmt.Fprintf(b, "  ... and %d more (narrow the search or query for a specific tool)\n", matched-shown)
+	case matched > shown:
+		fmt.Fprintf(b, "  ... and %d more (narrow the search)\n", matched-shown)
+	}
+	return matched
+}
+
 // runFind renders the FindMCP listing for the hub's own servers plus extra
 // (host-provided) servers, honoring server_name/query/full across both.
 func (h *Hub) runFind(ctx context.Context, args []byte, extra []api.MCPServer) (io.ReadCloser, error) {
@@ -152,128 +271,44 @@ func (h *Hub) runFind(ctx context.Context, args []byte, extra []api.MCPServer) (
 	// gets one lazy retry here, so `porter mcp login` after startup takes
 	// effect without a restart.
 	h.refreshErrored(ctx)
-	var in struct {
-		ServerName string `json:"server_name"`
-		Query      string `json:"query"`
-		Full       bool   `json:"full"`
-	}
+	var in findArgs
 	if err := json.Unmarshal(args, &in); err != nil {
 		return nil, fmt.Errorf("parse FindMCP arguments: %w", err)
 	}
 
-	h.mu.RLock()
-	servers := make([]*Server, 0, len(h.servers))
-	for _, name := range h.order {
-		if in.ServerName != "" && name != in.ServerName {
-			continue
-		}
-		servers = append(servers, h.servers[name])
-	}
-	h.mu.RUnlock()
-
-	remotes := extra[:0:0] // copy so filtering below does not mutate the caller's slice
-	for _, ms := range extra {
-		if in.ServerName != "" && ms.Name != in.ServerName {
-			continue
-		}
-		remotes = append(remotes, ms)
-	}
-
-	if len(servers) == 0 && len(remotes) == 0 {
+	entries := h.findEntries(extra, in.ServerName)
+	if len(entries) == 0 {
 		if in.ServerName != "" {
 			return nil, fmt.Errorf("unknown MCP server %q (see the FindMCP description for configured servers)", in.ServerName)
 		}
 		return newResultStream("No MCP servers are configured."), nil
 	}
 
-	query := strings.ToLower(in.Query)
 	var b strings.Builder
-	for _, s := range servers {
-		status, errMsg := s.Status()
-		switch status {
-		case "ok":
-			fmt.Fprintf(&b, "server %s (%d tools): %s\n", s.Name, len(s.Tools()), s.Description)
-		case "error":
-			fmt.Fprintf(&b, "server %s (error: %s): %s\n", s.Name, errMsg, s.Description)
-		default:
-			fmt.Fprintf(&b, "server %s (pending): %s\n", s.Name, s.Description)
+	wrote, hidden := 0, 0
+	for _, e := range entries {
+		var block strings.Builder
+		matched := writeServer(&block, e, in)
+		// A query that matches nothing in a healthy server hides the whole
+		// block: a page of empty headers says less than one count at the end.
+		// A server that failed to load always shows, so its error stays
+		// visible, and a server the caller named always shows, so the answer
+		// is not a silence.
+		if in.Query != "" && in.ServerName == "" && matched == 0 && e.status == "ok" {
+			hidden++
+			continue
 		}
-		matched := 0
-		for _, t := range s.Tools() {
-			if query != "" && !strings.Contains(strings.ToLower(t.Name), query) && !strings.Contains(strings.ToLower(t.Description), query) {
-				continue
-			}
-			matched++
-			switch {
-			case in.Full && matched <= findFullMax:
-				fmt.Fprintf(&b, "  %s: %s\n", t.Name, t.Description)
-				if len(t.InputSchema) > 0 {
-					schema, _ := json.Marshal(t.InputSchema)
-					fmt.Fprintf(&b, "    inputSchema: %s\n", schema)
-				}
-			case !in.Full && matched <= findSnippetMaxTools:
-				fmt.Fprintf(&b, "  %s: %s", t.Name, snippet(t.Description))
-				if hint := argsHint(t.InputSchema); hint != "" {
-					fmt.Fprintf(&b, " [%s]", hint)
-				}
-				fmt.Fprintf(&b, "\n")
-			}
+		if wrote > 0 {
+			b.WriteByte('\n')
 		}
-		switch {
-		case matched == 0:
-			b.WriteString("  (no matching tools)\n")
-		case in.Full && matched > findFullMax:
-			fmt.Fprintf(&b, "  ... and %d more (narrow the search or query for a specific tool)\n", matched-findFullMax)
-		case !in.Full && matched > findSnippetMaxTools:
-			fmt.Fprintf(&b, "  ... and %d more (narrow the search)\n", matched-findSnippetMaxTools)
-		}
+		b.WriteString(block.String())
+		wrote++
 	}
-	for _, ms := range remotes {
-		status := ms.Status
-		if status == "" {
-			status = "ok"
-		}
-		switch status {
-		case "ok":
-			fmt.Fprintf(&b, "server %s (%d tools): %s", ms.Name, len(ms.Tools), ms.Description)
-		case "error":
-			fmt.Fprintf(&b, "server %s (error: %s): %s", ms.Name, ms.Error, ms.Description)
-		default:
-			fmt.Fprintf(&b, "server %s (pending): %s", ms.Name, ms.Description)
-		}
-		if ms.Host != "" {
-			fmt.Fprintf(&b, " (hosted on %s)", ms.Host)
-		}
-		b.WriteString("\n")
-		matched := 0
-		for _, t := range ms.Tools {
-			if query != "" && !strings.Contains(strings.ToLower(t.Name), query) && !strings.Contains(strings.ToLower(t.Description), query) {
-				continue
-			}
-			matched++
-			switch {
-			case in.Full && matched <= findFullMax:
-				fmt.Fprintf(&b, "  %s: %s\n", t.Name, t.Description)
-				if len(t.InputSchema) > 0 {
-					schema, _ := json.Marshal(t.InputSchema)
-					fmt.Fprintf(&b, "    inputSchema: %s\n", schema)
-				}
-			case !in.Full && matched <= findSnippetMaxTools:
-				fmt.Fprintf(&b, "  %s: %s", t.Name, snippet(t.Description))
-				if hint := argsHint(t.InputSchema); hint != "" {
-					fmt.Fprintf(&b, " [%s]", hint)
-				}
-				fmt.Fprintf(&b, "\n")
-			}
-		}
-		switch {
-		case matched == 0:
-			b.WriteString("  (no matching tools)\n")
-		case in.Full && matched > findFullMax:
-			fmt.Fprintf(&b, "  ... and %d more (narrow the search or query for a specific tool)\n", matched-findFullMax)
-		case !in.Full && matched > findSnippetMaxTools:
-			fmt.Fprintf(&b, "  ... and %d more (narrow the search)\n", matched-findSnippetMaxTools)
-		}
+	switch {
+	case wrote == 0:
+		fmt.Fprintf(&b, "No tools matched %q in %s. Leave query out to list every tool.\n", in.Query, plural(len(entries), "server", "servers"))
+	case hidden > 0:
+		fmt.Fprintf(&b, "\n%s had no matching tools.\n", plural(hidden, "other server", "other servers"))
 	}
 	return newResultStream(b.String()), nil
 }

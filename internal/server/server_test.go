@@ -3302,7 +3302,7 @@ func TestMCPTurn(t *testing.T) {
 	if len(toolResults) != 2 {
 		t.Fatalf("tool results = %d, want 2: %v", len(toolResults), toolResults)
 	}
-	if !strings.Contains(toolResults[0], "server mock (1 tools)") || !strings.Contains(toolResults[0], "echo: Echo text back") {
+	if !strings.Contains(toolResults[0], "server: mock (1 tool)") || !strings.Contains(toolResults[0], "- echo: Echo text back") {
 		t.Errorf("FindMCP result = %q", toolResults[0])
 	}
 	if toolResults[1] != "echo: hi" {
