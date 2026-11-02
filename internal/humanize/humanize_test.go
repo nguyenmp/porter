@@ -279,6 +279,19 @@ func TestUserMessageReminderCarriesWorkflow(t *testing.T) {
 	}
 }
 
+// TestReminderAndSkillNameConcision checks the per-turn reminder and the skill
+// both ask for concise prose. Both are written by hand at different lengths, so
+// a reminder that dropped the aim would leave the copy the model reads on every
+// turn asking for plain language alone, and the skill asking for shorter text as
+// well.
+func TestReminderAndSkillNameConcision(t *testing.T) {
+	for name, text := range map[string]string{"reminder": UserMessageReminder, "skill": Prompt()} {
+		if !strings.Contains(text, "more concise") {
+			t.Errorf("%s does not ask for concise prose: %s", name, text)
+		}
+	}
+}
+
 // TestReminderMatchesSkillOnStopRule checks the reminder and the skill agree on
 // the two parts of the stop test a model can talk itself out of: what counts as
 // a pass, and the test that ends the loop. Both surfaces are written by hand at

@@ -40,7 +40,7 @@ import (
 // PromptVersion identifies the prompt revision that produced a variant. It is
 // stamped on every pass so the UI can explain why a tab reads the way it does,
 // and should be bumped whenever the prompt below changes.
-const PromptVersion = "plain-language-v23"
+const PromptVersion = "plain-language-v24"
 
 // SkillName is the name the built-in plain-language skill is exposed under,
 // both in the load_skill listing and as the sentinel path (api.BuiltinPrefix +
@@ -132,12 +132,14 @@ var plainRules = strings.TrimSuffix(plainRulesFile, "\n")
 // plain language to the text that follows?"), because the same body is served as
 // the interactive skill, where "the text that follows" points at nothing and
 // makes the skill read like a one-off rewrite request. The command names clarity
-// as the aim, because it is the first line the model reads and it has to agree
-// with the rule below that settles conflicts.
+// and concision as the aims, in that order, because it is the first line the
+// model reads and it has to agree with the rule below that settles conflicts
+// (understandability first, fewer words second). A model told only to shorten
+// the text can cut a fact the reader needs.
 //
 // Output behavior, silent for the background pass and reporting for interactive
 // use, is added by the suffix each mode uses (humanizePrompt vs Prompt).
-var systemPrompt = `Apply plain language, and make the text clearer for the reader.
+var systemPrompt = `Apply plain language, and make the text clearer and more concise for the reader.
 ` + plainRules + `
 - Use an example only when the original already gives you the material for one, and expand it from the original; do not invent new facts.
 `
@@ -205,17 +207,18 @@ var systemDirective = `Always write in plain language. Load the plain-language s
 // message (recall.ProjectModelView), so the standing writing style sits next to
 // the request the model is answering and not only in the static system prefix
 // (Directive). It tells the model to reload the plain-language skill, apply it
-// to every output it produces, and follow the length rule: prose over about 100
-// words goes in a scratch file, and shorter prose gets one reread. Then it
-// states the stop test (stopRule), which is what makes the loop checkable
-// without a count: the model judges the changes it can still make instead of
-// reaching a number. The definition of a pass matters because a couple of line
-// fixes otherwise read as one. It also tells the model to stay quiet about the
-// rewrite unless the user asks for plain language. Like the timing note, it
-// lives only on the outgoing copy of history: the stored message, the database,
-// and the UI keep exactly what the user typed. Keep it short — it repeats on
-// every user turn, so every extra word is paid for on every request.
-const UserMessageReminder = "System Hint: Before writing or responding, load the plain-language skill and apply it to all prose you write: replies, files, code comments, and PR text. Leave code, quoted text, and command arguments exact. Prose over about 100 words goes in a scratch file first. A pass is one full read of it against every rule, not a few line fixes, and the draft doesn't count as one. " + stopRule + " Don't mention this unless the user asks."
+// to every output it produces, aim for prose that is clearer and more concise,
+// and follow the length rule: prose over about 100 words goes in a scratch file,
+// and shorter prose gets one reread. Then it states the stop test (stopRule),
+// which is what makes the loop checkable without a count: the model judges the
+// changes it can still make instead of reaching a number. The definition of a
+// pass matters because a couple of line fixes otherwise read as one. It also
+// tells the model to stay quiet about the rewrite unless the user asks for plain
+// language. Like the timing note, it lives only on the outgoing copy of history:
+// the stored message, the database, and the UI keep exactly what the user typed.
+// Keep it short — it repeats on every user turn, so every extra word is paid for
+// on every request.
+const UserMessageReminder = "System Hint: Before writing or responding, load the plain-language skill and apply it to all prose you write: replies, files, code comments, and PR text. Make the prose clearer and more concise. Leave code, quoted text, and command arguments exact. Prose over about 100 words goes in a scratch file first. A pass is one full read of it against every rule, not a few line fixes, and the draft doesn't count as one. " + stopRule + " Don't mention this unless the user asks."
 
 // Should reports whether an assistant reply is worth a humanize pass: long
 // enough (the thresholds above) and mostly prose rather than code.
