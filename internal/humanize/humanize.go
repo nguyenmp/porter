@@ -185,13 +185,14 @@ Length decides the workflow. Under about 100 words, reread the text once against
 `
 
 // Directive returns the standing writing-style instruction the agent injects
-// into every model request: a short pointer to the built-in plain-language
-// skill. It tells the model to load the skill and thoroughly apply its rules to
-// everything it writes — replies to the user, drafted reports and documents,
-// and comments on code — so assistant output is written plainly the first
-// time. The rules themselves live in one copy (plain_rules.md, served as the
-// skill body), so this instruction stays lean and the skill, the background
-// pass, and this directive can never disagree about a rule.
+// into every model request: a one-line call to be concise, then a short pointer
+// to the built-in plain-language skill. It tells the model to load the skill and
+// thoroughly apply its rules to everything it writes — replies to the user,
+// drafted reports and documents, and comments on code — so assistant output is
+// written plainly the first time. The rules themselves live in one copy
+// (plain_rules.md, served as the skill body), so this instruction stays lean and
+// the skill, the background pass, and this directive can never disagree about a
+// rule.
 func Directive() string { return systemDirective }
 
 // systemDirective is the text Directive returns: a lean, always-on pointer to
@@ -200,7 +201,12 @@ func Directive() string { return systemDirective }
 // the background pass (humanizePrompt); the directive only tells the model to
 // load that skill. Keeping the rules out of the standing prefix keeps it
 // small, and the one-copy rule base keeps every mode on the same page.
-var systemDirective = `Always write in plain language. Load the plain-language skill and thoroughly apply its rules to everything you write: replies to the user, reports and documents you draft, code comments you write or edit, web pages you build, UI text you write, and documentation you create. Replies go to a working developer, so keep the technical terms they already know and define each term they might not, the first time it appears.
+//
+// The first two sentences are the aims, in plain words: write plainly, and be
+// concise. The skill's rules carry the detail behind both, but a standing
+// instruction that states them up front is what a model follows when it never
+// loads the skill, so concision is asked for here as well as there.
+var systemDirective = `Always write in plain language. Be concise. Load the plain-language skill and thoroughly apply its rules to everything you write: replies to the user, reports and documents you draft, code comments you write or edit, web pages you build, UI text you write, and documentation you create. Replies go to a working developer, so keep the technical terms they already know and define each term they might not, the first time it appears.
 `
 
 // UserMessageReminder is the reminder the model view appends to every user

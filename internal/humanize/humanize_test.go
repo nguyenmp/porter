@@ -151,6 +151,20 @@ func TestDirectiveNamesSurfaces(t *testing.T) {
 	}
 }
 
+// TestDirectiveAsksForConcision checks the standing style asks for concision in
+// as many words, and asks for it before it points at the skill: a model that
+// never loads the skill still gets the instruction.
+func TestDirectiveAsksForConcision(t *testing.T) {
+	d := Directive()
+	at := strings.Index(d, "Be concise.")
+	if at < 0 {
+		t.Fatalf("directive does not say \"Be concise.\":\n%s", d)
+	}
+	if skill := strings.Index(d, "Load the plain-language skill"); skill >= 0 && at > skill {
+		t.Errorf("the concision call comes after the skill pointer:\n%s", d)
+	}
+}
+
 // TestPlainRulesEmbedded covers the embedded rule body and the way the two
 // rule-carrying prompts (the skill and the background pass) join it: the rules
 // must load from plain_rules.md (so that file is the one copy a reader can
