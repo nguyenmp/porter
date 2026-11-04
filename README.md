@@ -69,6 +69,15 @@ I can also use the server as my execution environment in case my laptop is unava
   and handoff summary guidance (`internal/handoff`: write the summary for the
   person who picks the work up next, in plain language, covering what the work
   was, where it stands, where it lives, the next step, and the traps).
+- Project instruction files ride along with the file tools. Reading or editing
+  a file with `read_with_line_numbers`, `line_insert`, `line_replace`, or
+  `string_replace` appends the `AGENTS.md` and `CLAUDE.md` files from that
+  file's directory up to the working directory (`internal/projectdoc`), widest
+  scope first. Each file is appended once per session, so a repo's conventions
+  arrive with the first file read there and don't repeat. The block is labelled
+  as coming from the repository rather than from the user: a repo can state its
+  build steps and its house style, but it cannot pass for the operator. `shell`
+  is not hooked, because its argument is a program, not a path.
 - CLI tools the provider declares available ride along the environment: a
   curated manifest at `~/.porter/clis.json` (`{"clis": {"gt": "Graphite stack
   management (submit, split, restack, up/down)"}}`) lists what the model can
@@ -334,17 +343,19 @@ of failing obscurely.
 
 Porter writes in plain language by default. Every model request leads with a
 short standing writing-style directive — hard-coded in `internal/humanize`
-(`Directive()`) — that tells the agent to load the built-in `plain-language`
-skill and apply its rules to everything it writes, so replies are written
-plainly the first time instead of only being cleaned up afterwards. The rules
-themselves live in one copy, `internal/humanize/plain_rules.md`, served as the
-skill body, so the directive stays lean and the skill can never drift from the
-rules. The directive names the surfaces it governs: replies to the user,
-reports and other documents the agent drafts, and comments on code it writes or
-edits. It is audience-aware rather than patronizing: replies go to you, a
-working developer, so technical terms you already know stay as-is and
-undefined, while text drafted for other readers keeps the terms that audience
-needs and defines them the first time each appears.
+(`Directive()`) — that tells the agent to be concise and to load the built-in
+`plain-language` skill and apply its rules to everything it writes, so replies
+are written plainly the first time instead of only being cleaned up afterwards.
+The concision call comes first and stands on its own, so a model that never
+loads the skill still gets it. The rules themselves live in one copy,
+`internal/humanize/plain_rules.md`, served as the skill body, so the directive
+stays lean and the skill can never drift from the rules. The directive names
+the surfaces it governs: replies to the user, reports and other documents the
+agent drafts, and comments on code it writes or edits. It is audience-aware
+rather than patronizing: replies go to you, a working developer, so technical
+terms you already know stay as-is and undefined, while text drafted for other
+readers keeps the terms that audience needs and defines them the first time
+each appears.
 
 The style also rides on the conversation itself. The model view appends a
 short reminder (`UserMessageReminder`, also in `internal/humanize`) to every

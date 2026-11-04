@@ -22,6 +22,7 @@ import (
 	"porter/internal/handoff"
 	"porter/internal/humanize"
 	"porter/internal/llm"
+	"porter/internal/projectdoc"
 	"porter/internal/remoteedit"
 )
 
@@ -148,6 +149,14 @@ type Provider interface {
 type Dispatcher struct {
 	mu     sync.RWMutex
 	skills map[string]api.Skill
+
+	// docsSeen holds the project instruction files already appended to a tool
+	// result, so a session reads each one once however many files it opens in
+	// that repo. One dispatcher serves one session (the local provider and each
+	// execution host build theirs per session), so the map lives as long as the
+	// session's context does.
+	docsMu   sync.Mutex
+	docsSeen map[string]bool
 }
 
 // NewDispatcher returns a dispatcher with no skills (shell only).
@@ -208,6 +217,15 @@ func (d *Dispatcher) Run(ctx context.Context, name string, args []byte) (io.Read
 // the host has its own directory). An empty dir runs in the process's working
 // directory, like Run.
 func (d *Dispatcher) RunDir(ctx context.Context, name string, args []byte, dir string) (io.ReadCloser, error) {
+	out, err := d.run(ctx, name, args, dir)
+	if err != nil {
+		return nil, err
+	}
+	return d.withProjectDocs(name, args, dir, out), nil
+}
+
+// run executes the named tool and returns its output unchanged.
+func (d *Dispatcher) run(ctx context.Context, name string, args []byte, dir string) (io.ReadCloser, error) {
 	switch name {
 	case "shell":
 		return runShellDir(ctx, args, dir)
@@ -228,6 +246,78 @@ func (d *Dispatcher) RunDir(ctx context.Context, name string, args []byte, dir s
 	default:
 		return nil, fmt.Errorf("unknown tool: %q", name)
 	}
+}
+
+// withProjectDocs appends the project instructions that govern the file a file
+// tool just opened — the AGENTS.md and CLAUDE.md files from that file's
+// directory up to the working directory — so the model reads a repo's
+// conventions alongside the first file it reads in that part of the tree.
+// projectdoc.Message labels the block as repository instructions rather than
+// user instructions, so the model can tell who is talking.
+//
+// A tool that is not a file tool passes through untouched, as does a file with
+// no docs or one whose docs were already appended, so the common read stays a
+// straight stream with no buffering.
+func (d *Dispatcher) withProjectDocs(name string, args []byte, dir string, out io.ReadCloser) io.ReadCloser {
+	path, ok := fileToolPath(name, args)
+	if !ok {
+		return out
+	}
+	abs, err := resolveEditPath(dir, path)
+	if err != nil {
+		return out
+	}
+	root := dir
+	if root == "" {
+		root, _ = os.Getwd()
+	}
+	block := projectdoc.Message(d.claimDocs(projectdoc.Find(abs, root), abs))
+	if block == "" {
+		return out
+	}
+	// The file tools build their output in memory, so buffering it here costs
+	// nothing and the docs can land after it.
+	body, _ := io.ReadAll(out)
+	_ = out.Close()
+	return &stringStream{strings.NewReader(string(body) + block)}
+}
+
+// claimDocs keeps the docs this dispatcher has not appended yet and records
+// them as appended, so a session reads each instruction file once. A read of an
+// instruction file itself never appends that file.
+func (d *Dispatcher) claimDocs(docs []projectdoc.Doc, readPath string) []projectdoc.Doc {
+	d.docsMu.Lock()
+	defer d.docsMu.Unlock()
+	fresh := make([]projectdoc.Doc, 0, len(docs))
+	for _, doc := range docs {
+		if doc.Path == readPath || d.docsSeen[doc.Path] {
+			continue
+		}
+		if d.docsSeen == nil {
+			d.docsSeen = make(map[string]bool, len(docs))
+		}
+		d.docsSeen[doc.Path] = true
+		fresh = append(fresh, doc)
+	}
+	return fresh
+}
+
+// fileToolPath returns the path a file tool call works on. The read tool and
+// the three edit tools all name their file, and each reads it before it
+// answers. shell is left out: its argument is a program, not a path.
+func fileToolPath(name string, args []byte) (string, bool) {
+	switch name {
+	case ReadLinesTool, LineInsertTool, LineReplaceTool, StringReplace:
+	default:
+		return "", false
+	}
+	var in struct {
+		Path string `json:"path"`
+	}
+	if err := json.Unmarshal(args, &in); err != nil || strings.TrimSpace(in.Path) == "" {
+		return "", false
+	}
+	return in.Path, true
 }
 
 // runLoadSkill returns a skill's body as a stream (with the conventional
