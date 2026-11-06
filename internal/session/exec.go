@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"strings"
 
 	"porter/internal/api"
@@ -508,7 +509,11 @@ func (s *Session) publishStatus() {
 }
 
 // ExecResult pipes a client's streamed output into the in-flight call's writer,
-// completing the agent's ReadAll.
+// completing the agent's ReadAll. A body that ends early — the connection
+// dropped, or a proxy reaped the upload for sitting silent past its idle
+// timeout — reaches the agent as an error, never as a clean end of stream: the
+// model reads the result as cut off instead of taking a partial or empty
+// result for the whole answer.
 func (s *Session) ExecResult(callID string, body io.Reader) error {
 	s.mu.Lock()
 	call, ok := s.execCalls[callID]
@@ -518,8 +523,17 @@ func (s *Session) ExecResult(callID string, body io.Reader) error {
 		return fmt.Errorf("unknown exec call %q", callID)
 	}
 	_, err := io.Copy(call.pw, body)
+	if err != nil {
+		// Name the loss in the agent's words, not the transport's: the model
+		// must know the output is incomplete and that the command may still have
+		// run. The transport cause stays in parentheses, and the log.
+		err = fmt.Errorf("the output stream was cut off before the command finished (%v); the command may have kept running, so check the working directory before you retry", err)
+		log.Printf("exec call %s: %v", callID, err)
+		_ = call.pw.CloseWithError(err)
+		return err
+	}
 	_ = call.pw.Close()
-	return err
+	return nil
 }
 
 // dropCall removes an in-flight call and closes its pipe with err.
