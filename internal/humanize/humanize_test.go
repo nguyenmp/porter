@@ -214,7 +214,7 @@ func TestCiteRuleInRulesBody(t *testing.T) {
 // name in the body with its link parked in a footer makes the reader match the
 // two up, which is the work the link was meant to save.
 func TestLinkPlacementRule(t *testing.T) {
-	const want = "Link each source in the sentence that uses it"
+	const want = "Link each source in the sentence it backs"
 	if !strings.Contains(plainRules, want) {
 		t.Fatalf("plain_rules.md is missing the link placement rule:\n%s", plainRules)
 	}
