@@ -43,6 +43,7 @@ These rules steer the edit:
 ## Links
 - Hyperlink any tool, library, standard, project, product, company, person, or source the reader might not know. Link only to addresses you know.
 - Cite your sources. When a fact or quote comes from somewhere else, say where, so the reader can check it, and link the web source when you know its address. Skip this for common knowledge and for your own reasoning. Never make up a source.
+- Link each source in the sentence that uses it. Add a list at the end only for a source several sentences depend on, or to repeat a linked source with its full title and date.
 - Write link text that says where the link leads, in place of "click here" or "read more". The text is a promise about the page behind it, so make the name match that page and be more specific rather than less. Add a short description when the link needs clarification. A screen reader user who moves through the page by its links gets the same promise.
 
 ## Emphasis

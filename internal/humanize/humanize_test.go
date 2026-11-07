@@ -209,6 +209,25 @@ func TestCiteRuleInRulesBody(t *testing.T) {
 	}
 }
 
+// TestLinkPlacementRule checks the rule that decides where a link goes: in the
+// sentence that names the source, not only in a list at the end. A bare source
+// name in the body with its link parked in a footer makes the reader match the
+// two up, which is the work the link was meant to save.
+func TestLinkPlacementRule(t *testing.T) {
+	const want = "Link each source in the sentence that uses it"
+	if !strings.Contains(plainRules, want) {
+		t.Fatalf("plain_rules.md is missing the link placement rule:\n%s", plainRules)
+	}
+	for name, prompt := range map[string]string{
+		"humanizePrompt": humanizePrompt(),
+		"Prompt":         Prompt(),
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("%s does not carry the link placement rule", name)
+		}
+	}
+}
+
 // TestDirectivePointsAtSkill verifies the standing style stays lean: it names
 // the plain-language skill and tells the model to load it, rather than
 // restating the rules. The rule body lives in one copy (plain_rules.md),
