@@ -1,15 +1,15 @@
-Plain language means an average reader of the intended audience understands the text on the first read. It is simple and direct, not simplistic or patronizing: do not talk down to the reader.
+Plain language means an average reader of the intended audience understands the text on the first read. It is simple and direct, not simplistic or patronizing. Do not talk down to the reader.
 
 When two rules disagree, the one that makes the text clearer for the reader wins. Shorter is a rule of thumb, not the goal.
 
 These rules steer the edit:
 - Spend your effort where a reader notices: the main point, the structure, a sentence the reader has to reread. Do the structure first, because a later restructure may cut the sentences you already polished. Leave text that already reads well alone.
-- Prefer fewer words. Aim to cut about a fifth of them, and keep the clearer version even when it runs longer. Keep new text as short as the task allows. Count words, not markup: a list must replace words, not add them.
+- Prefer fewer words. Aim to cut about a fifth of them, and keep the clearer version even when it runs longer. Keep new text as short as the task allows. Count words, not markup. A list must replace words, not add them.
 - Protect the words that carry meaning: the ones that define a term, separate two ideas, or prevent a wrong reading. If you cannot cut a word without losing meaning, leave the text as it is and change only what breaks a rule.
-- Preserve the message. You may reformat, rephrase, and reorganize the text, and you may add a heading, list, or table only where it removes words, but do not change what the original conveys. Keep every fact, name, number, and date as given: do not add, drop, or alter anything in the original. Keep code, URLs, and quoted text exact.
+- Preserve the message. You may reformat, rephrase, and reorganize the text, and you may add a heading, list, or table only where it removes words, but do not change what the original conveys. Keep every fact, name, number, and date as given. Do not add, drop, or alter anything in the original. Keep code, URLs, and quoted text exact.
 
 ## Structure
-- Lead with the main point, in a reply, a report, a web page, or UI text: start with the answer and the top task for the reader, then the reasoning, the exceptions, and the details. Say why it matters to the reader.
+- Lead with the main point, in a reply, a report, a web page, or UI text. Start with the answer and the top task for the reader, then the reasoning, the exceptions, and the details. Say why it matters to the reader.
 - Write as if the reader may leave at any point. The first paragraph must stand alone, because many readers stop there. They spend about 5 seconds deciding whether a page is useful, scan the headings and the first words of each line, and read about 18% of it. Every word must earn its place.
 - Give each chunk a heading that says what it holds. Prefer a question or a specific phrase to a vague noun.
 - Use a list for steps and for parallel items, and introduce it with a sentence every item completes. Put steps in the order they happen.
@@ -28,7 +28,7 @@ These rules steer the edit:
 - Give every pronoun and pointing word (it, this, there) a noun to point at. When it stands for a fact, a claim, or a list, name the thing in words. "Link a source where the sentence uses it" leaves the reader guessing, because both "a source" and "the sentence" fit.
 - Put long conditions and exceptions after the main clause.
 - Say what is true rather than what is not. Flag every sentence that says what something is not, then rewrite it in the positive unless the negation is the point.
-- Count the negatives in a sentence. "Not a labor shortage but jobs that do not pay rent" makes the reader undo two; state the cause, then the fact: "the jobs pay too little to cover rent".
+- Count the negatives in a sentence. "Not a labor shortage but jobs that do not pay rent" makes the reader undo two; state the cause, then the fact, as in "the jobs pay too little to cover rent".
 - Check a paraphrase the same way. Restating someone else's claim is where a negative slips past a fact check, so put the claim in the positive and read it again.
 - Use the same term for the same thing throughout. Repeat it rather than reaching for a synonym to sound varied.
 
@@ -36,7 +36,7 @@ These rules steer the edit:
 - Choose simple, concrete, familiar words. Replace jargon, vague words, and filler with everyday words: load-bearing, survived, rides, nobody, genuinely, outright, owed, rests, asymmetry, died, buys, settles, lever, byte-identical, delve, real.
 - Say what you compare against. "Carries more" leaves the reader to guess more than what.
 - Delete openers and hedges: I think, it's worth noting, as you can see, basically, just, really. They usually add nothing, and the point stands without them. Keep a hedge that marks real uncertainty.
-- Cut whole sentences and clauses first, then trim words: "due to the fact that" becomes "because", "in order to" becomes "to". Do that before you look for a synonym.
+- Cut whole sentences and clauses first, then trim words, as in "due to the fact that" becomes "because", "in order to" becomes "to". Do that before you look for a synonym.
 - The same cut handles "at this point in time" (now) and "is able to" (can).
 - Use must, not shall, for an obligation, must not for a prohibition, may for a choice, and should for a recommendation.
 - Write either, or, or both, as the meaning requires, in place of and/or. Rephrase in place of a slash, as in he/she.
@@ -54,15 +54,15 @@ These rules steer the edit:
 - In a page, use italics for titles and parenthetical notes such as citations, not for emphasis.
 
 ## When the text is a page
-Skip this section for a chat reply: markdown controls neither type nor layout.
-- Design for reading: ragged right, left-aligned margins rather than justified or centered; line spacing a little larger than the font size; a serif font for body text and a sans-serif font for headings; no more than three typefaces.
+Skip this section for a chat reply. Markdown controls neither type nor layout.
+- Design for reading with these settings: ragged right, left-aligned margins rather than justified or centered; line spacing a little larger than the font size; a serif font for body text and a sans-serif font for headings; no more than three typefaces.
 - Make headings bold and left-aligned, in upper and lower case. Use round or square bullets, at most two styles, and numbers only for a sequence. Use shading and borders to accent a chart, not as decoration.
 - When you repurpose print material, cut it by about half and keep only what helps the reader finish a task. The web is a place for action, not narrative.
-- Check the page for clutter before you finish: too many layout devices, odd gaps, and shapes that formed by accident.
+- Check the page for clutter before you finish, such as too many layout devices, odd gaps, and shapes that formed by accident.
 
 ## Review
 - Check your own work one rule at a time, and loop back over all of them again. A change that fixes one problem can introduce another, so keep going until every change left only trades one quality for another. To settle a tradeoff, rank the qualities: understandability first, fewer words second, simplicity third.
 - Before you call a pass done, score the sections above in turn, and quote every violation you still see. Fix what you can fix, and carry the rest as a question.
-- Read your text as if you were the reader. For a page or a longer document, also test it with real users: can they find what they need, understand it, and use it to meet their goals?
-- Run a keyword sweep: search the text for not, no, never, without, less and fewer, then reread every hit and rewrite the ones that make their point only by negation.
+- Read your text as if you were the reader. For a page or a longer document, also test it with real users. Can they find what they need, understand it, and use it to meet their goals?
+- Run a keyword sweep. Search the text for not, no, never, without, less and fewer, then reread every hit and rewrite the ones that make their point only by negation.
 - Keep track of what each read covered, so a sentence you skipped shows up instead of slipping through.
