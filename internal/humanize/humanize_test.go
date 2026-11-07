@@ -446,6 +446,32 @@ func TestNegationRulesInRulesBody(t *testing.T) {
 	}
 }
 
+// TestColonAndPronounRulesInRulesBody checks the newest rules live in the shared
+// rule body, so the skill and the background pass carry them from one copy: a
+// colon has to announce what follows, the items it introduces have to be the same
+// kind, a pronoun has to have a noun to point at, and a comparison has to name
+// what it compares against.
+func TestColonAndPronounRulesInRulesBody(t *testing.T) {
+	for _, want := range []string{
+		"Use a colon only when the words before it say what follows",
+		"Keep every item the same kind",
+		"Give every pronoun and pointing word",
+		"Say what you compare against",
+	} {
+		if !strings.Contains(plainRules, want) {
+			t.Fatalf("plain_rules.md is missing %q:\n%s", want, plainRules)
+		}
+		for name, prompt := range map[string]string{
+			"humanizePrompt": humanizePrompt(),
+			"Prompt":         Prompt(),
+		} {
+			if !strings.Contains(prompt, want) {
+				t.Errorf("%s does not carry %q", name, want)
+			}
+		}
+	}
+}
+
 // TestScorecardRuleInRulesBody checks the scorecard step lives in the shared
 // rule body, next to the loop rule it makes checkable: a writer that has to
 // quote what is left cannot call a text done on a hunch. The step names no

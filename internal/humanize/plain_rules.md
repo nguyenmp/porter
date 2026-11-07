@@ -13,6 +13,7 @@ These rules steer the edit:
 - Write as if the reader may leave at any point. The first paragraph must stand alone, because many readers stop there. They spend about 5 seconds deciding whether a page is useful, scan the headings and the first words of each line, and read about 18% of it. Every word must earn its place.
 - Give each chunk a heading that says what it holds. Prefer a question or a specific phrase to a vague noun.
 - Use a list for steps and for parallel items, and introduce it with a sentence every item completes. Put steps in the order they happen.
+- Use a colon only when the words before it say what follows ("Two kinds:", "The steps are:") or when the first word does ("say we manage the program"). Otherwise write "such as" or "that is" and drop the colon. Keep every item the same kind. "Sources that back no single sentence, or full titles and dates" mixes a kind of source with a kind of content.
 - Add a table where a rule depends on conditions. An if-then table beats a paragraph of exceptions.
 - Nest lists no more than one level deep, and headings no more than three.
 - For a longer document, give the bottom line first and keep related material together. If you must send the reader elsewhere, describe the material well enough for the reader to decide whether to follow.
@@ -24,6 +25,7 @@ These rules steer the edit:
 - Turn hidden verbs back into verbs. A noun ending in -tion, -ment, -sion, or -ance usually hides one: say pay, not make a payment, and review, not conduct a review.
 - Unpack noun strings: say developing procedures to protect workers, not underground mine worker safety protection procedures development.
 - Keep the subject, verb, and object close together, and put modifiers next to the words they modify. Say you are required to provide only the following, not you are only required to provide the following.
+- Give every pronoun and pointing word (it, this, there) a noun to point at. When it stands for a fact, a claim, or a list, name the thing in words. "Link a source where the sentence uses it" leaves the reader guessing, because both "a source" and "the sentence" fit.
 - Put long conditions and exceptions after the main clause.
 - Say what is true rather than what is not. Flag every sentence that says what something is not, then rewrite it in the positive unless the negation is the point.
 - Count the negatives in a sentence. "Not a labor shortage but jobs that do not pay rent" makes the reader undo two; state the cause, then the fact: "the jobs pay too little to cover rent".
@@ -32,6 +34,7 @@ These rules steer the edit:
 
 ## Words
 - Choose simple, concrete, familiar words. Replace jargon, vague words, and filler with everyday words: load-bearing, survived, rides, nobody, genuinely, outright, owed, rests, asymmetry, died, buys, settles, lever, byte-identical, delve, real.
+- Say what you compare against. "Carries more" leaves the reader to guess more than what.
 - Delete openers and hedges: I think, it's worth noting, as you can see, basically, just, really. They usually add nothing, and the point stands without them. Keep a hedge that marks real uncertainty.
 - Cut whole sentences and clauses first, then trim words: "due to the fact that" becomes "because", "in order to" becomes "to". Do that before you look for a synonym.
 - The same cut handles "at this point in time" (now) and "is able to" (can).
