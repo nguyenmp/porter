@@ -514,7 +514,12 @@ func (s *Session) publishStatus() {
 // timeout — reaches the agent as an error, never as a clean end of stream: the
 // model reads the result as cut off instead of taking a partial or empty
 // result for the whole answer.
-func (s *Session) ExecResult(callID string, body io.Reader) error {
+//
+// framed says the body uses api's exec frames, which the client sends so it can
+// fill a quiet command with heartbeats. A client that never saw the framing
+// header on its subscription sends raw output, and raw is what framed=false
+// reads.
+func (s *Session) ExecResult(callID string, body io.Reader, framed bool) error {
 	s.mu.Lock()
 	call, ok := s.execCalls[callID]
 	delete(s.execCalls, callID)
@@ -522,7 +527,12 @@ func (s *Session) ExecResult(callID string, body io.Reader) error {
 	if !ok {
 		return fmt.Errorf("unknown exec call %q", callID)
 	}
-	_, err := io.Copy(call.pw, body)
+	var err error
+	if framed {
+		err = copyFramed(call.pw, body)
+	} else {
+		_, err = io.Copy(call.pw, body)
+	}
 	if err != nil {
 		// Name the loss in the agent's words, not the transport's: the model
 		// must know the output is incomplete and that the command may still have
@@ -537,6 +547,33 @@ func (s *Session) ExecResult(callID string, body io.Reader) error {
 	}
 	_ = call.pw.Close()
 	return nil
+}
+
+// copyFramed copies a framed exec result body to w, dropping heartbeat frames.
+// It returns io.ErrUnexpectedEOF when the body stops partway through a frame, so
+// ExecResult reports the loss the same way it reports a dropped raw stream.
+func copyFramed(w io.Writer, body io.Reader) error {
+	for {
+		kind, payload, err := api.ReadFrame(body)
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		switch kind {
+		case api.FrameHeartbeat:
+			if len(payload) != 0 {
+				return fmt.Errorf("heartbeat frame carries %d bytes", len(payload))
+			}
+		case api.FrameOutput:
+			if _, err := w.Write(payload); err != nil {
+				return err
+			}
+		default:
+			return fmt.Errorf("unknown exec frame kind %q", kind)
+		}
+	}
 }
 
 // dropCall removes an in-flight call and closes its pipe with err.

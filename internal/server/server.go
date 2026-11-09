@@ -978,6 +978,11 @@ func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
 	defer ses.UnregisterExec(id, ch)
 
 	w.Header().Set("Content-Type", "application/x-ndjson")
+	// Advertise the framed exec-result format. A client that sees this may
+	// frame its output upload, which lets it heartbeat through a quiet
+	// command; one that does not keeps sending raw output, and handleExecResult
+	// reads either.
+	w.Header().Set(api.ExecResultFramingHeader, api.ExecResultFramingVersion)
 	w.WriteHeader(http.StatusOK)
 	// Flush the 200 now so the client's ServeExec sees the connection accepted
 	// without waiting for the first tool call to arrive on the stream.
@@ -1158,7 +1163,8 @@ func (s *Server) handleExecResult(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "session not found", http.StatusNotFound)
 		return
 	}
-	if err := ses.ExecResult(chi.URLParam(r, "call_id"), r.Body); err != nil {
+	framed := r.Header.Get(api.ExecResultFramingHeader) == api.ExecResultFramingVersion
+	if err := ses.ExecResult(chi.URLParam(r, "call_id"), r.Body, framed); err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}

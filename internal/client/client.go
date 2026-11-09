@@ -275,6 +275,9 @@ func (c *Client) ServeExec(ctx context.Context, id string, dispatch func(ctx con
 	if resp.StatusCode != http.StatusOK {
 		return c.statusError(resp)
 	}
+	// The server advertises the framed exec-result format here. A server that
+	// does not (an older build) gets raw output, exactly as before.
+	framed := resp.Header.Get(api.ExecResultFramingHeader) != ""
 
 	// running tracks the cancel func of each command started on this
 	// connection, keyed by the server's call id.
@@ -313,13 +316,13 @@ func (c *Client) ServeExec(ctx context.Context, id string, dispatch func(ctx con
 			if err != nil {
 				// Can't start the tool; report it as the result so the agent
 				// sees an error rather than hanging.
-				_ = c.postExecResult(ctx, id, callID, strings.NewReader("error: "+err.Error()))
+				_ = c.postExecResult(ctx, id, callID, strings.NewReader("error: "+err.Error()), framed)
 				return
 			}
 			// Log a failed upload: the server logs its own line for this call,
 			// but that log is on the other machine, and without this one a cut
 			// connection leaves no trace on the side that ran the command.
-			if err := c.postExecResult(ctx, id, callID, stream); err != nil {
+			if err := c.postExecResult(ctx, id, callID, stream, framed); err != nil {
 				log.Printf("exec call %s: uploading output: %v", callID, err)
 			}
 			_ = stream.Close()
@@ -332,10 +335,18 @@ func (c *Client) ServeExec(ctx context.Context, id string, dispatch func(ctx con
 }
 
 // postExecResult streams a tool's output back to the server for a call id.
-func (c *Client) postExecResult(ctx context.Context, id, callID string, body io.Reader) error {
+// When framed, the body carries api's exec frames and a heartbeat fills a quiet
+// command, so a proxy's request-body idle timeout cannot cut the upload.
+func (c *Client) postExecResult(ctx context.Context, id, callID string, body io.Reader, framed bool) error {
+	if framed {
+		body = framedBody(ctx, body)
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.path(api.SessionExecResultPath, id, callID), body)
 	if err != nil {
 		return err
+	}
+	if framed {
+		req.Header.Set(api.ExecResultFramingHeader, api.ExecResultFramingVersion)
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
