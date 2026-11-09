@@ -567,12 +567,25 @@ func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(api.SessionsResponse{Sessions: s.store.List()})
 }
 
+// ssePingInterval is how often a stream with nothing to say writes a comment
+// line, and ssePingComment is that line. A proxy in front of the server cuts a
+// response that stays silent past its write idle timeout (Caddy's default is a
+// minute), which would end the browser's stream in the middle of a quiet turn.
+// A comment line keeps the response moving, and EventSource drops comments
+// before they reach the page, so a ping never shows up in the chat.
+var (
+	ssePingInterval = 20 * time.Second
+	ssePingComment  = []byte(": ping\n\n")
+)
+
 // handleSessionsStream streams a "sessions" event whenever the session list's
 // visible state changes (a turn starts or ends, or a chat is created,
 // archived, unarchived, or renamed), so the web sidebar refreshes live
 // instead of polling. The event carries no data — the client re-reads
 // GET /api/sessions on each one — and the first event is sent on connect so a
 // client that missed a change while disconnected catches up immediately.
+// A ping comment line goes out every ssePingInterval, so a proxy in front of
+// the server does not cut a quiet stream.
 func (s *Server) handleSessionsStream(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -589,10 +602,16 @@ func (s *Server) handleSessionsStream(w http.ResponseWriter, r *http.Request) {
 	if !ping() {
 		return
 	}
+	tick := time.NewTicker(ssePingInterval)
+	defer tick.Stop()
 	for {
 		select {
 		case <-r.Context().Done():
 			return
+		case <-tick.C:
+			if _, err := fw.Write(ssePingComment); err != nil {
+				return
+			}
 		case <-ch:
 			if !ping() {
 				return
@@ -860,7 +879,9 @@ func sseEventLine(env api.Envelope) []byte {
 // handleStream subscribes a client to the session's event bus, replaying from
 // the caller's `since` then streaming live as Server-Sent Events. Each
 // envelope is sent as an SSE event whose event name is the envelope kind and
-// whose data is the JSON-encoded envelope.
+// whose data is the JSON-encoded envelope. A ping comment line goes out every
+// ssePingInterval, so a proxy in front of the server does not cut a stream that
+// has nothing to say.
 func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	ses, ok := s.store.Get(chi.URLParam(r, "id"))
 	if !ok {
@@ -875,10 +896,27 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 
 	fw := flushWriter{w}
-	for env := range ses.From(r.Context(), since) {
-		_, _ = fw.Write(sseEventLine(env))
-		if env.Kind == api.KindResync {
+	events := ses.From(r.Context(), since)
+	tick := time.NewTicker(ssePingInterval)
+	defer tick.Stop()
+	for {
+		select {
+		case <-r.Context().Done():
 			return
+		case <-tick.C:
+			if _, err := fw.Write(ssePingComment); err != nil {
+				return
+			}
+		case env, ok := <-events:
+			if !ok {
+				return
+			}
+			if _, err := fw.Write(sseEventLine(env)); err != nil {
+				return
+			}
+			if env.Kind == api.KindResync {
+				return
+			}
 		}
 	}
 }

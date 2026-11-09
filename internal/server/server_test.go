@@ -4336,3 +4336,47 @@ func TestIndexPageScriptParses(t *testing.T) {
 		t.Errorf("index page carried no inline script; the parser check checked nothing")
 	}
 }
+
+// TestStreamsPingWhileQuiet checks that both SSE handlers write a comment line
+// when they have nothing to say, so a proxy's write idle timeout cannot end a
+// quiet stream in the middle of a turn.
+func TestStreamsPingWhileQuiet(t *testing.T) {
+	old := ssePingInterval
+	ssePingInterval = 10 * time.Millisecond
+	// Registered before the server starts, so it runs after the server's own
+	// cleanup closes every handler: no goroutine reads the var during the
+	// restore.
+	t.Cleanup(func() { ssePingInterval = old })
+
+	srv := newTestServer(t, plainLLM())
+	c := client.New(srv.URL)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	info, err := c.Create(ctx)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	for _, path := range []string{
+		api.SessionsStreamPath,
+		"/api/sessions/" + info.ID + "/stream?since=0",
+	} {
+		resp, err := http.Get(srv.URL + path)
+		if err != nil {
+			t.Fatalf("GET %s: %v", path, err)
+		}
+		br := bufio.NewReader(resp.Body)
+		found := false
+		for !found {
+			line, err := br.ReadString('\n')
+			if err != nil {
+				break
+			}
+			found = strings.TrimRight(line, "\n") == ": ping"
+		}
+		resp.Body.Close()
+		if !found {
+			t.Errorf("%s: stream ended without a ping comment line", path)
+		}
+	}
+}
