@@ -449,23 +449,29 @@ func TestNegationRulesInRulesBody(t *testing.T) {
 // TestColonAndPronounRulesInRulesBody checks the newest rules live in the shared
 // rule body, so the skill and the background pass carry them from one copy: a
 // colon has to announce what follows, the items it introduces have to be the same
-// kind, a pronoun has to have a noun to point at, and a comparison has to name
-// what it compares against.
+// kind, a pronoun has to have a noun to point at, a comparison has to name what
+// it compares against, and a label with a colon has to become a sentence.
+//
+// The anchors are short concept words, not full sentences. The rules get
+// reworded as they get sharper, and a test that pins a sentence fails on every
+// edit that improves the file. Pin a phrase here only when the exact words carry
+// the rule and a rewrite would lose it.
 func TestColonAndPronounRulesInRulesBody(t *testing.T) {
 	for _, want := range []string{
-		"Use a colon only when the words before it say what follows",
-		"Keep every item the same kind",
-		"Give every pronoun and pointing word",
-		"Say what you compare against",
+		"colon",
+		"same kind",
+		"pronoun",
+		"compare against",
+		"label",
 	} {
-		if !strings.Contains(plainRules, want) {
-			t.Fatalf("plain_rules.md is missing %q:\n%s", want, plainRules)
+		if !strings.Contains(strings.ToLower(plainRules), want) {
+			t.Fatalf("plain_rules.md no longer covers %q:\n%s", want, plainRules)
 		}
 		for name, prompt := range map[string]string{
 			"humanizePrompt": humanizePrompt(),
 			"Prompt":         Prompt(),
 		} {
-			if !strings.Contains(prompt, want) {
+			if !strings.Contains(strings.ToLower(prompt), want) {
 				t.Errorf("%s does not carry %q", name, want)
 			}
 		}

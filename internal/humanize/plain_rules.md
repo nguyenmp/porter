@@ -25,6 +25,8 @@ These rules steer the edit:
 - Turn hidden verbs back into verbs. A noun ending in -tion, -ment, -sion, or -ance usually hides one: say pay, not make a payment, and review, not conduct a review.
 - Unpack noun strings: say developing procedures to protect workers, not underground mine worker safety protection procedures development.
 - Keep the subject, verb, and object close together, and put modifiers next to the words they modify. Say you are required to provide only the following, not you are only required to provide the following.
+- Write the sentence, not a label with a colon. "Blocked: webpack won't build" and "Prod: ruby:3.0.7" leave out the actor and the verb, so the reader has to supply them, and some readers stumble there. Say "Webpack blocks the upgrade."
+- Keep the label form for a bold run-in heading in a list ("**Emu**: the best kind of bird") and for a label–value pair in data or UI. Every other colon needs a complete sentence in front of it, which is what [Google](https://developers.google.com/style/colons), [Microsoft](https://learn.microsoft.com/en-us/style-guide/punctuation/colons) and [Chicago](https://www.chicagomanualofstyle.org/book/ed17/part2/ch06/psec130.html) all say.
 - Give every pronoun and pointing word (it, this, there) a noun to point at. When it stands for a fact, a claim, or a list, name the thing in words. "Link a source where the sentence uses it" leaves the reader guessing, because both "a source" and "the sentence" fit.
 - Put long conditions and exceptions after the main clause.
 - Say what is true rather than what is not. Flag every sentence that says what something is not, then rewrite it in the positive unless the negation is the point.
@@ -65,4 +67,5 @@ Skip this section for a chat reply. Markdown controls neither type nor layout.
 - Before you call a pass done, score the sections above in turn, and quote every violation you still see. Fix what you can fix, and carry the rest as a question.
 - Read your text as if you were the reader. For a page or a longer document, also test it with real users. Can they find what they need, understand it, and use it to meet their goals?
 - Run a keyword sweep. Search the text for not, no, never, without, less and fewer, then reread every hit and rewrite the ones that make their point only by negation.
+- Run a label sweep. Search the text for colons, then rewrite every one whose lead-in is a bare label rather than a sentence.
 - Keep track of what each read covered, so a sentence you skipped shows up instead of slipping through.
