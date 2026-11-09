@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -315,7 +316,12 @@ func (c *Client) ServeExec(ctx context.Context, id string, dispatch func(ctx con
 				_ = c.postExecResult(ctx, id, callID, strings.NewReader("error: "+err.Error()))
 				return
 			}
-			_ = c.postExecResult(ctx, id, callID, stream)
+			// Log a failed upload: the server logs its own line for this call,
+			// but that log is on the other machine, and without this one a cut
+			// connection leaves no trace on the side that ran the command.
+			if err := c.postExecResult(ctx, id, callID, stream); err != nil {
+				log.Printf("exec call %s: uploading output: %v", callID, err)
+			}
 			_ = stream.Close()
 		}(er.CallID, er.Name, er.Arguments)
 	}

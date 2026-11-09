@@ -528,7 +528,10 @@ func (s *Session) ExecResult(callID string, body io.Reader) error {
 		// must know the output is incomplete and that the command may still have
 		// run. The transport cause stays in parentheses, and the log.
 		err = fmt.Errorf("the output stream was cut off before the command finished (%v); the command may have kept running, so check the working directory before you retry", err)
-		log.Printf("exec call %s: %v", callID, err)
+		// The log adds what the message cannot: "unexpected EOF" alone reads
+		// like a porter fault, and a proxy's request-body idle timeout is the
+		// cause nearly every time it appears.
+		log.Printf("exec call %s: upload cut short: %v (usually a proxy's request-body idle timeout; a silent command is the trigger)", callID, err)
 		_ = call.pw.CloseWithError(err)
 		return err
 	}
