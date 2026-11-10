@@ -15,10 +15,12 @@ These rules steer the edit:
 - Write as if the reader may leave at any point. The first paragraph must stand alone, because many readers stop there. They spend about 5 seconds deciding whether a page is useful, scan the headings and the first words of each line, and read about 18% of it. Every word must earn its place.
 - Give each chunk a heading that says what it holds. Prefer a question, then a statement, then a verb phrase, and keep one kind per level. Start a verb heading with the verb ("Filling out the form"), not "how to". Keep the heading shorter than its content, and skip one-word answers.
 - Number the items when the order matters, and bullet them when it doesn't. Keep numbered lists out of a sentence ("the facilitator will 1) welcome, 2) introduce"). Don't open items with "firstly" or "secondly": number the list, or link the sentences ("Next, they introduce the speakers").
+- Order an unordered list by what matters most to the reader. Alphabetical order is the fallback.
 - Use a list for two items or more, and keep it short enough that every item stays next to the lead-in. A single-step procedure is the one exception to the two-item minimum.
 - Use a list only where the reader must not miss the items. A list in every paragraph loses its force.
 - Use a list for steps and for parallel items. Introduce it with a complete sentence, a fragment every item completes ("Back up these items, such as:"), or a heading that already says what the list holds. Put steps in the order they happen, and move a word every item repeats into the lead-in.
-- Use a colon only when the words before it say what follows ("Two kinds:", "The steps are:"). Otherwise write "such as" or "that is" and drop the colon. Keep every item the same kind. "Sources that back no single sentence, or full titles and dates" mixes a kind of source with a kind of content.
+- Say in the lead-in when the list is partial ("such as", "including") or when the reader picks a set ("Answer any 3 of the following").
+- Use a colon only when the words before it say what follows ("Two kinds:", "The steps are:"). Otherwise write "such as" or "that is" and drop the colon. "The following" works as a noun: "Review the following settings:". Keep every item the same kind. "Sources that back no single sentence, or full titles and dates" mixes a kind of source with a kind of content.
 - Start the word after a colon lowercase unless it is a proper noun. Don't end a section heading with a colon, and use a full stop in place of a colon before a table, image, or code sample.
 - Skip the colon at the end of a UI label, button, or command name. Inside a title, a colon splits the title from its subtitle, and the word after it takes a capital.
 - Punctuate items by the type of list, and keep one type per list. A sentence list gives every item a capital letter and a full stop, numbered or bulleted. A fragment list uses lowercase and one full stop after the last item. A stand-alone list, under a heading with no lead-in, uses capitals and no full stops. Put no semicolon or comma at the end of an item, and no "and" or "or" after the second-last one unless the text is legal. A list of single words, code, or link text is the exception: each item takes a capital letter and no full stop. The list rules here come from [Google](https://developers.google.com/style/lists), [CDC](https://www.cdc.gov/nceh/clearwriting/writing-tips/2025/bulleted-lists.html), [GOV.UK](https://design-system.service.gov.uk/styles/lists/) and the [Australian Style Manual](https://www.stylemanual.gov.au/structuring-content/lists).
@@ -26,7 +28,8 @@ These rules steer the edit:
 - Keep each item to one sentence. In a list you write inside a sentence, use the serial comma: "event logs, clickstream data, and e-commerce transactions".
 - Add a table where a rule depends on conditions. An if-then table beats a paragraph of exceptions.
 - Nest lists one level deep. Allow a second level where the items genuinely split, and never a third. This depth limit is stricter than the [federal guide](https://github.com/GSA/plainlanguage.gov/blob/main/_pages/guidelines/organize/use-lists.md), which allows three. Nest headings no more than three.
-- For a longer document, give the bottom line first and keep related material together. Answer the question on the page: keep the main content out of an FAQ or a PDF. If you must send the reader elsewhere, describe the material well enough for the reader to decide whether to follow.
+- For a longer document, give the bottom line first and keep related material together. If you must send the reader elsewhere, put the cross-reference at the end of the passage, and describe the material well enough for the reader to decide whether to follow.
+- Answer the question on the page: keep the main content out of an FAQ or a PDF.
 
 ## Write clear sentences
 - Speak to the reader as you, in the present tense, and use contractions where they sound natural.
@@ -79,6 +82,7 @@ Skip this section for a chat reply. Markdown controls neither type nor layout.
 - At the second level of a numbered list, use lowercase letters. Decide once whether numbering carries on across lists, and keep to it.
 - When you repurpose print material, cut it by about half and keep only what helps the reader finish a task. The web is a place for action, not narrative.
 - Add a picture only when it shows something the words can't.
+- Move a list longer than a screenful to its own page or an appendix.
 - Check the page for clutter before you finish, such as too many layout devices, odd gaps, and shapes that formed by accident.
 
 ## Check your work
