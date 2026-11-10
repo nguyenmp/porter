@@ -1,6 +1,6 @@
 {{define "content"}}
 <div id="app" data-session="{{.Session}}">
-	<div id="toast" class="toast" hidden></div>
+	<div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 	<button id="menu-btn" type="button" aria-label="Toggle session list" aria-expanded="false" title="Sessions">&#9776;</button>
 	<nav class="sidebar">
 		<span class="brand">porter</span>
@@ -915,6 +915,11 @@
   // the composer refuses an over-limit message before it is sent rather than
   // letting the server reject it.
   const MAX_IMAGES = 4;
+  // MAX_IMAGE_BYTES mirrors the server's per-image cap (maxImageBytes). A file
+  // over it is refused here, at once, because the browser already knows
+  // file.size — waiting for the upload to come back rejected wastes the
+  // upload and reads as a broken button.
+  const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 
   // Track the currently streaming assistant message and reasoning block so
   // deltas can append in place instead of creating new elements each time.
@@ -2871,20 +2876,54 @@
     renderAttachments();
   }
 
+  // humanBytes formats a byte count the way the attachment messages do:
+  // "950 KiB", "4 MiB", "12 MiB". It matches the server's wording, so a
+  // refusal before the upload and one after it read the same.
+  function humanBytes(n) {
+    if (n < 1024) return n + ' B';
+    const units = ['KiB', 'MiB', 'GiB', 'TiB'];
+    let v = n, i = -1;
+    while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+    const shown = (v >= 10 || Math.round(v) === v) ? String(Math.round(v)) : v.toFixed(1);
+    return shown + ' ' + units[i];
+  }
+
+  // sized splits files into the ones the server will take and the ones over
+  // the per-image cap, so the picker and the paste handler share one rule.
+  function sized(files) {
+    const kept = [], over = [];
+    for (const f of files) {
+      if (f.size > MAX_IMAGE_BYTES) over.push(f); else kept.push(f);
+    }
+    return {kept: kept, over: over};
+  }
+
+  // overSizeNote says which files were too large and what the limit is, so the
+  // user can pick a smaller one without guessing.
+  function overSizeNote(over) {
+    const names = over.map(function(f) { return f.name || 'image'; });
+    return 'Not attached: ' + names.join(', ') + ' ' + (names.length > 1 ? 'are' : 'is') +
+      ' over the ' + humanBytes(MAX_IMAGE_BYTES) + ' limit per image.';
+  }
+
   // addFiles appends images to the composer, up to the cap, and says what it
   // refused so a rejected screenshot is never a silent no-op.
   function addFiles(files) {
     if (!imageInput) return;
+    const check = sized(files);
     const kept = currentFiles();
     const refused = [];
-    for (const f of files) {
+    for (const f of check.kept) {
       if (kept.length >= MAX_IMAGES) { refused.push(f.name || 'image'); continue; }
       kept.push(f);
     }
     setFiles(kept);
+    const notes = [];
+    if (check.over.length) notes.push(overSizeNote(check.over));
     if (refused.length) {
-      alert('One message can carry ' + MAX_IMAGES + ' images. Not attached: ' + refused.join(', '));
+      notes.push('One message can carry ' + MAX_IMAGES + ' images. Not attached: ' + refused.join(', ') + '.');
     }
+    if (notes.length) showToast(notes.join(' '));
   }
 
   // renderAttachments redraws the preview strip from the input's file list.
@@ -2916,10 +2955,17 @@
   }
 
   if (imageInput) {
-    imageInput.addEventListener('change', renderAttachments);
+    // The picker replaces the file list wholesale, so check what the browser
+    // put there and keep only what the server will take.
+    imageInput.addEventListener('change', function() {
+      const check = sized(currentFiles());
+      setFiles(check.kept);
+      if (check.over.length) showToast(overSizeNote(check.over));
+    });
   }
   const attachBtn = document.getElementById('attach-btn');
   if (attachBtn && imageInput) {
+    attachBtn.title = 'Attach an image (up to ' + humanBytes(MAX_IMAGE_BYTES) + ' each, or paste a screenshot)';
     attachBtn.addEventListener('click', function() { imageInput.click(); });
   }
   // Paste a screenshot straight into the composer. A text paste is left alone,
@@ -2939,17 +2985,27 @@
     addFiles(files);
   });
 
-  // After sending a message, clear the input and any attachments, and keep
-  // focus. The form only exists when a session is selected (the empty state has
-  // none). Sending a message to an archived session unarchives it server-side;
-  // when that happens, flip the page's archive button back to Archive and move
-  // the session back into the active sidebar list.
+  // After a send, clear the input and any attachments, and keep focus. The
+  // form only exists when a session is selected (the empty state has none).
+  //
+  // A refused send keeps the text and the attachments and says why: the server
+  // rejects an oversized image, an empty message, or a paused host with a 400
+  // body, and htmx renders nothing for that, so without this the button looks
+  // dead and the draft is gone. Sending a message to an archived session
+  // unarchives it server-side; when that happens, flip the page's archive
+  // button back to Archive and move the session into the active sidebar list.
   if (form) {
     form.addEventListener('htmx:afterRequest', function(evt) {
+      const d = evt.detail || {};
+      if (!d.successful) {
+        const why = d.xhr && d.xhr.responseText ? d.xhr.responseText.trim() : '';
+        showToast(why || 'The message did not send. Check the server log.');
+        return;
+      }
       input.value = '';
       setFiles([]);
       input.focus();
-      if (evt.detail && evt.detail.successful && archiveBtn && archiveBtn.dataset.archived === 'true') {
+      if (archiveBtn && archiveBtn.dataset.archived === 'true') {
         archiveBtn.dataset.archived = 'false';
         updateArchiveBtn();
         renderSidebar(activeSession);

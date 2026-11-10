@@ -497,11 +497,13 @@
 .sandbox-bar { padding: 0.2rem 0.6rem; font-size: 0.85rem; }
 			.sandbox-btn { padding: 0.4rem 0.5rem; font-size: 0.9rem; }
 		}
-		/* Transient status toast (session-create warnings): fixed to the
-		   bottom center, above everything, auto-dismissed by JS. */
+		/* Transient status toast (session warnings and a refused message):
+		   fixed to the top center, above everything, auto-dismissed by JS. It
+		   sits at the top because a refusal has to be read next to the
+		   composer, and the bottom is where the composer is. */
 		.toast {
 			position: fixed;
-			bottom: 1rem;
+			top: 1rem;
 			left: 50%;
 			transform: translateX(-50%);
 			background: #333;

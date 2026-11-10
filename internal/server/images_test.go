@@ -34,6 +34,18 @@ func tinyPNG(t *testing.T) []byte {
 // multipart form with an optional text field and count copies of one PNG.
 func postMultipartImage(t *testing.T, srvURL, sessionID, content string, count int) *http.Response {
 	t.Helper()
+	png := tinyPNG(t)
+	images := make([][]byte, 0, count)
+	for i := 0; i < count; i++ {
+		images = append(images, png)
+	}
+	return postMultipartImages(t, srvURL, sessionID, content, images)
+}
+
+// postMultipartImages posts one message carrying the given image bytes, one
+// "images" file part each, so a test can choose the size of what it sends.
+func postMultipartImages(t *testing.T, srvURL, sessionID, content string, images [][]byte) *http.Response {
+	t.Helper()
 	var body bytes.Buffer
 	mw := multipart.NewWriter(&body)
 	if content != "" {
@@ -41,12 +53,12 @@ func postMultipartImage(t *testing.T, srvURL, sessionID, content string, count i
 			t.Fatalf("write content field: %v", err)
 		}
 	}
-	for i := 0; i < count; i++ {
+	for _, img := range images {
 		fw, err := mw.CreateFormFile("images", "shot.png")
 		if err != nil {
 			t.Fatalf("create form file: %v", err)
 		}
-		if _, err := fw.Write(tinyPNG(t)); err != nil {
+		if _, err := fw.Write(img); err != nil {
 			t.Fatalf("write image: %v", err)
 		}
 	}
@@ -108,6 +120,70 @@ func TestReadImageUploadRejectsOversize(t *testing.T) {
 	copy(big, tinyPNG(t))
 	if _, err := readImageUpload("big.png", big); err == nil {
 		t.Fatal("readImageUpload accepted an image over the cap")
+	}
+}
+
+// TestHumanBytes checks the wording the user sees: units, no long decimals,
+// and a whole number when the value is whole.
+func TestHumanBytes(t *testing.T) {
+	cases := []struct {
+		in   int64
+		want string
+	}{
+		{0, "0 B"},
+		{999, "999 B"},
+		{1024, "1 KiB"},
+		{1536, "1.5 KiB"},
+		{5 << 20, "5 MiB"},
+		{9437184, "9 MiB"},
+		{10 << 20, "10 MiB"},
+		{3670016, "3.5 MiB"},
+		{13002342, "12 MiB"},
+		{1 << 30, "1 GiB"},
+	}
+	for _, c := range cases {
+		if got := humanBytes(c.in); got != c.want {
+			t.Errorf("humanBytes(%d) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// TestOversizeErrorNamesSizeAndLimit checks the refusal a user reads in the
+// toast: the file, its size, and the cap, with no byte counts.
+func TestOversizeErrorNamesSizeAndLimit(t *testing.T) {
+	got := oversizeError("shot.png", 12<<20).Error()
+	want := "shot.png is 12 MiB; the limit is 5 MiB per image"
+	if got != want {
+		t.Errorf("oversizeError = %q, want %q", got, want)
+	}
+}
+
+// TestAppendOversizeImageSaysWhy posts an image over the cap the way the
+// composer does and checks the 400 body names the file and the limit. The web
+// UI shows that body in a toast, so it has to read as a sentence.
+func TestAppendOversizeImageSaysWhy(t *testing.T) {
+	srv := newTestServer(t, plainLLM())
+	c := client.New(srv.URL)
+	info, err := c.Create(context.Background())
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	big := make([]byte, 6<<20)
+	copy(big, tinyPNG(t))
+	resp := postMultipartImages(t, srv.URL, info.ID, "look at this", [][]byte{big})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("oversize append status = %d, want 400", resp.StatusCode)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	text := string(body)
+	for _, want := range []string{"shot.png", "6 MiB", "limit is 5 MiB"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("400 body = %q, want it to contain %q", text, want)
+		}
 	}
 }
 

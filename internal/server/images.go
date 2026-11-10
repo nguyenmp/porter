@@ -20,6 +20,34 @@ const (
 	maxImagesPerMessage = 4
 )
 
+// oversizeError explains a refused image the way a reader needs it: the file,
+// how big it is, and the cap. The composer shows this text in a toast, so it
+// reads as a sentence rather than a pair of byte counts.
+func oversizeError(name string, size int64) error {
+	return fmt.Errorf("%s is %s; the limit is %s per image", name, humanBytes(size), humanBytes(maxImageBytes))
+}
+
+// humanBytes formats a byte count for a message a person reads: "512 KiB",
+// "1.5 MiB", "12 MiB". Above a kibibyte it keeps one decimal place below 10,
+// which is the precision that matters when someone is picking a smaller file.
+func humanBytes(n int64) string {
+	const step = 1024
+	if n < step {
+		return fmt.Sprintf("%d B", n)
+	}
+	units := []string{"KiB", "MiB", "GiB", "TiB"}
+	v := float64(n)
+	i := -1
+	for v >= step && i < len(units)-1 {
+		v /= step
+		i++
+	}
+	if v >= 10 || v == float64(int64(v)) {
+		return fmt.Sprintf("%.0f %s", v, units[i])
+	}
+	return fmt.Sprintf("%.1f %s", v, units[i])
+}
+
 // imageUpload is one validated picture from an upload, ready to be published as
 // an asset: the safe file name and the raw bytes.
 type imageUpload struct {
@@ -37,8 +65,8 @@ func readImageUpload(name string, data []byte) (imageUpload, error) {
 	if len(data) == 0 {
 		return imageUpload{}, fmt.Errorf("image %s is empty", name)
 	}
-	if len(data) > maxImageBytes {
-		return imageUpload{}, fmt.Errorf("image %s is %d bytes; the limit is %d bytes (%d MiB)", name, len(data), maxImageBytes, maxImageBytes/(1<<20))
+	if int64(len(data)) > maxImageBytes {
+		return imageUpload{}, oversizeError(name, int64(len(data)))
 	}
 	mime := asset.ImageMimeType(data)
 	if mime == "" {
@@ -57,10 +85,15 @@ func readUploadedImages(r *http.Request) ([]imageUpload, error) {
 	}
 	files := r.MultipartForm.File["images"]
 	if len(files) > maxImagesPerMessage {
-		return nil, fmt.Errorf("too many images: %d attached, the limit is %d", len(files), maxImagesPerMessage)
+		return nil, fmt.Errorf("one message can carry %d images; this one has %d", maxImagesPerMessage, len(files))
 	}
 	uploads := make([]imageUpload, 0, len(files))
 	for _, fh := range files {
+		// fh.Size is the whole file, where the bounded read below stops one
+		// byte past the cap, so the refusal names the size the user sees.
+		if fh.Size > maxImageBytes {
+			return nil, oversizeError(fh.Filename, fh.Size)
+		}
 		f, err := fh.Open()
 		if err != nil {
 			return nil, fmt.Errorf("read image %s: %w", fh.Filename, err)
