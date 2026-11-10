@@ -3002,21 +3002,36 @@
     addFiles(files);
   });
 
+  // sendFailure words a refused send. The server's own message comes first: it
+  // says which file was too big or why the message was refused. When there is
+  // no message, the status explains it: htmx reports a dropped connection as
+  // status 0, and a proxy's HTML error page is not worth reading raw.
+  function sendFailure(d) {
+    const xhr = d.xhr || {};
+    const body = (xhr.responseText || '').trim();
+    if (xhr.status === 0) {
+      return 'No connection to the server. Check it is running, then send again.';
+    }
+    if (body && body.charAt(0) !== '<') return body;
+    if (xhr.status) return 'The server refused the message (' + xhr.status + ').';
+    return 'The message did not send.';
+  }
+
   // After a send, clear the input and any attachments, and keep focus. The
   // form only exists when a session is selected (the empty state has none).
   //
   // A refused send keeps the text and the attachments and says why: the server
   // rejects an oversized image, an empty message, or a paused host with a 400
   // body, and htmx renders nothing for that, so without this the button looks
-  // dead and the draft is gone. Sending a message to an archived session
-  // unarchives it server-side; when that happens, flip the page's archive
-  // button back to Archive and move the session into the active sidebar list.
+  // dead and the draft is gone. The same holds when the request never lands.
+  // Sending a message to an archived session unarchives it server-side; when
+  // that happens, flip the page's archive button back to Archive and move the
+  // session into the active sidebar list.
   if (form) {
     form.addEventListener('htmx:afterRequest', function(evt) {
       const d = evt.detail || {};
       if (!d.successful) {
-        const why = d.xhr && d.xhr.responseText ? d.xhr.responseText.trim() : '';
-        showToast(why || 'The message did not send. Check the server log.');
+        showToast(sendFailure(d));
         return;
       }
       input.value = '';
