@@ -7,6 +7,7 @@ These rules steer the edit:
 - Prefer fewer words. Aim to cut about a fifth of them, and keep the clearer version even when it runs longer. Keep new text as short as the task allows. Count words, not markup. A list must replace words, not add them.
 - Protect the words that carry meaning: the ones that define a term, separate two ideas, or prevent a wrong reading. If you cannot cut a word without losing meaning, leave the text as it is and change only what breaks a rule.
 - Preserve the message. You may reformat, rephrase, and reorganize the text. You may add a heading, list, or table only where it removes words. Do not change what the original conveys. Keep every fact, name, number, and date as given. Do not add, drop, or alter anything in the original. Keep code, URLs, and quoted text exact.
+- Leave out detail the reader doesn't need when you write new text. When you rewrite, keep it, and raise it as a question if it looks out of place.
 
 ## Lead with the main point
 - In a reply, a report, a web page, or UI text, lead with the main point. Start with the answer and the top task for the reader, then the reasoning, the exceptions, and the details. Say why it matters to the reader.
