@@ -6,22 +6,22 @@ These rules steer the edit:
 - Spend your effort where a reader notices: the main point, the structure, a sentence the reader has to reread. Do the structure first, because a later restructure may cut the sentences you already polished. Leave text that already reads well alone.
 - Prefer fewer words. Aim to cut about a fifth of them, and keep the clearer version even when it runs longer. Keep new text as short as the task allows. Count words, not markup. A list must replace words, not add them.
 - Protect the words that carry meaning: the ones that define a term, separate two ideas, or prevent a wrong reading. If you cannot cut a word without losing meaning, leave the text as it is and change only what breaks a rule.
-- Preserve the message. You may reformat, rephrase, and reorganize the text, and you may add a heading, list, or table only where it removes words, but do not change what the original conveys. Keep every fact, name, number, and date as given. Do not add, drop, or alter anything in the original. Keep code, URLs, and quoted text exact.
+- Preserve the message. You may reformat, rephrase, and reorganize the text. You may add a heading, list, or table only where it removes words. Do not change what the original conveys. Keep every fact, name, number, and date as given. Do not add, drop, or alter anything in the original. Keep code, URLs, and quoted text exact.
 
 ## Structure
-- Lead with the main point, in a reply, a report, a web page, or UI text. Start with the answer and the top task for the reader, then the reasoning, the exceptions, and the details. Say why it matters to the reader.
+- In a reply, a report, a web page, or UI text, lead with the main point. Start with the answer and the top task for the reader, then the reasoning, the exceptions, and the details. Say why it matters to the reader.
 - Write to one audience at a time. When you write to two, give each its own section, and say who "you" and "we" mean.
 - Write as if the reader may leave at any point. The first paragraph must stand alone, because many readers stop there. They spend about 5 seconds deciding whether a page is useful, scan the headings and the first words of each line, and read about 18% of it. Every word must earn its place.
 - Give each chunk a heading that says what it holds. Prefer a question, then a statement, then a verb phrase, and keep one kind per level. Start a verb heading with the verb ("Filling out the form"), not "how to". Keep the heading shorter than its content, and skip one-word answers.
 - Number the items when the order matters, and bullet them when it doesn't. Keep numbered lists out of a sentence ("the facilitator will 1) welcome, 2) introduce").
-- Use a list for two items or more, and keep it short enough that every item stays next to the lead-in. A single-step procedure is the one exception.
+- Use a list for two items or more, and keep it short enough that every item stays next to the lead-in. A single-step procedure is the one exception to the two-item minimum.
 - Use a list only where the reader must not miss the items. A list in every paragraph loses its force.
 - Use a list for steps and for parallel items. Introduce it with a complete sentence, a fragment every item completes ("Back up these items, such as:"), or a heading that already says what the list holds. Put steps in the order they happen.
-- Use a colon only when the words before it say what follows ("Two kinds:", "The steps are:") or when the first word does ("say we manage the program"). Otherwise write "such as" or "that is" and drop the colon. Keep every item the same kind. "Sources that back no single sentence, or full titles and dates" mixes a kind of source with a kind of content.
+- Use a colon only when the words before it say what follows ("Two kinds:", "The steps are:"). Otherwise write "such as" or "that is" and drop the colon. Keep every item the same kind. "Sources that back no single sentence, or full titles and dates" mixes a kind of source with a kind of content.
 - Start the word after a colon lowercase unless it is a proper noun. Don't end a section heading with a colon, and use a full stop in place of a colon before a table, image, or code sample.
-- Punctuate items by the type of list, and keep one type per list. A sentence list gives every item a capital letter and a full stop, numbered or bulleted. A fragment list uses lowercase and one full stop after the last item. A stand-alone list, under a heading with no lead-in, uses capitals and no full stops. Put no semicolon or comma at the end of an item, and no "and" or "or" after the second-last one unless the text is legal. A list of single words, code, or link text is the exception: it takes a capital letter and no full stop. The list rules here come from [Google](https://developers.google.com/style/lists), [CDC](https://www.cdc.gov/nceh/clearwriting/writing-tips/2025/bulleted-lists.html), [GOV.UK](https://design-system.service.gov.uk/styles/lists/) and the [Australian Style Manual](https://www.stylemanual.gov.au/structuring-content/lists).
+- Punctuate items by the type of list, and keep one type per list. A sentence list gives every item a capital letter and a full stop, numbered or bulleted. A fragment list uses lowercase and one full stop after the last item. A stand-alone list, under a heading with no lead-in, uses capitals and no full stops. Put no semicolon or comma at the end of an item, and no "and" or "or" after the second-last one unless the text is legal. A list of single words, code, or link text is the exception: each item takes a capital letter and no full stop. The list rules here come from [Google](https://developers.google.com/style/lists), [CDC](https://www.cdc.gov/nceh/clearwriting/writing-tips/2025/bulleted-lists.html), [GOV.UK](https://design-system.service.gov.uk/styles/lists/) and the [Australian Style Manual](https://www.stylemanual.gov.au/structuring-content/lists).
 - Add a table where a rule depends on conditions. An if-then table beats a paragraph of exceptions.
-- Nest lists one level deep. Allow a second level where the items genuinely split, and never a third. That is stricter than the [federal guide](https://github.com/GSA/plainlanguage.gov/blob/main/_pages/guidelines/organize/use-lists.md), which allows three. Nest headings no more than three.
+- Nest lists one level deep. Allow a second level where the items genuinely split, and never a third. This depth limit is stricter than the [federal guide](https://github.com/GSA/plainlanguage.gov/blob/main/_pages/guidelines/organize/use-lists.md), which allows three. Nest headings no more than three.
 - For a longer document, give the bottom line first and keep related material together. Answer the question on the page: keep the main content out of an FAQ or a PDF. If you must send the reader elsewhere, describe the material well enough for the reader to decide whether to follow.
 
 ## Sentences
@@ -42,7 +42,7 @@ These rules steer the edit:
 - Use the same term for the same thing throughout. Repeat it rather than reaching for a synonym to sound varied.
 
 ## Words
-- Choose simple, concrete, familiar words. Replace jargon, vague words, and filler with everyday words: load-bearing, survived, rides, nobody, genuinely, outright, owed, rests, asymmetry, died, buys, settles, lever, byte-identical, delve, real. Check each wordy phrase against the table under Plain words.
+- Choose simple, concrete, familiar words. Replace jargon, vague words, and filler with the everyday word: say "buy", not "purchase", and "end", not "terminate". Check each wordy phrase against the table under Plain words.
 - Say what you compare against. "Carries more" leaves the reader to guess more than what.
 - Delete openers and hedges: I think, it's worth noting, as you can see, basically, just, really. They usually add nothing, and the point stands without them. Keep a hedge that marks real uncertainty.
 - Cut whole sentences and clauses first, then trim words, as in "due to the fact that" becomes "because", "in order to" becomes "to". Do that before you look for a synonym.
@@ -64,10 +64,10 @@ These rules steer the edit:
 
 ## When the text is a page
 Skip this section for a chat reply. Markdown controls neither type nor layout.
-- Design for reading with these settings: ragged right, left-aligned margins rather than justified or centered; leading, the space between lines, two points larger than the type (12 over 14); a serif font for body text and a sans-serif font for headings; no more than three typefaces.
+- Design for reading with these settings: ragged right, left-aligned margins rather than justified or centered; leading, the space between lines, two points larger than the type (12 over 14); a serif font for body text and a sans-serif font for headings.
 - Limit the document to five or six sections, about two per printed page.
 - Make headings bold and left-aligned, in upper and lower case. Triple-space before a heading and double-space after it. Use round or square bullets, at most two styles, and numbers only for a sequence. At the second level, use a dash in place of a hollow bullet. Use shading and borders to accent a chart, not as decoration.
-- Don't mix fonts within the body.
+- Use no more than three typefaces, and don't mix fonts within the body.
 - When you repurpose print material, cut it by about half and keep only what helps the reader finish a task. The web is a place for action, not narrative.
 - Add a picture only when it shows something the words can't.
 - Check the page for clutter before you finish, such as too many layout devices, odd gaps, and shapes that formed by accident.
