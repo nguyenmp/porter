@@ -5,6 +5,7 @@ import (
 	"context"
 	"image"
 	"image/color"
+	gifenc "image/gif"
 	"image/png"
 	"io"
 	"mime/multipart"
@@ -13,6 +14,7 @@ import (
 	"testing"
 
 	"porter/internal/api"
+	"porter/internal/asset"
 	"porter/internal/client"
 	mdr "porter/internal/render"
 )
@@ -115,11 +117,20 @@ func TestReadImageUploadRejectsNonImage(t *testing.T) {
 	}
 }
 
-func TestReadImageUploadRejectsOversize(t *testing.T) {
+// TestReadImageUploadShrinksOversize checks that a PNG over the cap still goes:
+// the bytes handed on are a re-encoded copy under the cap, not a refusal.
+func TestReadImageUploadShrinksOversize(t *testing.T) {
 	big := make([]byte, maxImageBytes+1)
 	copy(big, tinyPNG(t))
-	if _, err := readImageUpload("big.png", big); err == nil {
-		t.Fatal("readImageUpload accepted an image over the cap")
+	up, err := readImageUpload("big.png", big)
+	if err != nil {
+		t.Fatalf("readImageUpload refused an image it could shrink: %v", err)
+	}
+	if int64(len(up.Data)) > maxImageBytes {
+		t.Errorf("shrunk to %s, want at most %s", humanBytes(int64(len(up.Data))), humanBytes(maxImageBytes))
+	}
+	if asset.ImageMimeType(up.Data) != "image/png" {
+		t.Errorf("shrunk bytes are %q, want a png", asset.ImageMimeType(up.Data))
 	}
 }
 
@@ -158,9 +169,10 @@ func TestOversizeErrorNamesSizeAndLimit(t *testing.T) {
 	}
 }
 
-// TestAppendOversizeImageSaysWhy posts an image over the cap the way the
-// composer does and checks the 400 body names the file and the limit. The web
-// UI shows that body in a toast, so it has to read as a sentence.
+// TestAppendOversizeImageSaysWhy posts an image the server cannot shrink over
+// the cap, the way the composer does, and checks the 400 body names the file,
+// the limit, and what to do instead. The web UI shows that body in a toast, so
+// it has to read as a sentence.
 func TestAppendOversizeImageSaysWhy(t *testing.T) {
 	srv := newTestServer(t, plainLLM())
 	c := client.New(srv.URL)
@@ -168,8 +180,13 @@ func TestAppendOversizeImageSaysWhy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	big := make([]byte, 6<<20)
-	copy(big, tinyPNG(t))
+	// A padded GIF: a format that may be animated, so the server refuses it
+	// rather than flattening it to one frame.
+	var gif bytes.Buffer
+	if err := gifenc.Encode(&gif, image.NewPaletted(image.Rect(0, 0, 4, 4), color.Palette{color.Black}), nil); err != nil {
+		t.Fatalf("encode gif: %v", err)
+	}
+	big := append(gif.Bytes(), make([]byte, 6<<20)...)
 	resp := postMultipartImages(t, srv.URL, info.ID, "look at this", [][]byte{big})
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
@@ -180,7 +197,7 @@ func TestAppendOversizeImageSaysWhy(t *testing.T) {
 		t.Fatalf("read body: %v", err)
 	}
 	text := string(body)
-	for _, want := range []string{"shot.png", "6 MiB", "limit is 5 MiB"} {
+	for _, want := range []string{"shot.png", "6 MiB", "limit is 5 MiB", "attach a PNG or JPEG"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("400 body = %q, want it to contain %q", text, want)
 		}

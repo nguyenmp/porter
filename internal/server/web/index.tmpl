@@ -915,11 +915,14 @@
   // the composer refuses an over-limit message before it is sent rather than
   // letting the server reject it.
   const MAX_IMAGES = 4;
-  // MAX_IMAGE_BYTES mirrors the server's per-image cap (maxImageBytes). A file
-  // over it is refused here, at once, because the browser already knows
+  // MAX_IMAGE_BYTES mirrors the server's per-image cap (maxImageBytes): the
+  // size that reaches the model. MAX_UPLOAD_BYTES mirrors maxUploadBytes: a
+  // PNG or JPEG between the two is shrunk by the server before it is stored.
+  // Both are checked here at once, because the browser already knows
   // file.size — waiting for the upload to come back rejected wastes the
   // upload and reads as a broken button.
   const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+  const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
 
   // Track the currently streaming assistant message and reasoning block so
   // deltas can append in place instead of creating new elements each time.
@@ -2888,23 +2891,38 @@
     return shown + ' ' + units[i];
   }
 
-  // sized splits files into the ones the server will take and the ones over
-  // the per-image cap, so the picker and the paste handler share one rule.
+  // sized splits files into the ones the server will take and the ones it will
+  // refuse, so the picker and the paste handler share one rule, and it words
+  // every refusal the same way the server does.
+  //
+  // The size rule has two caps, matching internal/server/images.go: over
+  // MAX_UPLOAD_BYTES nothing is sent, and between the two caps a PNG or JPEG
+  // still goes, because the server shrinks it before it stores it.
   function sized(files) {
-    const kept = [], over = [];
+    const kept = [], notes = [];
     for (const f of files) {
-      if (f.size > MAX_IMAGE_BYTES) over.push(f); else kept.push(f);
+      const name = f.name || 'image';
+      const type = (f.type || '').toLowerCase();
+      if (f.size > MAX_UPLOAD_BYTES) {
+        notes.push('Not attached: ' + name + ' is ' + humanBytes(f.size) + ', over the ' +
+          humanBytes(MAX_UPLOAD_BYTES) + ' limit per upload.');
+        continue;
+      }
+      if (f.size > MAX_IMAGE_BYTES) {
+        if (type && SHRINKABLE.indexOf(type) === -1) {
+          notes.push('Not attached: ' + name + ' is ' + humanBytes(f.size) + '. A ' +
+            type.replace('image/', '') + ' that size cannot be shrunk here, so attach a PNG or JPEG.');
+          continue;
+        }
+        notes.push(name + ' is ' + humanBytes(f.size) + ' and will be shrunk to fit.');
+      }
+      kept.push(f);
     }
-    return {kept: kept, over: over};
+    return {kept: kept, notes: notes};
   }
 
-  // overSizeNote says which files were too large and what the limit is, so the
-  // user can pick a smaller one without guessing.
-  function overSizeNote(over) {
-    const names = over.map(function(f) { return f.name || 'image'; });
-    return 'Not attached: ' + names.join(', ') + ' ' + (names.length > 1 ? 'are' : 'is') +
-      ' over the ' + humanBytes(MAX_IMAGE_BYTES) + ' limit per image.';
-  }
+  // SHRINKABLE lists the types the server can re-encode smaller.
+  const SHRINKABLE = ['image/png', 'image/jpeg'];
 
   // addFiles appends images to the composer, up to the cap, and says what it
   // refused so a rejected screenshot is never a silent no-op.
@@ -2912,14 +2930,13 @@
     if (!imageInput) return;
     const check = sized(files);
     const kept = currentFiles();
+    const notes = check.notes.slice();
     const refused = [];
     for (const f of check.kept) {
       if (kept.length >= MAX_IMAGES) { refused.push(f.name || 'image'); continue; }
       kept.push(f);
     }
     setFiles(kept);
-    const notes = [];
-    if (check.over.length) notes.push(overSizeNote(check.over));
     if (refused.length) {
       notes.push('One message can carry ' + MAX_IMAGES + ' images. Not attached: ' + refused.join(', ') + '.');
     }
@@ -2960,12 +2977,12 @@
     imageInput.addEventListener('change', function() {
       const check = sized(currentFiles());
       setFiles(check.kept);
-      if (check.over.length) showToast(overSizeNote(check.over));
+      if (check.notes.length) showToast(check.notes.join(' '));
     });
   }
   const attachBtn = document.getElementById('attach-btn');
   if (attachBtn && imageInput) {
-    attachBtn.title = 'Attach an image (up to ' + humanBytes(MAX_IMAGE_BYTES) + ' each, or paste a screenshot)';
+    attachBtn.title = 'Attach an image (up to ' + humanBytes(MAX_UPLOAD_BYTES) + '; bigger PNGs and JPEGs are shrunk to fit)';
     attachBtn.addEventListener('click', function() { imageInput.click(); });
   }
   // Paste a screenshot straight into the composer. A text paste is left alone,

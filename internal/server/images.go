@@ -14,8 +14,13 @@ import (
 // adds to each later turn. These caps keep one message from stalling a turn.
 const (
 	// maxImageBytes caps one attached image, measured before base64 encoding
-	// (base64 makes the bytes on the wire about a third larger).
+	// (base64 makes the bytes on the wire about a third larger). These are the
+	// bytes the model receives, so the cap matches the tightest provider limit.
 	maxImageBytes = 5 << 20 // 5 MiB
+	// maxUploadBytes caps what the composer may send at all. A PNG or JPEG
+	// between the two caps is shrunk before it is stored, so a retina
+	// screenshot goes through instead of being refused.
+	maxUploadBytes = 25 << 20 // 25 MiB
 	// maxImagesPerMessage caps how many images one message may attach.
 	maxImagesPerMessage = 4
 )
@@ -45,7 +50,8 @@ func humanBytes(n int64) string {
 	if v >= 10 || v == float64(int64(v)) {
 		return fmt.Sprintf("%.0f %s", v, units[i])
 	}
-	return fmt.Sprintf("%.1f %s", v, units[i])
+	// One decimal below 10, with a trailing ".0" dropped: "1.5 MiB", "5 MiB".
+	return strings.TrimSuffix(fmt.Sprintf("%.1f", v), ".0") + " " + units[i]
 }
 
 // imageUpload is one validated picture from an upload, ready to be published as
@@ -61,16 +67,30 @@ type imageUpload struct {
 // client's claim, so a renamed file cannot pass itself off as an image, and
 // only the types the model providers accept are allowed. SVG is deliberately
 // not accepted: it is a script-carrying document rather than a picture.
+//
+// A PNG or JPEG over the byte cap is shrunk to fit, because the shortest path
+// from a retina screenshot to a sent message should not be "crop it yourself".
+// A GIF or WebP over the cap is refused: it may be animated, and a silent
+// flattening is worse than a clear refusal.
 func readImageUpload(name string, data []byte) (imageUpload, error) {
 	if len(data) == 0 {
 		return imageUpload{}, fmt.Errorf("image %s is empty", name)
 	}
-	if int64(len(data)) > maxImageBytes {
-		return imageUpload{}, oversizeError(name, int64(len(data)))
-	}
 	mime := asset.ImageMimeType(data)
 	if mime == "" {
 		return imageUpload{}, fmt.Errorf("image %s is not an accepted image type (png, jpeg, gif, or webp)", name)
+	}
+	if int64(len(data)) > maxImageBytes {
+		size := humanBytes(int64(len(data)))
+		if !shrinkable(mime) {
+			kind := strings.TrimPrefix(mime, "image/")
+			return imageUpload{}, fmt.Errorf("%s is %s; the limit is %s per image, and a %s cannot be shrunk here — attach a PNG or JPEG", name, size, humanBytes(maxImageBytes), kind)
+		}
+		shrunk, err := shrinkImage(data)
+		if err != nil {
+			return imageUpload{}, fmt.Errorf("%s is %s and could not be shrunk to the %s limit: %v", name, size, humanBytes(maxImageBytes), err)
+		}
+		data = shrunk
 	}
 	return imageUpload{Name: asset.SanitizeFilename(name), Data: data}, nil
 }
@@ -90,8 +110,10 @@ func readUploadedImages(r *http.Request) ([]imageUpload, error) {
 	uploads := make([]imageUpload, 0, len(files))
 	for _, fh := range files {
 		// fh.Size is the whole file, where the bounded read below stops one
-		// byte past the cap, so the refusal names the size the user sees.
-		if fh.Size > maxImageBytes {
+		// byte past the cap, so the refusal names the size the user sees. The
+		// upload cap is the larger one: a file between the two is read whole so
+		// readImageUpload can shrink it.
+		if fh.Size > maxUploadBytes {
 			return nil, oversizeError(fh.Filename, fh.Size)
 		}
 		f, err := fh.Open()
@@ -100,7 +122,7 @@ func readUploadedImages(r *http.Request) ([]imageUpload, error) {
 		}
 		// One byte past the cap, so readImageUpload can tell "exactly at the
 		// limit" from "over it" without reading the rest of a huge file.
-		data, err := io.ReadAll(io.LimitReader(f, maxImageBytes+1))
+		data, err := io.ReadAll(io.LimitReader(f, maxUploadBytes+1))
 		f.Close()
 		if err != nil {
 			return nil, fmt.Errorf("read image %s: %w", fh.Filename, err)
