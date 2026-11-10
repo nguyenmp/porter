@@ -1,6 +1,7 @@
 package server
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,10 +14,9 @@ import (
 // also travel inline in every request that sends the history, so a big image
 // adds to each later turn. These caps keep one message from stalling a turn.
 const (
-	// maxImageBytes caps one attached image, measured before base64 encoding
-	// (base64 makes the bytes on the wire about a third larger). These are the
-	// bytes the model receives, so the cap matches the tightest provider limit.
-	maxImageBytes = 5 << 20 // 5 MiB
+	// maxImageBytes is the size that reaches the model. It lives in the asset
+	// package, because read_image meets the same cap.
+	maxImageBytes = asset.ImageMaxBytes
 	// maxUploadBytes caps what the composer may send at all. A PNG or JPEG
 	// between the two caps is shrunk before it is stored, so a retina
 	// screenshot goes through instead of being refused.
@@ -29,29 +29,7 @@ const (
 // how big it is, and the cap. The composer shows this text in a toast, so it
 // reads as a sentence rather than a pair of byte counts.
 func oversizeError(name string, size int64) error {
-	return fmt.Errorf("%s is %s; the limit is %s per image", name, humanBytes(size), humanBytes(maxImageBytes))
-}
-
-// humanBytes formats a byte count for a message a person reads: "512 KiB",
-// "1.5 MiB", "12 MiB". Above a kibibyte it keeps one decimal place below 10,
-// which is the precision that matters when someone is picking a smaller file.
-func humanBytes(n int64) string {
-	const step = 1024
-	if n < step {
-		return fmt.Sprintf("%d B", n)
-	}
-	units := []string{"KiB", "MiB", "GiB", "TiB"}
-	v := float64(n)
-	i := -1
-	for v >= step && i < len(units)-1 {
-		v /= step
-		i++
-	}
-	if v >= 10 || v == float64(int64(v)) {
-		return fmt.Sprintf("%.0f %s", v, units[i])
-	}
-	// One decimal below 10, with a trailing ".0" dropped: "1.5 MiB", "5 MiB".
-	return strings.TrimSuffix(fmt.Sprintf("%.1f", v), ".0") + " " + units[i]
+	return fmt.Errorf("%s is %s; the limit is %s per image", name, asset.HumanBytes(size), asset.HumanBytes(maxImageBytes))
 }
 
 // imageUpload is one validated picture from an upload, ready to be published as
@@ -81,16 +59,16 @@ func readImageUpload(name string, data []byte) (imageUpload, error) {
 		return imageUpload{}, fmt.Errorf("image %s is not an accepted image type (png, jpeg, gif, or webp)", name)
 	}
 	if int64(len(data)) > maxImageBytes {
-		size := humanBytes(int64(len(data)))
-		if !shrinkable(mime) {
+		size := asset.HumanBytes(int64(len(data)))
+		fitted, err := asset.FitImage(data)
+		switch {
+		case errors.Is(err, asset.ErrFramesOverCap):
 			kind := strings.TrimPrefix(mime, "image/")
-			return imageUpload{}, fmt.Errorf("%s is %s; the limit is %s per image, and a %s cannot be shrunk here — attach a PNG or JPEG", name, size, humanBytes(maxImageBytes), kind)
+			return imageUpload{}, fmt.Errorf("%s is %s; the limit is %s per image, and a %s cannot be shrunk here — attach a PNG or JPEG", name, size, asset.HumanBytes(maxImageBytes), kind)
+		case err != nil:
+			return imageUpload{}, fmt.Errorf("%s is %s and could not be shrunk to the %s limit: %v", name, size, asset.HumanBytes(maxImageBytes), err)
 		}
-		shrunk, err := shrinkImage(data)
-		if err != nil {
-			return imageUpload{}, fmt.Errorf("%s is %s and could not be shrunk to the %s limit: %v", name, size, humanBytes(maxImageBytes), err)
-		}
-		data = shrunk
+		data = fitted
 	}
 	return imageUpload{Name: asset.SanitizeFilename(name), Data: data}, nil
 }

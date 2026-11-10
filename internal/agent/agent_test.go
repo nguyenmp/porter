@@ -7,7 +7,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
+	"image/color"
+	gifenc "image/gif"
+	"image/png"
 	"io"
+	"math/rand"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -17,6 +22,7 @@ import (
 	"time"
 
 	"porter/internal/api"
+	"porter/internal/asset"
 	"porter/internal/codec"
 	"porter/internal/config"
 	"porter/internal/llm"
@@ -203,15 +209,25 @@ func TestRunTurnOnMessage(t *testing.T) {
 type chunkStream struct {
 	chunks []string
 	i      int
+	off    int // bytes of chunks[i] already read
 }
 
+// Read serves the chunks in order, continuing inside a chunk that is larger
+// than p: an implementation that jumped to the next chunk would truncate any
+// payload over one read buffer.
 func (s *chunkStream) Read(p []byte) (int, error) {
-	if s.i >= len(s.chunks) {
-		return 0, io.EOF
+	for s.i < len(s.chunks) {
+		n := copy(p, s.chunks[s.i][s.off:])
+		s.off += n
+		if s.off >= len(s.chunks[s.i]) {
+			s.i++
+			s.off = 0
+		}
+		if n > 0 {
+			return n, nil
+		}
 	}
-	n := copy(p, s.chunks[s.i])
-	s.i++
-	return n, nil
+	return 0, io.EOF
 }
 
 func (s *chunkStream) Close() error { return nil }
@@ -1976,6 +1992,103 @@ func TestRunTurnReadImagePublishesAndCarriesPicture(t *testing.T) {
 		if m.Role == "user" && strings.HasPrefix(m.Content, "[read_image:") {
 			t.Errorf("the model-view note leaked into committed history: %+v", m)
 		}
+	}
+}
+
+// bigNoisyPNG encodes a w×h picture of random colours: it compresses about as
+// badly as a screenshot, so a big one is reliably over the model's image cap.
+func bigNoisyPNG(t *testing.T, w, h int) []byte {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	rnd := rand.New(rand.NewSource(1))
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			img.Set(x, y, color.RGBA{R: uint8(rnd.Intn(256)), G: uint8(rnd.Intn(256)), B: uint8(rnd.Intn(256)), A: 255})
+		}
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		t.Fatalf("encode png: %v", err)
+	}
+	return buf.Bytes()
+}
+
+// TestRunTurnReadImageShrinksABigPicture checks that a picture the model reads
+// is fitted to the size the providers accept before it is stored, because the
+// model view re-sends it on every later request.
+func TestRunTurnReadImageShrinksABigPicture(t *testing.T) {
+	srv := readImageServer(t)
+	client := llm.NewClient(config.Config{BaseURL: srv.URL + "/v1", Model: "test", APIKey: "k"}, nil)
+
+	big := bigNoisyPNG(t, 1600, 1600)
+	if int64(len(big)) <= asset.ImageMaxBytes {
+		t.Fatalf("test picture is %s, want it over the %s cap", asset.HumanBytes(int64(len(big))), asset.HumanBytes(asset.ImageMaxBytes))
+	}
+	var published []byte
+	hooks := RunHooks{PublishAsset: func(name string, data []byte) (string, error) {
+		published = data
+		return "/assets/sessions/s/abc/" + name, nil
+	}}
+	res, err := RunTurn(context.Background(), client, []llm.ChatMessage{llm.UserMessage("look at shot.png")},
+		readImageProvider{path: "/tmp/shot.png", data: big}, nil, nil, hooks)
+	if err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+	if published == nil {
+		t.Fatal("the picture was never published")
+	}
+	if int64(len(published)) > asset.ImageMaxBytes {
+		t.Errorf("published %s, want at most %s", asset.HumanBytes(int64(len(published))), asset.HumanBytes(asset.ImageMaxBytes))
+	}
+	var toolMsg *llm.ChatMessage
+	for i := range res.History {
+		if res.History[i].Role == "tool" {
+			toolMsg = &res.History[i]
+		}
+	}
+	if toolMsg == nil {
+		t.Fatal("no tool result was committed")
+	}
+	if !strings.Contains(toolMsg.Content, "shrunk from") {
+		t.Errorf("result text = %q, want it to say the picture was shrunk", toolMsg.Content)
+	}
+}
+
+// TestRunTurnReadImageRefusesAnAnimatedOverCap checks that a GIF over the cap
+// is reported to the model instead of being flattened to one frame and sent.
+func TestRunTurnReadImageRefusesAnAnimatedOverCap(t *testing.T) {
+	srv := readImageServer(t)
+	client := llm.NewClient(config.Config{BaseURL: srv.URL + "/v1", Model: "test", APIKey: "k"}, nil)
+
+	var gifBuf bytes.Buffer
+	if err := gifenc.Encode(&gifBuf, image.NewPaletted(image.Rect(0, 0, 4, 4), color.Palette{color.Black}), nil); err != nil {
+		t.Fatalf("encode gif: %v", err)
+	}
+	big := append(gifBuf.Bytes(), make([]byte, asset.ImageMaxBytes+1)...)
+	published := false
+	hooks := RunHooks{PublishAsset: func(name string, data []byte) (string, error) {
+		published = true
+		return "/assets/sessions/s/abc/" + name, nil
+	}}
+	res, err := RunTurn(context.Background(), client, []llm.ChatMessage{llm.UserMessage("look at shot.gif")},
+		readImageProvider{path: "/tmp/shot.gif", data: big}, nil, nil, hooks)
+	if err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+	if published {
+		t.Error("an animated picture over the cap was published")
+	}
+	var toolMsg *llm.ChatMessage
+	for i := range res.History {
+		if res.History[i].Role == "tool" {
+			toolMsg = &res.History[i]
+		}
+	}
+	if toolMsg == nil {
+		t.Fatal("no tool result was committed")
+	}
+	if !strings.Contains(toolMsg.Content, "cannot be shrunk") || !strings.Contains(toolMsg.Content, "PNG or JPEG") {
+		t.Errorf("result text = %q, want a refusal that says what to do", toolMsg.Content)
 	}
 }
 

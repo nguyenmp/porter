@@ -127,35 +127,10 @@ func TestReadImageUploadShrinksOversize(t *testing.T) {
 		t.Fatalf("readImageUpload refused an image it could shrink: %v", err)
 	}
 	if int64(len(up.Data)) > maxImageBytes {
-		t.Errorf("shrunk to %s, want at most %s", humanBytes(int64(len(up.Data))), humanBytes(maxImageBytes))
+		t.Errorf("shrunk to %s, want at most %s", asset.HumanBytes(int64(len(up.Data))), asset.HumanBytes(maxImageBytes))
 	}
 	if asset.ImageMimeType(up.Data) != "image/png" {
 		t.Errorf("shrunk bytes are %q, want a png", asset.ImageMimeType(up.Data))
-	}
-}
-
-// TestHumanBytes checks the wording the user sees: units, no long decimals,
-// and a whole number when the value is whole.
-func TestHumanBytes(t *testing.T) {
-	cases := []struct {
-		in   int64
-		want string
-	}{
-		{0, "0 B"},
-		{999, "999 B"},
-		{1024, "1 KiB"},
-		{1536, "1.5 KiB"},
-		{5 << 20, "5 MiB"},
-		{9437184, "9 MiB"},
-		{10 << 20, "10 MiB"},
-		{3670016, "3.5 MiB"},
-		{13002342, "12 MiB"},
-		{1 << 30, "1 GiB"},
-	}
-	for _, c := range cases {
-		if got := humanBytes(c.in); got != c.want {
-			t.Errorf("humanBytes(%d) = %q, want %q", c.in, got, c.want)
-		}
 	}
 }
 

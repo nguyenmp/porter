@@ -135,6 +135,7 @@ func ReadImageDef() llm.Tool {
 			Description: "Look at a picture that is already a file in the execution environment (a screenshot, a chart, a photo). " +
 				"Pass its path, relative to the working directory or absolute. " +
 				"The picture is saved as an asset and attached to your context, so you see it in your next turn; the result is the asset's hosted URL. " +
+				"A picture over 5 MiB is shrunk to fit before it is sent; a GIF or WebP that big is refused, so convert it to PNG or JPEG first. " +
 				"You cannot see the picture in the same turn you ask for it — call this, then answer once the picture arrives. " +
 				"To show a picture to the user instead of only looking at it yourself, use publish_asset.",
 			Parameters: map[string]any{

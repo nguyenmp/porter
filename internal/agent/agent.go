@@ -921,6 +921,22 @@ func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage,
 					}
 					continue
 				}
+				// The model gets this picture inline on this turn and on every
+				// later one, so it is fitted to the size the providers accept
+				// before it is stored. readProviderFile caps what is read (it
+				// keeps a huge file from crossing the channel); FitImage caps
+				// what the model is sent.
+				readBytes := len(data)
+				fitted, ferr := asset.FitImage(data)
+				if ferr != nil {
+					msg := fmt.Sprintf("error: read_image: %s is %s and cannot be shrunk: %v. Convert it to a PNG or JPEG, then read it again.",
+						filepath.Base(resolved), asset.HumanBytes(int64(readBytes)), ferr)
+					if err := finishTool(msg, false, startedAt, finishedAt); err != nil {
+						return res, err
+					}
+					continue
+				}
+				data = fitted
 				name := asset.SanitizeFilename(filepath.Base(resolved))
 				url, aerr := h.PublishAsset(name, data)
 				if aerr != nil {
@@ -929,8 +945,11 @@ func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage,
 					}
 					continue
 				}
-				result := fmt.Sprintf("read_image: %s saved as %s (%d bytes). The picture is attached in the next user message.",
-					name, url, len(data))
+				result := fmt.Sprintf("read_image: %s saved as %s (%s)", name, url, asset.HumanBytes(int64(len(data))))
+				if len(data) < readBytes {
+					result += fmt.Sprintf(", shrunk from %s to fit the limit on what the model is sent", asset.HumanBytes(int64(readBytes)))
+				}
+				result += ". The picture is attached in the next user message."
 				if err := finishToolWithImages(result, []llm.ImagePart{{Name: name, URL: url}}, startedAt, finishedAt); err != nil {
 					return res, err
 				}
@@ -1337,7 +1356,8 @@ func readProviderFile(runCtx context.Context, js tools.Provider, path string) (d
 		return nil, "", fmt.Sprintf("error: read_image: %s could not be read (malformed provider response: %v)", path, err)
 	}
 	if rd.Size < 0 || rd.Size > asset.MaxBytes {
-		return nil, "", fmt.Sprintf("error: read_image: %s is %d bytes; the limit is %d bytes (%d MiB)", path, rd.Size, asset.MaxBytes, asset.MaxBytes/(1<<20))
+		return nil, "", fmt.Sprintf("error: read_image: %s is %s; the limit is %s (the most this server reads from a file)",
+			path, asset.HumanBytes(int64(rd.Size)), asset.HumanBytes(asset.MaxBytes))
 	}
 	decoded, derr := base64.StdEncoding.DecodeString(rd.Data)
 	if derr != nil || len(decoded) != rd.Size {
