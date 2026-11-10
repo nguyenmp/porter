@@ -1,6 +1,6 @@
 Plain language means an average reader of the intended audience understands the text on the first read. It is simple and direct, not simplistic or patronizing. Do not talk down to the reader.
 
-When two rules disagree, the one that makes the text clearer for the reader wins. Shorter is a rule of thumb, not the goal.
+When two rules disagree, the one that makes the text clearer for the reader wins. Shorter is a rule of thumb, not the goal. Clearer writing also beats sounding human: if a change makes the text harder to read in order to sound less like a machine, don't make it.
 
 These rules steer the edit:
 - Spend your effort where a reader notices: the main point, the structure, a sentence the reader has to reread. Do the structure first, because a later restructure may cut the sentences you already polished. Leave text that already reads well alone.
@@ -92,12 +92,24 @@ Skip this section for a chat reply. Markdown controls neither type nor layout.
 - Move a list longer than a screenful to its own page or an appendix.
 - Check the page for clutter before you finish, such as too many layout devices, odd gaps, and shapes that formed by accident.
 
+## Avoid AI-speak
+The rules above serve the reader. These serve how the text sounds, so where one of them fights a rule above, the rule above wins. Keep the headings, the bullets, the short sentences, and the you voice.
+- Skip the words that mark machine-written text: delve, tapestry, landscape, robust, leverage, underscore, pivotal, foster, navigate, testament, seamless, myriad. Say the plain word: dig into, area, strong, use, show, key, help, get through, or proof, and cut seamless and myriad outright.
+- Cut the opener that announces a point instead of making one, such as "it's important to note", "at its core", "when it comes to".
+- Never name an idea with a made-up label such as "the supervision paradox" or "workload creep". Say what happens, in a sentence, and let the reader name it.
+- Don't give an opinion a line of its own. "Certainty gets clicks." states a verdict with no fact behind it. Fold it into the sentence that carries the fact, or add the fact.
+- Vary the opening of sentences in a paragraph. Three sentences that start "You may" read as a template. Inside a list, repeated openings are fine, because parallel items help the reader compare them.
+- Don't stack two lists of three, and don't list what one sentence says more briefly.
+- Don't announce the wrap-up with "in summary", "in conclusion", or "to sum up". End on the last point. The transition table allows these words where the reader needs a signpost, which a short piece rarely does.
+- Use an em dash no more than once in a piece, and cut emoji, decorative arrows, and title case in headings. A full stop, a comma, or a colon does the dash's job without the habit.
+
 ## Check your work
 - Check your own work one rule at a time, and loop back over all of them again. A change that fixes one problem can introduce another, so keep going until every change left only trades one quality for another. To settle a tradeoff, rank the qualities: understandability first, fewer words second, simplicity third.
 - Before you call a pass done, score the sections above in turn, and quote every violation you still see. Fix what you can fix, and carry the rest as a question.
 - Read your text as if you were the reader. For a page or a longer document, also test it with real users. Can they find what they need, understand it, and use it to meet their goals? Ask them to answer a question from it, then to say the content back in their own words.
 - Run a keyword sweep. Search the text for not, no, never, without, less and fewer, then reread every hit and rewrite the ones that make their point only by negation.
 - Run a label sweep. Search the text for colons, then rewrite every one whose lead-in is a bare label rather than a sentence.
+- Run an AI-speak sweep. Search the text for the words listed above, for two sentences in a row that open the same way, and for an em dash, then rewrite each hit that comes from habit rather than from meaning.
 - Keep track of what each read covered, so a sentence you skipped shows up instead of slipping through.
 
 ## Take the plain word from the table

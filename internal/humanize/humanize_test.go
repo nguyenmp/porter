@@ -408,6 +408,7 @@ func TestRulesRunLargestConcernFirst(t *testing.T) {
 		"## Link the source where it backs the text",
 		"## Use bold sparingly",
 		"## Design the page for reading",
+		"## Avoid AI-speak",
 		"## Check your work",
 	}
 	last := 0

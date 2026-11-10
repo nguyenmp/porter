@@ -40,7 +40,7 @@ import (
 // PromptVersion identifies the prompt revision that produced a variant. It is
 // stamped on every pass so the UI can explain why a tab reads the way it does,
 // and should be bumped whenever the prompt below changes.
-const PromptVersion = "plain-language-v39"
+const PromptVersion = "plain-language-v40"
 
 // SkillName is the name the built-in plain-language skill is exposed under,
 // both in the load_skill listing and as the sentinel path (api.BuiltinPrefix +
@@ -93,10 +93,12 @@ const (
 // length is a rule of thumb), the four rules that steer an edit (where to spend
 // effort and in what order, how many words to cut, what to protect, and what
 // must not change), and the writing rules grouped by structure, sentences,
-// words, links, emphasis, page layout, and review. The sections run from the
-// largest concern to the smallest, so a model reading top to bottom fixes the
-// shape of the text before it polishes words, and review comes last because it
-// loops back over every rule.
+// words, links, emphasis, page layout, AI-speak, and review. The sections run
+// from the largest concern to the smallest, so a model reading top to bottom
+// fixes the shape of the text before it polishes words, and review comes last
+// because it loops back over every rule. AI-speak sits just before review
+// because it is the one group that serves how the text sounds rather than what
+// the reader understands, so every rule above it outranks it.
 // Sections hold one idea per rule and run a few dozen words each, so the body
 // models the style it asks for. systemPrompt wraps it with the framing line both
 // modes need, so the shared guidance can never drift between the skill and the
@@ -105,13 +107,14 @@ const (
 //
 // The rules live in plain_rules.md rather than in Go source, so anyone can read
 // them as prose and link to the file. The build embeds that file, so the binary
-// still carries its own copy and the server needs no skill files on disk. The
-// text is distilled from the markdown files of the gsa/plainlanguage.gov git
-// repository (https://github.com/gsa/plainlanguage.gov; the guidelines live
-// under _pages/guidelines/, covering audience, words, concise, conversational,
-// voice, organization, design, web, and test), so prompt edits stay anchored in
-// the source material rather than in memory. It condenses the guidance into one
-// LLM-request-sized block with no web fetches.
+// still carries its own copy and the server needs no skill files on disk. Most
+// of the text is distilled from the markdown files of the gsa/plainlanguage.gov
+// git repository (the guidelines live under _pages/guidelines/, covering
+// audience, words, concise, conversational, voice, organization, design, web,
+// and test), and the AI-speak section from published lists of machine-writing
+// tells; the Sources block below names every one, so prompt edits stay anchored
+// in the source material rather than in memory. It condenses the guidance into
+// one LLM-request-sized block with no web fetches.
 //
 //go:embed plain_rules.md
 var plainRulesFile string
@@ -120,6 +123,43 @@ var plainRulesFile string
 // framing strings that wrap it (systemPrompt, systemDirective) control their
 // own spacing.
 var plainRules = strings.TrimSuffix(plainRulesFile, "\n")
+
+// Sources behind the rules in plain_rules.md. Every rule should trace to one of
+// these, so a reader can check the claim instead of trusting it.
+//
+// Everything except the AI-speak section comes from the gsa/plainlanguage.gov
+// repository (https://github.com/gsa/plainlanguage.gov, rules under
+// _pages/guidelines/). The list rules also follow four style manuals, linked
+// inline where the rules use them: Google
+// (https://developers.google.com/style/lists), the CDC
+// (https://www.cdc.gov/nceh/clearwriting/writing-tips/2025/bulleted-lists.html),
+// GOV.UK (https://design-system.service.gov.uk/styles/lists/), and the
+// Australian Style Manual
+// (https://www.stylemanual.gov.au/structuring-content/lists).
+//
+// The AI-speak section distills five published lists of machine-writing tells,
+// read 10 November 2026. That section exists because our own rules (short
+// sentences, headings, lists, one idea per line) produce several of the same
+// habits, so it narrows each habit rather than banning it.
+//   - Julie Holmes, "AI Writing Tropes: The Complete List",
+//     https://julieholmes.com/ai-writing-tropes/. Negative parallelism, repeated
+//     openings, one-line fragments, made-up labels, wrap-up lines, bold bullets
+//   - Grammarly, "Common Words and Phrases in AI-Generated Text",
+//     https://www.grammarly.com/blog/ai/common-ai-words/. The word and opener
+//     lists.
+//   - Pangram, "Comprehensive Guide to Spotting AI Writing Patterns",
+//     https://www.pangram.com/blog/comprehensive-guide-to-spotting-ai-writing-patterns.
+//     The phrase list and the punctuation habits.
+//   - OpenAlmanac, "AI patterns to avoid",
+//     https://www.openalmanac.org/ai-patterns-to-avoid.md. High-frequency words
+//     and inflated significance.
+//   - AIStoryHub, "758 AI Writing Tells, Catalogued and Explained",
+//     https://aistoryhub.co/blog/we-catalogued-758-phrases-ai-cant-stop-writing.
+//     Frequency evidence, built on a GPTZero study and Wikipedia's "Signs of AI
+//     writing".
+//
+// When you add a rule, add its source here the same way. A rule with no source
+// is a preference someone invented, and the next reader cannot tell which it is.
 
 // systemPrompt is the plain-language prompt for rewriting: the shared rule body
 // (plainRules) plus the one rewrite-only rule, example use, which only makes
