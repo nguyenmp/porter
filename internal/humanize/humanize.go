@@ -40,7 +40,7 @@ import (
 // PromptVersion identifies the prompt revision that produced a variant. It is
 // stamped on every pass so the UI can explain why a tab reads the way it does,
 // and should be bumped whenever the prompt below changes.
-const PromptVersion = "plain-language-v40"
+const PromptVersion = "plain-language-v41"
 
 // SkillName is the name the built-in plain-language skill is exposed under,
 // both in the load_skill listing and as the sentinel path (api.BuiltinPrefix +
@@ -108,13 +108,13 @@ const (
 // The rules live in plain_rules.md rather than in Go source, so anyone can read
 // them as prose and link to the file. The build embeds that file, so the binary
 // still carries its own copy and the server needs no skill files on disk. Most
-// of the text is distilled from the markdown files of the gsa/plainlanguage.gov
-// git repository (the guidelines live under _pages/guidelines/, covering
-// audience, words, concise, conversational, voice, organization, design, web,
-// and test), and the AI-speak section from published lists of machine-writing
-// tells; the Sources block below names every one, so prompt edits stay anchored
-// in the source material rather than in memory. It condenses the guidance into
-// one LLM-request-sized block with no web fetches.
+// of the text distills the Federal Plain Language Guidelines
+// (https://github.com/gsa/plainlanguage.gov/tree/main/_pages/guidelines); the
+// list, colon, and heading rules also distill five style guides, and the
+// AI-speak section distills published lists of machine-writing tells. The
+// Sources block below names every one, so prompt edits stay anchored in the
+// source material rather than in memory. It condenses the guidance into one
+// LLM-request-sized block with no web fetches.
 //
 //go:embed plain_rules.md
 var plainRulesFile string
@@ -127,15 +127,26 @@ var plainRules = strings.TrimSuffix(plainRulesFile, "\n")
 // Sources behind the rules in plain_rules.md. Every rule should trace to one of
 // these, so a reader can check the claim instead of trusting it.
 //
-// Everything except the AI-speak section comes from the gsa/plainlanguage.gov
-// repository (https://github.com/gsa/plainlanguage.gov, rules under
-// _pages/guidelines/). The list rules also follow four style manuals, linked
-// inline where the rules use them: Google
-// (https://developers.google.com/style/lists), the CDC
-// (https://www.cdc.gov/nceh/clearwriting/writing-tips/2025/bulleted-lists.html),
-// GOV.UK (https://design-system.service.gov.uk/styles/lists/), and the
-// Australian Style Manual
-// (https://www.stylemanual.gov.au/structuring-content/lists).
+// The federal guide covers every section except AI-speak, unless a rule names
+// another source:
+//   - Federal Plain Language Guidelines,
+//     https://github.com/GSA/plainlanguage.gov/tree/main/_pages/guidelines
+//
+// The list, colon, and heading rules also distill five style guides, linked
+// inline where the rule body uses them:
+//   - Google developer documentation style guide: colons
+//     (https://developers.google.com/style/colons), lists
+//     (https://developers.google.com/style/lists), and run-in headings in a
+//     description list
+//     (https://developers.google.com/style/lists#description-lists-that-use-run-in-headings)
+//   - Microsoft Writing Style Guide: colons,
+//     https://learn.microsoft.com/en-us/style-guide/punctuation/colons
+//   - CDC Clear Writing: bulleted lists,
+//     https://www.cdc.gov/nceh/clearwriting/writing-tips/2025/bulleted-lists.html
+//   - GOV.UK Design System: lists,
+//     https://design-system.service.gov.uk/styles/lists/
+//   - Australian Government Style Manual: lists,
+//     https://www.stylemanual.gov.au/structuring-content/lists
 //
 // The AI-speak section distills five published lists of machine-writing tells,
 // read 10 November 2026. That section exists because our own rules (short
