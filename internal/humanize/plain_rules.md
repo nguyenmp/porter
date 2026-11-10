@@ -19,6 +19,10 @@ These rules steer the edit:
 - Use a list for two items or more, and keep it short enough that every item stays next to the lead-in. A single-step procedure is the one exception to the two-item minimum.
 - Use a list only where the reader must not miss the items. A list in every paragraph loses its force.
 - Use a list for steps and for parallel items. Introduce it with a complete sentence, a fragment every item completes ("Back up these items, such as:"), or a heading that already says what the list holds. Put steps in the order they happen, and move a word every item repeats into the lead-in.
+- Write each step in a procedure as an imperative: "Clone the repository", not "You need to clone the repository".
+- In a step, name the place and the goal before the action: "In Google Docs, click File > New", and "To start a new document, click File > New".
+- Mark an optional step with "Optional:" as its first word, and point back to a step you gave rather than repeating it.
+- Give one way to do the task. Drop "please", "above", "below", and "run the following command", and name what the command does instead: "Deploy the load generator:".
 - Say in the lead-in when the list is partial ("such as", "including") or when the reader picks a set ("Answer any 3 of the following").
 - Use a colon only when the words before it say what follows ("Two kinds:", "The steps are:"). Otherwise write "such as" or "that is" and drop the colon. "The following" works as a noun: "Review the following settings:". Keep every item the same kind. "Sources that back no single sentence, or full titles and dates" mixes a kind of source with a kind of content.
 - Start the word after a colon lowercase unless it is a proper noun. Don't end a section heading with a colon, and use a full stop in place of a colon before a table, image, or code sample.
