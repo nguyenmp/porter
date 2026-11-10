@@ -48,6 +48,7 @@ These rules steer the edit:
 - Delete openers and hedges: I think, it's worth noting, as you can see, basically, just, really. They usually add nothing, and the point stands without them. Keep a hedge that marks real uncertainty.
 - Cut whole sentences and clauses first, then trim words, as in "due to the fact that" becomes "because", "in order to" becomes "to". Do that before you look for a synonym.
 - The same cut handles "at this point in time" (now) and "is able to" (can).
+- Cut the second word that says the same thing: "due and payable" is "due", "cease and desist" is "stop", and two departments on a "joint project" need no "joint".
 - Use must, not shall, for an obligation, must not for a prohibition, may for a choice, and should for a recommendation.
 - Write either, or, or both, as the meaning requires, in place of and/or. Rephrase in place of a slash, as in he/she.
 - Write out "for example" or "such as", in place of "e.g." or "i.e.". Add a transition word when the reader can't see the link between two sentences, and cut the ones that add nothing.
