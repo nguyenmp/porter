@@ -394,6 +394,29 @@ func TestBrevityRuleInRulesBody(t *testing.T) {
 	}
 }
 
+// TestReviewRulesInRulesBody checks the four rules a code review turned up live
+// in the shared rule body (plain_rules.md), so the skill and the background pass
+// both carry them: open with the facts rather than an image of them, name the
+// actor in a risk, lead with the top ask, and count hard words like long words.
+// Each one sharpens a rule already in the file at a wider scope, which is why
+// they sit inside those sections rather than in a section of their own.
+func TestReviewRulesInRulesBody(t *testing.T) {
+	rules := []string{
+		"Open with the facts",
+		"Name the actor in a risk",
+		"Lead with the one thing you most want done",
+		"Count hard words like long words",
+	}
+	for _, want := range rules {
+		if !strings.Contains(plainRules, want) {
+			t.Errorf("plain_rules.md is missing %q:\n%s", want, plainRules)
+		}
+		if !strings.Contains(Prompt(), want) {
+			t.Errorf("the plain-language skill does not carry %q", want)
+		}
+	}
+}
+
 // TestRulesRunLargestConcernFirst checks the rule body reads biggest to
 // smallest: the sections start with the main point and end with the check, and the
 // preserve rule sits ahead of the sections so the model meets its hardest
