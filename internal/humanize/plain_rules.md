@@ -13,15 +13,15 @@ These rules steer the edit:
 - Write to one audience at a time. When you write to two, give each its own section, and say who "you" and "we" mean.
 - Write as if the reader may leave at any point. The first paragraph must stand alone, because many readers stop there. They spend about 5 seconds deciding whether a page is useful, scan the headings and the first words of each line, and read about 18% of it. Every word must earn its place.
 - Give each chunk a heading that says what it holds. Prefer a question, then a statement, then a verb phrase, and keep one kind per level. Start a verb heading with the verb ("Filling out the form"), not "how to". Keep the heading shorter than its content, and skip one-word answers.
-- Number the items when the order matters, and bullet them when it doesn't. Give each numbered item a capital letter and a full stop, because a step is a sentence. Keep numbered lists out of a sentence ("the facilitator will 1) welcome, 2) introduce").
-- Use a list for two items or more, and keep it short enough that every item stays next to the lead-in.
-- Use a list only where the reader must not miss the items. One in every paragraph loses its force.
+- Number the items when the order matters, and bullet them when it doesn't. Keep numbered lists out of a sentence ("the facilitator will 1) welcome, 2) introduce").
+- Use a list for two items or more, and keep it short enough that every item stays next to the lead-in. A single-step procedure is the one exception.
+- Use a list only where the reader must not miss the items. A list in every paragraph loses its force.
 - Use a list for steps and for parallel items. Introduce it with a complete sentence, a fragment every item completes ("Back up these items, such as:"), or a heading that already says what the list holds. Put steps in the order they happen.
 - Use a colon only when the words before it say what follows ("Two kinds:", "The steps are:") or when the first word does ("say we manage the program"). Otherwise write "such as" or "that is" and drop the colon. Keep every item the same kind. "Sources that back no single sentence, or full titles and dates" mixes a kind of source with a kind of content.
-- Start the word after a colon lowercase unless it is a proper noun. Don't end a heading with a colon, and use a full stop in place of a colon before a table, image, or code sample.
-- Punctuate items by the type of list, and keep one type per list. A sentence list gives every item a capital letter and a full stop. A fragment list uses lowercase and one full stop after the last item. A stand-alone list, under a heading with no lead-in, uses capitals and no full stops. Put no semicolon or comma at the end of an item, and no "and" or "or" after the second-last one unless the text is legal. A list of single words, code, or link text is the exception: it takes a capital letter and no full stop. The list rules here come from [Google](https://developers.google.com/style/lists), [CDC](https://www.cdc.gov/nceh/clearwriting/writing-tips/2025/bulleted-lists.html), [GOV.UK](https://design-system.service.gov.uk/styles/lists/) and the [Australian Style Manual](https://www.stylemanual.gov.au/structuring-content/lists).
+- Start the word after a colon lowercase unless it is a proper noun. Don't end a section heading with a colon, and use a full stop in place of a colon before a table, image, or code sample.
+- Punctuate items by the type of list, and keep one type per list. A sentence list gives every item a capital letter and a full stop, numbered or bulleted. A fragment list uses lowercase and one full stop after the last item. A stand-alone list, under a heading with no lead-in, uses capitals and no full stops. Put no semicolon or comma at the end of an item, and no "and" or "or" after the second-last one unless the text is legal. A list of single words, code, or link text is the exception: it takes a capital letter and no full stop. The list rules here come from [Google](https://developers.google.com/style/lists), [CDC](https://www.cdc.gov/nceh/clearwriting/writing-tips/2025/bulleted-lists.html), [GOV.UK](https://design-system.service.gov.uk/styles/lists/) and the [Australian Style Manual](https://www.stylemanual.gov.au/structuring-content/lists).
 - Add a table where a rule depends on conditions. An if-then table beats a paragraph of exceptions.
-- Nest lists one level deep. Allow a second level where the items genuinely split, and never a third. That is stricter than the [federal guide](https://github.com/GSA/plainlanguage.gov/tree/main/_pages/guidelines/organize/use-lists), which allows three. Nest headings no more than three.
+- Nest lists one level deep. Allow a second level where the items genuinely split, and never a third. That is stricter than the [federal guide](https://github.com/GSA/plainlanguage.gov/blob/main/_pages/guidelines/organize/use-lists.md), which allows three. Nest headings no more than three.
 - For a longer document, give the bottom line first and keep related material together. Answer the question on the page: keep the main content out of an FAQ or a PDF. If you must send the reader elsewhere, describe the material well enough for the reader to decide whether to follow.
 
 ## Sentences
@@ -38,7 +38,7 @@ These rules steer the edit:
 - Say what is true rather than what is not. Flag every sentence that says what something is not, then rewrite it in the positive unless the negation is the point.
 - Count the negatives in a sentence. "Not a labor shortage but jobs that do not pay rent" makes the reader undo two; state the cause, then the fact, as in "the jobs pay too little to cover rent".
 - Check a paraphrase the same way. Restating someone else's claim is where a negative slips past a fact check, so put the claim in the positive and read it again.
-- Prefer the singular and a person as the subject: say you must apply, not individuals and organizations must file applications.
+- Prefer the singular and a person as the subject: say "you must apply", not "individuals and organizations must file applications".
 - Use the same term for the same thing throughout. Repeat it rather than reaching for a synonym to sound varied.
 
 ## Words
@@ -229,7 +229,7 @@ Check each wordy phrase against this table, and take the plain word. Bold marks 
 | maintain | keep, support |
 | maximum | greatest, largest, most |
 | methodology | method |
-| minimize | decrease, method |
+| minimize | decrease, lessen |
 | minimum | least, smallest |
 | modify | change |
 | monitor | check, watch |
@@ -237,7 +237,7 @@ Check each wordy phrase against this table, and take the plain word. Bold marks 
 | notify | let know, tell |
 | not later than 10 May | by 10 May, before 11 May |
 | not later than 1600 | by 1600 |
-| notwithstanding | inspite of, still |
+| notwithstanding | in spite of, still |
 | numerous | many |
 | objective | aim, goal |
 | obligate | bind, compel |
@@ -325,7 +325,7 @@ Check each wordy phrase against this table, and take the plain word. Bold marks 
 | / (slash) | and, or |
 
 ## Transition words
-These words name the link between two sentences. Pick one by the job it does, and leave it out when the link is plain. The [federal guide](https://github.com/GSA/plainlanguage.gov/blob/main/_pages/guidelines/organize/use-transition-words.md) gives the same list.
+These words name the link between two sentences. Pick one by the job it does. The [federal guide](https://github.com/GSA/plainlanguage.gov/blob/main/_pages/guidelines/organize/use-transition-words.md) gives the same list.
 
 | Job | Words |
 | --- | --- |
