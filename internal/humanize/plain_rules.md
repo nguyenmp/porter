@@ -8,7 +8,7 @@ These rules steer the edit:
 - Protect the words that carry meaning: the ones that define a term, separate two ideas, or prevent a wrong reading. If you cannot cut a word without losing meaning, leave the text as it is and change only what breaks a rule.
 - Preserve the message. You may reformat, rephrase, and reorganize the text. You may add a heading, list, or table only where it removes words. Do not change what the original conveys. Keep every fact, name, number, and date as given. Do not add, drop, or alter anything in the original. Keep code, URLs, and quoted text exact.
 
-## Structure
+## Lead with the main point
 - In a reply, a report, a web page, or UI text, lead with the main point. Start with the answer and the top task for the reader, then the reasoning, the exceptions, and the details. Say why it matters to the reader.
 - Write to one audience at a time. When you write to two, give each its own section, and say who "you" and "we" mean.
 - Write as if the reader may leave at any point. The first paragraph must stand alone, because many readers stop there. They spend about 5 seconds deciding whether a page is useful, scan the headings and the first words of each line, and read about 18% of it. Every word must earn its place.
@@ -24,7 +24,7 @@ These rules steer the edit:
 - Nest lists one level deep. Allow a second level where the items genuinely split, and never a third. This depth limit is stricter than the [federal guide](https://github.com/GSA/plainlanguage.gov/blob/main/_pages/guidelines/organize/use-lists.md), which allows three. Nest headings no more than three.
 - For a longer document, give the bottom line first and keep related material together. Answer the question on the page: keep the main content out of an FAQ or a PDF. If you must send the reader elsewhere, describe the material well enough for the reader to decide whether to follow.
 
-## Sentences
+## Write clear sentences
 - Speak to the reader as you, in the present tense, and use contractions where they sound natural.
 - Prefer short sentences, each with one clear idea, and short paragraphs, each on one topic. Start a paragraph with a sentence that says what it is about.
 - Use the active voice and the strongest form of each verb. Make the actor the subject: say we manage the program, not we are responsible for management of the program. Say apply, not make an application. Use the passive when the law acts and no person does: "your lease will be terminated".
@@ -41,8 +41,8 @@ These rules steer the edit:
 - Prefer the singular and a person as the subject: say "you must apply", not "individuals and organizations must file applications".
 - Use the same term for the same thing throughout. Repeat it rather than reaching for a synonym to sound varied.
 
-## Words
-- Choose simple, concrete, familiar words. Replace jargon, vague words, and filler with the everyday word: say "buy", not "purchase", and "end", not "terminate". Check each wordy phrase against the table under Plain words.
+## Choose the plain word
+- Choose simple, concrete, familiar words. Replace jargon, vague words, and filler with the everyday word: say "buy", not "purchase", and "end", not "terminate". Check each wordy phrase against the plain-word table below.
 - Say what you compare against. "Carries more" leaves the reader to guess more than what.
 - Delete openers and hedges: I think, it's worth noting, as you can see, basically, just, really. They usually add nothing, and the point stands without them. Keep a hedge that marks real uncertainty.
 - Cut whole sentences and clauses first, then trim words, as in "due to the fact that" becomes "because", "in order to" becomes "to". Do that before you look for a synonym.
@@ -52,17 +52,17 @@ These rules steer the edit:
 - Write out "for example" or "such as", in place of "e.g." or "i.e.". Add a transition word when the reader can't see the link between two sentences, and cut the ones that add nothing.
 - Rewrite so a term needs no definition. When a term must stay, define it at first use, unless the reader already knows it. Write out an abbreviation unless it is widely known. Keep each common word in its usual meaning.
 
-## Links
+## Link the source where it backs the text
 - Hyperlink any tool, library, standard, project, product, company, person, or source the reader might not know. Link only to addresses you know.
 - Cite your sources. When a fact or quote comes from somewhere else, say where, so the reader can check it, and link the web source when you know its address. Skip this for common knowledge and for your own reasoning. Never make up a source.
 - Link each source in the sentence it backs. Add a list at the end only for a source several sentences depend on, or to repeat a linked source with its full title and date.
 - Write link text that says where the link leads, in place of "click here" or "read more". The text is a promise about the page behind it, so make the name match that page and be more specific rather than less. Add a short description when the link needs clarification. A screen reader user who moves through the page by its links gets the same promise.
 
-## Emphasis
+## Use bold sparingly
 - Use bold sparingly. All caps reads as shouting, and underlining looks like a broken link.
 - In a page, use italics for titles and parenthetical notes such as citations, not for emphasis.
 
-## When the text is a page
+## Design the page for reading
 Skip this section for a chat reply. Markdown controls neither type nor layout.
 - Design for reading with these settings: ragged right, left-aligned margins rather than justified or centered; leading, the space between lines, two points larger than the type (12 over 14); a serif font for body text and a sans-serif font for headings.
 - Limit the document to five or six sections, about two per printed page.
@@ -72,7 +72,7 @@ Skip this section for a chat reply. Markdown controls neither type nor layout.
 - Add a picture only when it shows something the words can't.
 - Check the page for clutter before you finish, such as too many layout devices, odd gaps, and shapes that formed by accident.
 
-## Review
+## Check your work
 - Check your own work one rule at a time, and loop back over all of them again. A change that fixes one problem can introduce another, so keep going until every change left only trades one quality for another. To settle a tradeoff, rank the qualities: understandability first, fewer words second, simplicity third.
 - Before you call a pass done, score the sections above in turn, and quote every violation you still see. Fix what you can fix, and carry the rest as a question.
 - Read your text as if you were the reader. For a page or a longer document, also test it with real users. Can they find what they need, understand it, and use it to meet their goals? Ask them to answer a question from it, then to say the content back in their own words.
@@ -80,7 +80,7 @@ Skip this section for a chat reply. Markdown controls neither type nor layout.
 - Run a label sweep. Search the text for colons, then rewrite every one whose lead-in is a bare label rather than a sentence.
 - Keep track of what each read covered, so a sentence you skipped shows up instead of slipping through.
 
-## Plain words
+## Take the plain word from the table
 
 Check each wordy phrase against this table, and take the plain word. Bold marks the dirty dozen, the 12 words the [federal guide](https://github.com/GSA/plainlanguage.gov/tree/main/_pages/guidelines/words) says weaken a sentence most.
 
@@ -324,7 +324,7 @@ Check each wordy phrase against this table, and take the plain word. Bold marks 
 | your office | you |
 | / (slash) | and, or |
 
-## Transition words
+## Name the link with a transition word
 These words name the link between two sentences. Pick one by the job it does. The [federal guide](https://github.com/GSA/plainlanguage.gov/blob/main/_pages/guidelines/organize/use-transition-words.md) gives the same list.
 
 | Job | Words |

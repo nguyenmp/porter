@@ -395,12 +395,20 @@ func TestBrevityRuleInRulesBody(t *testing.T) {
 }
 
 // TestRulesRunLargestConcernFirst checks the rule body reads biggest to
-// smallest: the sections start with structure and end with review, and the
+// smallest: the sections start with the main point and end with the check, and the
 // preserve rule sits ahead of the sections so the model meets its hardest
 // constraint before it starts editing. A reorder is the point of the file, so a
 // silent reshuffle should fail here rather than only in a reply.
 func TestRulesRunLargestConcernFirst(t *testing.T) {
-	sections := []string{"## Structure", "## Sentences", "## Words", "## Links", "## Emphasis", "## When the text is a page", "## Review"}
+	sections := []string{
+		"## Lead with the main point",
+		"## Write clear sentences",
+		"## Choose the plain word",
+		"## Link the source where it backs the text",
+		"## Use bold sparingly",
+		"## Design the page for reading",
+		"## Check your work",
+	}
 	last := 0
 	for _, s := range sections {
 		i := strings.Index(plainRules, s)
@@ -416,7 +424,7 @@ func TestRulesRunLargestConcernFirst(t *testing.T) {
 	if preserve < 0 {
 		t.Fatalf("plain_rules.md is missing the preserve rule:\n%s", plainRules)
 	}
-	if preserve > strings.Index(plainRules, "## Structure") {
+	if preserve > strings.Index(plainRules, "## Lead with the main point") {
 		t.Errorf("the preserve rule trails the section rules; it must sit in the steering block at the top")
 	}
 }
