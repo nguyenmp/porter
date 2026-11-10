@@ -14,16 +14,20 @@ These rules steer the edit:
 - On a question-and-answer page, use "I" for the reader and "we" for your side: "How do I apply?", answered by "We review your application."
 - Write as if the reader may leave at any point. The first paragraph must stand alone, because many readers stop there. They spend about 5 seconds deciding whether a page is useful, scan the headings and the first words of each line, and read about 18% of it. Every word must earn its place.
 - Give each chunk a heading that says what it holds. Prefer a question, then a statement, then a verb phrase, and keep one kind per level. Start a verb heading with the verb ("Filling out the form"), not "how to". Keep the heading shorter than its content, and skip one-word answers.
+- For a longer document, give the bottom line first and keep related material together. If you must send the reader elsewhere, put the cross-reference at the end of the passage, and describe the material well enough for the reader to decide whether to follow.
+- Answer the question on the page: keep the main content out of an FAQ or a PDF.
+
+## Write a list or a colon
 - Number the items when the order matters, and bullet them when it doesn't. Keep numbered lists out of a sentence ("the facilitator will 1) welcome, 2) introduce"). Don't open items with "firstly" or "secondly": number the list, or link the sentences ("Next, they introduce the speakers").
 - Order an unordered list by what matters most to the reader. Alphabetical order is the fallback.
 - Use a list for two items or more, and keep it short enough that every item stays next to the lead-in. A single-step procedure is the one exception to the two-item minimum.
 - Use a list only where the reader must not miss the items. A list in every paragraph loses its force.
 - Use a list for steps and for parallel items. Introduce it with a complete sentence, a fragment every item completes ("Back up these items, such as:"), or a heading that already says what the list holds. Put steps in the order they happen, and move a word every item repeats into the lead-in.
+- Say in the lead-in when the list is partial ("such as", "including") or when the reader picks a set ("Answer any 3 of the following").
 - Write each step in a procedure as an imperative: "Clone the repository", not "You need to clone the repository".
 - In a step, name the place and the goal before the action: "In Google Docs, click File > New", and "To start a new document, click File > New".
 - Mark an optional step with "Optional:" as its first word, and point back to a step you gave rather than repeating it.
 - Give one way to do the task. Drop "please", "above", "below", and "run the following command", and name what the command does instead: "Deploy the load generator:".
-- Say in the lead-in when the list is partial ("such as", "including") or when the reader picks a set ("Answer any 3 of the following").
 - Use a colon only when the words before it say what follows ("Two kinds:", "The steps are:"). Otherwise write "such as" or "that is" and drop the colon. "The following" works as a noun: "Review the following settings:". Keep every item the same kind. "Sources that back no single sentence, or full titles and dates" mixes a kind of source with a kind of content.
 - Start the word after a colon lowercase unless it is a proper noun. Don't end a section heading with a colon, and use a full stop in place of a colon before a table, image, or code sample.
 - Skip the colon at the end of a UI label, button, or command name. Inside a title, a colon splits the title from its subtitle, and the word after it takes a capital.
@@ -32,8 +36,6 @@ These rules steer the edit:
 - Keep each item to one sentence. In a list you write inside a sentence, use the serial comma: "event logs, clickstream data, and e-commerce transactions".
 - Add a table where a rule depends on conditions. An if-then table beats a paragraph of exceptions.
 - Nest lists one level deep. Allow a second level where the items genuinely split, and never a third. This depth limit is stricter than the [federal guide](https://github.com/GSA/plainlanguage.gov/blob/main/_pages/guidelines/organize/use-lists.md), which allows three. Nest headings no more than three.
-- For a longer document, give the bottom line first and keep related material together. If you must send the reader elsewhere, put the cross-reference at the end of the passage, and describe the material well enough for the reader to decide whether to follow.
-- Answer the question on the page: keep the main content out of an FAQ or a PDF.
 
 ## Write clear sentences
 - Speak to the reader as you, in the present tense, and use contractions where they sound natural.

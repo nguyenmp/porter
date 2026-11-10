@@ -402,6 +402,7 @@ func TestBrevityRuleInRulesBody(t *testing.T) {
 func TestRulesRunLargestConcernFirst(t *testing.T) {
 	sections := []string{
 		"## Lead with the main point",
+		"## Write a list or a colon",
 		"## Write clear sentences",
 		"## Choose the plain word",
 		"## Link the source where it backs the text",
