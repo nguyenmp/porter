@@ -10,29 +10,35 @@ These rules steer the edit:
 
 ## Structure
 - Lead with the main point, in a reply, a report, a web page, or UI text. Start with the answer and the top task for the reader, then the reasoning, the exceptions, and the details. Say why it matters to the reader.
+- Write to one audience at a time. When you write to two, give each its own section, and say who "you" and "we" mean.
 - Write as if the reader may leave at any point. The first paragraph must stand alone, because many readers stop there. They spend about 5 seconds deciding whether a page is useful, scan the headings and the first words of each line, and read about 18% of it. Every word must earn its place.
-- Give each chunk a heading that says what it holds. Prefer a question or a specific phrase to a vague noun.
+- Give each chunk a heading that says what it holds. Prefer a question, then a statement, then a verb phrase, and keep one kind per level. Start a verb heading with the verb ("Filling out the form"), not "how to". Keep the heading shorter than its content, and skip one-word answers.
+- Number the items when the order matters, and bullet them when it doesn't. Give each numbered item a capital letter and a full stop, because a step is a sentence. Keep numbered lists out of a sentence ("the facilitator will 1) welcome, 2) introduce").
+- Use a list for two items or more, and keep it short enough that every item stays next to the lead-in.
+- Use a list only where the reader must not miss the items. One in every paragraph loses its force.
 - Use a list for steps and for parallel items. Introduce it with a complete sentence, a fragment every item completes ("Back up these items, such as:"), or a heading that already says what the list holds. Put steps in the order they happen.
 - Use a colon only when the words before it say what follows ("Two kinds:", "The steps are:") or when the first word does ("say we manage the program"). Otherwise write "such as" or "that is" and drop the colon. Keep every item the same kind. "Sources that back no single sentence, or full titles and dates" mixes a kind of source with a kind of content.
-- Punctuate items by the type of list, and keep one type per list. A sentence list gives every item a capital letter and a full stop. A fragment list uses lowercase and one full stop after the last item. A stand-alone list, under a heading with no lead-in, uses capitals and no full stops.
+- Start the word after a colon lowercase unless it is a proper noun. Don't end a heading with a colon, and use a full stop in place of a colon before a table, image, or code sample.
+- Punctuate items by the type of list, and keep one type per list. A sentence list gives every item a capital letter and a full stop. A fragment list uses lowercase and one full stop after the last item. A stand-alone list, under a heading with no lead-in, uses capitals and no full stops. Put no semicolon or comma at the end of an item, and no "and" or "or" after the second-last one unless the text is legal. A list of single words, code, or link text is the exception: it takes a capital letter and no full stop. The list rules here come from [Google](https://developers.google.com/style/lists), [CDC](https://www.cdc.gov/nceh/clearwriting/writing-tips/2025/bulleted-lists.html), [GOV.UK](https://design-system.service.gov.uk/styles/lists/) and the [Australian Style Manual](https://www.stylemanual.gov.au/structuring-content/lists).
 - Add a table where a rule depends on conditions. An if-then table beats a paragraph of exceptions.
-- Nest lists one level deep. Allow a second level where the items genuinely split, and never a third. Nest headings no more than three.
-- For a longer document, give the bottom line first and keep related material together. If you must send the reader elsewhere, describe the material well enough for the reader to decide whether to follow.
+- Nest lists one level deep. Allow a second level where the items genuinely split, and never a third. That is stricter than the [federal guide](https://github.com/GSA/plainlanguage.gov/tree/main/_pages/guidelines/organize/use-lists), which allows three. Nest headings no more than three.
+- For a longer document, give the bottom line first and keep related material together. Answer the question on the page: keep the main content out of an FAQ or a PDF. If you must send the reader elsewhere, describe the material well enough for the reader to decide whether to follow.
 
 ## Sentences
 - Speak to the reader as you, in the present tense, and use contractions where they sound natural.
 - Prefer short sentences, each with one clear idea, and short paragraphs, each on one topic. Start a paragraph with a sentence that says what it is about.
-- Use the active voice and the strongest form of each verb. Make the actor the subject: say we manage the program, not we are responsible for management of the program. Say apply, not make an application.
+- Use the active voice and the strongest form of each verb. Make the actor the subject: say we manage the program, not we are responsible for management of the program. Say apply, not make an application. Use the passive when the law acts and no person does: "your lease will be terminated".
 - Turn hidden verbs back into verbs. A noun ending in -tion, -ment, -sion, or -ance usually hides one: say pay, not make a payment, and review, not conduct a review.
 - Unpack noun strings: say developing procedures to protect workers, not underground mine worker safety protection procedures development.
 - Keep the subject, verb, and object close together, and put modifiers next to the words they modify. Say you are required to provide only the following, not you are only required to provide the following.
-- Write the sentence, not a label with a colon. "Blocked: webpack won't build" and "Prod: ruby:3.0.7" leave out the actor and the verb, so the reader has to supply them, and some readers stumble there. Say "Webpack blocks the upgrade."
-- Keep the label form for a bold run-in heading in a list ("**Emu**: the best kind of bird") and for a label–value pair in data or UI. Every other colon needs a complete sentence in front of it, which is what [Google](https://developers.google.com/style/colons), [Microsoft](https://learn.microsoft.com/en-us/style-guide/punctuation/colons) and [Chicago](https://www.chicagomanualofstyle.org/book/ed17/part2/ch06/psec130.html) all say. A fragment lead-in is the one exception, and only when every item completes it.
+- Write the sentence, not a label with a colon. "Blocked: webpack won't build" and "Prod: ruby:3.0.7" leave out the actor and the verb, so the reader has to supply them, and some readers stumble there. Say "Webpack blocks the upgrade." Where a colon would still help, rewrite the sentence first and keep the colon as a fallback.
+- Keep the label form for a bold run-in heading in a list ("**Emu**: the best kind of bird") and for a label–value pair in data or UI. Start a run-in heading with a capital and end it with a colon or a period, one choice per list. After a period, start the description with a capital and end it with a period. After a colon, start lowercase, and add a period only when the description has a verb. Every other colon needs a complete sentence in front of it, which is what [Google](https://developers.google.com/style/colons), [Microsoft](https://learn.microsoft.com/en-us/style-guide/punctuation/colons) and [Chicago](https://www.chicagomanualofstyle.org/book/ed17/part2/ch06/psec130.html) all say. A fragment lead-in is the one exception, and only when every item completes it.
 - Give every pronoun and pointing word (it, this, there) a noun to point at. When it stands for a fact, a claim, or a list, name the thing in words. "Link a source where the sentence uses it" leaves the reader guessing, because both "a source" and "the sentence" fit.
 - Put the main clause first. Lead with a condition when it is a few words and a reader would otherwise misread the rule ("Unless you have already submitted an up-to-date resume, you must submit a resume"). When the condition and the main clause are both long, name the condition first and give it as a list. Use "if" for a condition, and "when" for one that recurs.
 - Say what is true rather than what is not. Flag every sentence that says what something is not, then rewrite it in the positive unless the negation is the point.
 - Count the negatives in a sentence. "Not a labor shortage but jobs that do not pay rent" makes the reader undo two; state the cause, then the fact, as in "the jobs pay too little to cover rent".
 - Check a paraphrase the same way. Restating someone else's claim is where a negative slips past a fact check, so put the claim in the positive and read it again.
+- Prefer the singular and a person as the subject: say you must apply, not individuals and organizations must file applications.
 - Use the same term for the same thing throughout. Repeat it rather than reaching for a synonym to sound varied.
 
 ## Words
@@ -43,7 +49,7 @@ These rules steer the edit:
 - The same cut handles "at this point in time" (now) and "is able to" (can).
 - Use must, not shall, for an obligation, must not for a prohibition, may for a choice, and should for a recommendation.
 - Write either, or, or both, as the meaning requires, in place of and/or. Rephrase in place of a slash, as in he/she.
-- Write out "for example" or "such as", in place of "e.g." or "i.e.", and use transition words sparingly.
+- Write out "for example" or "such as", in place of "e.g." or "i.e.". Add a transition word when the reader can't see the link between two sentences, and cut the ones that add nothing.
 - Rewrite so a term needs no definition. When a term must stay, define it at first use, unless the reader already knows it. Write out an abbreviation unless it is widely known. Keep each common word in its usual meaning.
 
 ## Links
@@ -58,10 +64,21 @@ These rules steer the edit:
 
 ## When the text is a page
 Skip this section for a chat reply. Markdown controls neither type nor layout.
-- Design for reading with these settings: ragged right, left-aligned margins rather than justified or centered; line spacing a little larger than the font size; a serif font for body text and a sans-serif font for headings; no more than three typefaces.
-- Make headings bold and left-aligned, in upper and lower case. Use round or square bullets, at most two styles, and numbers only for a sequence. At the second level, use a dash in place of a hollow bullet. Use shading and borders to accent a chart, not as decoration.
+- Design for reading with these settings: ragged right, left-aligned margins rather than justified or centered; leading, the space between lines, two points larger than the type (12 over 14); a serif font for body text and a sans-serif font for headings; no more than three typefaces.
+- Limit the document to five or six sections, about two per printed page.
+- Make headings bold and left-aligned, in upper and lower case. Triple-space before a heading and double-space after it. Use round or square bullets, at most two styles, and numbers only for a sequence. At the second level, use a dash in place of a hollow bullet. Use shading and borders to accent a chart, not as decoration.
+- Don't mix fonts within the body.
 - When you repurpose print material, cut it by about half and keep only what helps the reader finish a task. The web is a place for action, not narrative.
+- Add a picture only when it shows something the words can't.
 - Check the page for clutter before you finish, such as too many layout devices, odd gaps, and shapes that formed by accident.
+
+## Review
+- Check your own work one rule at a time, and loop back over all of them again. A change that fixes one problem can introduce another, so keep going until every change left only trades one quality for another. To settle a tradeoff, rank the qualities: understandability first, fewer words second, simplicity third.
+- Before you call a pass done, score the sections above in turn, and quote every violation you still see. Fix what you can fix, and carry the rest as a question.
+- Read your text as if you were the reader. For a page or a longer document, also test it with real users. Can they find what they need, understand it, and use it to meet their goals? Ask them to answer a question from it, then to say the content back in their own words.
+- Run a keyword sweep. Search the text for not, no, never, without, less and fewer, then reread every hit and rewrite the ones that make their point only by negation.
+- Run a label sweep. Search the text for colons, then rewrite every one whose lead-in is a bare label rather than a sentence.
+- Keep track of what each read covered, so a sentence you skipped shows up instead of slipping through.
 
 ## Plain words
 
@@ -307,10 +324,15 @@ Check each wordy phrase against this table, and take the plain word. Bold marks 
 | your office | you |
 | / (slash) | and, or |
 
-## Review
-- Check your own work one rule at a time, and loop back over all of them again. A change that fixes one problem can introduce another, so keep going until every change left only trades one quality for another. To settle a tradeoff, rank the qualities: understandability first, fewer words second, simplicity third.
-- Before you call a pass done, score the sections above in turn, and quote every violation you still see. Fix what you can fix, and carry the rest as a question.
-- Read your text as if you were the reader. For a page or a longer document, also test it with real users. Can they find what they need, understand it, and use it to meet their goals?
-- Run a keyword sweep. Search the text for not, no, never, without, less and fewer, then reread every hit and rewrite the ones that make their point only by negation.
-- Run a label sweep. Search the text for colons, then rewrite every one whose lead-in is a bare label rather than a sentence.
-- Keep track of what each read covered, so a sentence you skipped shows up instead of slipping through.
+## Transition words
+These words name the link between two sentences. Pick one by the job it does, and leave it out when the link is plain. The [federal guide](https://github.com/GSA/plainlanguage.gov/blob/main/_pages/guidelines/organize/use-transition-words.md) gives the same list.
+
+| Job | Words |
+| --- | --- |
+| Adding a point | also, and, besides, in addition, similarly |
+| Giving an example | for example, for instance, for one thing |
+| Restating | in other words, that is, in short |
+| Showing a result | so, as a result, thus, then |
+| Contrasting | but, however, on the other hand, still |
+| Summing up | to sum up, in short, in conclusion |
+| Sequencing | first, second, then, next, finally |
