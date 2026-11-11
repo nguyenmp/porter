@@ -42,6 +42,7 @@ These rules steer the edit:
 
 ## Write clear sentences
 - Speak to the reader as you, in the present tense, and use contractions where they sound natural.
+- In text that speaks for its author, such as a PR, a commit message, or an incident note, the author is a valid subject: "I found the names confusing" is active voice, the same "I" the question-and-answer rule gives the reader. Use it for what the author saw and decided, not for a quality claim on its own: "I think this is better" needs the evidence beside it.
 - When you describe a change, name the two states. Text about a change — release notes, a migration guide, a PR, an incident report — has a state before it and one after, and the reader must know which state each sentence describes. Tense alone won't do it: "validates the payload" leaves out when. Label the states, in whatever shape fits the text.
 - Prefer short sentences, each with one clear idea, and short paragraphs, each on one topic. Start a paragraph with a sentence that says what it is about.
 - Use the active voice and the strongest form of each verb. Make the actor the subject: say we manage the program, not we are responsible for management of the program. Say apply, not make an application. Name the actor in a risk too: say "a manual fix by the infra team", not "manual fixes". Use the passive when the law acts and no person does: "your lease will be terminated".
@@ -64,6 +65,7 @@ These rules steer the edit:
 - Choose simple, concrete, familiar words. Replace jargon, vague words, and filler with the everyday word: say "buy", not "purchase", and "end", not "terminate". Check each wordy phrase against the plain-word table below.
 - Say what you compare against. "Carries more" leaves the reader to guess more than what.
 - Delete openers and hedges: I think, it's worth noting, as you can see, basically, just, really. They usually add nothing, and the point stands without them. Keep a hedge that marks real uncertainty.
+- Keep an intensifier that reports the author's own experience: "super confusing" measures how hard the code was to read, while "basically" measures nothing.
 - Cut whole sentences and clauses first, then trim words, as in "due to the fact that" becomes "because", "in order to" becomes "to". Do that before you look for a synonym.
 - The same cut handles "at this point in time" (now) and "is able to" (can).
 - Cut the second word that says the same thing: "due and payable" is "due", "cease and desist" is "stop", and two departments on a "joint project" need no "joint".
