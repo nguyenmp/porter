@@ -531,6 +531,25 @@ func TestScorecardRuleInRulesBody(t *testing.T) {
 	}
 }
 
+// TestChangeStateRuleInRulesBody checks the change-state rule reaches the shared
+// body and both prompts. A text about a change that names neither state leaves
+// the reader to guess whether a sentence describes the old behaviour or the new
+// one, and tense alone does not settle it.
+func TestChangeStateRuleInRulesBody(t *testing.T) {
+	const want = "name the two states"
+	if !strings.Contains(plainRules, want) {
+		t.Fatalf("plain_rules.md is missing the change-state rule:\n%s", plainRules)
+	}
+	for name, prompt := range map[string]string{
+		"humanizePrompt": humanizePrompt(),
+		"Prompt":         Prompt(),
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("%s does not carry the change-state rule", name)
+		}
+	}
+}
+
 // TestSilentPassSuppressesScorecard checks the unattended pass is told to keep
 // the scorecard out of its reply. The pass returns text straight into a variant
 // tab, so a card that leaks is user-visible.
