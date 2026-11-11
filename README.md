@@ -67,8 +67,9 @@ I can also use the server as my execution environment in case my laptop is unava
   remote host, edit the local copy with the file editing tools, and push it
   back instead of driving sed/perl over ssh),
   and handoff summary guidance (`internal/handoff`: write the summary for the
-  person who picks the work up next, in plain language, covering what the work
-  was, where it stands, where it lives, the next step, and the traps).
+  person who picks the work up next, in plain language, covering why the work
+  exists, what the conversation settled and why, where it stands, where it
+  lives, the next step, and the traps).
 - Project instruction files ride along with the file tools. Reading or editing
   a file with `read_with_line_numbers`, `line_insert`, `line_replace`, or
   `string_replace` appends the `AGENTS.md` and `CLAUDE.md` files from that
