@@ -28,18 +28,25 @@ func TestBuiltinSkillShape(t *testing.T) {
 }
 
 // TestPromptCoversWhatToWrite verifies the body opens with the request that
-// defines the skill and lists what a handoff summary must contain for someone
-// who was not in the session.
+// defines the skill, warns that the sandbox goes away, and lists what a handoff
+// summary must contain for someone who was not in the session.
 func TestPromptCoversWhatToWrite(t *testing.T) {
 	b := Prompt()
 	for _, want := range []string{
 		"Could you write a summary using plain-language?",
 		"pick up where we left off",
+		"## The sandbox goes away",
+		"may be on another machine",
+		"Save what would be lost",
+		"Ask before you push",
+		"no remote",
+		"git can't carry",
 		"## What to cover",
 		"Where things stand",
 		"Where the work lives",
+		"commit SHA",
 		"The next step",
-		"uncommitted edits",
+		"unpushed commits",
 		"## How to write it",
 		"plain-language skill",
 	} {

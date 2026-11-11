@@ -31,7 +31,7 @@ const SkillName = "handoff"
 func BuiltinSkill() api.Skill {
 	return api.Skill{
 		Name:        SkillName,
-		Description: "Write a summary of the work in plain language: you're handing this off to someone else to pick up where you left off. Load for what the summary must cover.",
+		Description: "Write a summary of the work in plain language: you're handing this off to someone else to pick up where you left off. The sandbox goes away, so save what would be lost first. Load for what the summary must cover.",
 		Path:        api.BuiltinPrefix + SkillName,
 	}
 }
