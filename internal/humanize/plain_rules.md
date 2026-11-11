@@ -64,6 +64,7 @@ These rules steer the edit:
 ## Choose the plain word
 - Choose simple, concrete, familiar words. Replace jargon, vague words, and filler with the everyday word: say "buy", not "purchase", and "end", not "terminate". Check each wordy phrase against the plain-word table below.
 - Say what you compare against. "Carries more" leaves the reader to guess more than what.
+- Give every number a claim. Say what it shows, or cut it: "66 of 265 requests came from curl, so most of the traffic isn't people" earns its figures, while "265 requests, 60 hosts, 66 from curl, 26 from one IP" leaves the reader to work out why.
 - Delete openers and hedges: I think, it's worth noting, as you can see, basically, just, really. They usually add nothing, and the point stands without them. Keep a hedge that marks real uncertainty.
 - Keep an intensifier that reports the author's own experience: "super confusing" measures how hard the code was to read, while "basically" measures nothing.
 - Cut whole sentences and clauses first, then trim words, as in "due to the fact that" becomes "because", "in order to" becomes "to". Do that before you look for a synonym.
