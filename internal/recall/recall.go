@@ -272,10 +272,12 @@ func utcStamp(ms int64) string {
 
 // durText renders a duration for the model view in compact prose: one decimal
 // under 10s, whole seconds up to a minute, then "Nm Ns" up to an hour, then
-// "Nh Nm". Terse to minimize tokens.
+// "Nh Nm". Terse to minimize tokens. A span that rounds to zero (a call that
+// finished inside one millisecond) still renders, so a timing header never
+// shows a blank duration.
 func durText(ms int64) string {
 	if ms <= 0 {
-		return ""
+		return "0.0s"
 	}
 	if ms < 10000 {
 		return fmt.Sprintf("%.1fs", float64(ms)/1000)

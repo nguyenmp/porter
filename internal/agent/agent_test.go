@@ -2276,3 +2276,104 @@ func TestRunTurnRepairsUnpairedHistory(t *testing.T) {
 		t.Errorf("call_2 result = %q, want the interrupted marker", results["call_2"])
 	}
 }
+
+// TestRunTurnLabelsEmptyToolResult verifies a tool that exits without any
+// output commits a marker, not an empty string. A blank result leaves the model
+// unable to tell "produced nothing" from "output lost".
+func TestRunTurnLabelsEmptyToolResult(t *testing.T) {
+	srv, _ := toolServer(t)
+	defer srv.Close()
+
+	cfg := config.Config{BaseURL: srv.URL + "/v1", Model: "test", APIKey: "k"}
+	client := llm.NewClient(cfg, nil)
+
+	var got []api.Envelope
+	res, err := RunTurn(context.Background(), client, []llm.ChatMessage{llm.UserMessage("run it")},
+		&fakeToolProvider{}, func(env api.Envelope) { got = append(got, env) }, nil)
+	if err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+
+	var committed string
+	for _, m := range res.History {
+		if m.Role == "tool" && m.ToolCallID == "call_1" {
+			committed = m.Content
+		}
+	}
+	if committed != NoOutputMarker {
+		t.Errorf("committed empty result = %q, want %q", committed, NoOutputMarker)
+	}
+	var terminal string
+	for _, env := range got {
+		if env.Kind == api.KindToolResult {
+			terminal = env.Result
+		}
+	}
+	if terminal != NoOutputMarker {
+		t.Errorf("terminal envelope result = %q, want %q", terminal, NoOutputMarker)
+	}
+}
+
+// quietSpoolProvider streams the given chunks for every tool except the private
+// spool write, which answers with an empty stream.
+type quietSpoolProvider struct {
+	chunks []string
+}
+
+func (p *quietSpoolProvider) Defs() []llm.Tool    { return tools.Defs() }
+func (p *quietSpoolProvider) Environment() string { return "" }
+
+func (p *quietSpoolProvider) Run(ctx context.Context, name string, args []byte) (io.ReadCloser, error) {
+	if name == tools.SpoolWriteTool {
+		return &chunkStream{}, nil
+	}
+	return &chunkStream{chunks: p.chunks}, nil
+}
+
+// TestRunTurnSpoolReportsPathWithoutConfirmation verifies spool_output still
+// tells the model where the file went when the provider returns no confirmation
+// text. The path comes from the call itself, so the model is never left without
+// a destination.
+func TestRunTurnSpoolReportsPathWithoutConfirmation(t *testing.T) {
+	output := "the result bytes"
+	turns := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		turns++
+		switch turns {
+		case 1:
+			fmt.Fprintf(w,
+				`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"shell","arguments":"{\"command\":\"echo hi\",\"porter_action_description\":\"produce the bytes to spool\",\"porter_timeout_seconds\":30}"}}]},"finish_reason":"tool_calls"}]}`+"\n\n"+
+					`data: [DONE]`+"\n")
+		case 2:
+			fmt.Fprintf(w,
+				`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_2","type":"function","function":{"name":"spool_output","arguments":"{\"call_id\":\"call_1\",\"porter_action_description\":\"save the bytes to a file\",\"porter_timeout_seconds\":30}"}}]},"finish_reason":"tool_calls"}]}`+"\n\n"+
+					`data: [DONE]`+"\n")
+		default:
+			fmt.Fprint(w,
+				`data: {"choices":[{"delta":{"content":"done"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`+"\n\n"+
+					`data: [DONE]`+"\n")
+		}
+	}))
+	defer srv.Close()
+
+	cfg := config.Config{BaseURL: srv.URL + "/v1", Model: "test", APIKey: "k"}
+	client := llm.NewClient(cfg, nil)
+
+	res, err := RunTurn(context.Background(), client, []llm.ChatMessage{llm.UserMessage("save it")},
+		&quietSpoolProvider{chunks: []string{output}}, nil, nil)
+	if err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+
+	var committed string
+	for _, m := range res.History {
+		if m.Role == "tool" && m.ToolCallID == "call_2" {
+			committed = m.Content
+		}
+	}
+	want := fmt.Sprintf("wrote %d bytes to .porter/out/call_1 (no confirmation text from the provider)", len(output))
+	if committed != want {
+		t.Errorf("spool_output result = %q, want %q", committed, want)
+	}
+}

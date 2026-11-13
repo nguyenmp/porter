@@ -274,6 +274,12 @@ func TestTimingNote(t *testing.T) {
 			m.FinishedAt = end
 			return m
 		}(), "[ran 8.2s, finished 2025-09-04 15:42:19 UTC]"},
+		{"tool finished inside one millisecond", func() llm.ChatMessage {
+			m := llm.ToolResult("c", "out")
+			m.StartedAt = at
+			m.FinishedAt = at
+			return m
+		}(), "[ran 0.0s, finished 2025-09-04 15:42:11 UTC]"},
 		{"tool cancelled", func() llm.ChatMessage {
 			m := llm.ToolResult("c", "partial")
 			m.StartedAt = at
@@ -298,7 +304,8 @@ func TestDurText(t *testing.T) {
 		ms   int64
 		want string
 	}{
-		{0, ""},
+		{0, "0.0s"},
+		{1, "0.0s"},
 		{800, "0.8s"},
 		{2500, "2.5s"},
 		{9500, "9.5s"},

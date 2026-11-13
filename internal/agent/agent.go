@@ -494,6 +494,13 @@ func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage,
 			// funnels through here so the envelope, the committed message, and
 			// the flags cannot drift.
 			finishTool := func(content string, timedOut bool, startedAt, finishedAt int64) error {
+				// An empty result is invisible: the model cannot tell a tool
+				// that produced nothing from one whose output was lost, so it
+				// gets a label, the way the cancel and timeout paths already
+				// mark their empty results.
+				if strings.TrimSpace(content) == "" {
+					content = NoOutputMarker
+				}
 				meta := recall.Meta(content)
 				if emit != nil {
 					env := api.Envelope{Kind: api.KindToolResult, ToolCallID: c.ID, Name: c.Name, Arguments: c.Arguments, StartedAt: startedAt, FinishedAt: finishedAt, Result: content, ToolOutput: meta}
@@ -688,6 +695,12 @@ func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage,
 						return res, err
 					}
 					continue
+				}
+				if strings.TrimSpace(final) == "" {
+					// The provider closed the write's stream without a word.
+					// Name the destination from the call itself, so the model
+					// still knows where the file went.
+					final = fmt.Sprintf("wrote %d bytes to %s (no confirmation text from the provider)", len(content), path)
 				}
 				if err := finishTool(final, false, startedAt, finishedAt); err != nil {
 					return res, err
@@ -1196,6 +1209,12 @@ func parseCallContract(name string, args []byte) (time.Duration, error) {
 	}
 	return time.Duration(secs) * time.Second, nil
 }
+
+// NoOutputMarker is the committed content of a tool result that arrived empty
+// on a normal exit. A blank result tells the model nothing: it cannot tell a
+// tool that produced no output from one whose output was lost. The cancel and
+// timeout paths write their own markers; this one covers the rest.
+const NoOutputMarker = "(no output)"
 
 // timeoutMarker is the line appended to a tool result whose run hit its
 // porter_timeout_seconds deadline. It lives in the committed content so the
