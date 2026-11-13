@@ -111,7 +111,9 @@ The rules above serve the reader. These serve how the text sounds, so where one 
 - Use an em dash no more than once in a piece, and cut emoji, decorative arrows, and title case in headings. A full stop, a comma, or a colon does the dash's job without the habit.
 
 ## Check your work
-- Check your own work one rule at a time, and loop back over all of them again. A change that fixes one problem can introduce another, so keep going until every change left only trades one quality for another. To settle a tradeoff, rank the qualities: understandability first, fewer words second, simplicity third.
+- Read the text at four scopes: whole, section, paragraph, sentence. Take them in that order, because a section fix can cut sentences you already polished.
+- Every rule above still applies at every scope. The scope decides how much text is in view, and its question tells you where to look first. Whole: does the opening stand alone and answer what was asked? Section: does it hold what its heading promises, and say how it relates to the rest? Paragraph: does it carry one idea, and does its lead-in cover the list under it? Sentence: does it read once?
+- At each scope, loop over every rule while it turns up straight fixes, and move on when a pass only trades one quality for another: understandability first, fewer words second, simplicity third. After the sentence scope, take one outer pass over the whole piece, because a fix at one scope can break another.
 - Before you call a pass done, score the sections above in turn, and quote every violation you still see. Fix what you can fix, and carry the rest as a question.
 - Read your text as if you were the reader. For a page or a longer document, also test it with real users. Can they find what they need, understand it, and use it to meet their goals? Ask them to answer a question from it, then to say the content back in their own words.
 - Run a keyword sweep. Search the text for not, no, never, without, less and fewer, then reread every hit and rewrite the ones that make their point only by negation.

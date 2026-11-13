@@ -40,7 +40,7 @@ import (
 // PromptVersion identifies the prompt revision that produced a variant. It is
 // stamped on every pass so the UI can explain why a tab reads the way it does,
 // and should be bumped whenever the prompt below changes.
-const PromptVersion = "plain-language-v43"
+const PromptVersion = "plain-language-v44"
 
 // SkillName is the name the built-in plain-language skill is exposed under,
 // both in the load_skill listing and as the sentinel path (api.BuiltinPrefix +
@@ -96,7 +96,8 @@ const (
 // words, links, emphasis, page layout, AI-speak, and review. The sections run
 // from the largest concern to the smallest, so a model reading top to bottom
 // fixes the shape of the text before it polishes words, and review comes last
-// because it loops back over every rule. AI-speak sits just before review
+// because it loops back over every rule at four scopes, widest first: whole,
+// section, paragraph, sentence. AI-speak sits just before review
 // because it is the one group that serves how the text sounds rather than what
 // the reader understands, so every rule above it outranks it.
 // Sections hold one idea per rule and run a few dozen words each, so the body
