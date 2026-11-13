@@ -133,6 +133,12 @@ var plainRules = strings.TrimSuffix(plainRulesFile, "\n")
 //   - Federal Plain Language Guidelines,
 //     https://github.com/GSA/plainlanguage.gov/tree/main/_pages/guidelines
 //
+// Three link rules are house rules, agreed 13 November 2026, and do not trace
+// to a published guide: repeat a link wherever the claim comes back, build a URL
+// from an identifier printed in the text, and repeat inline links in an end list
+// rather than replacing them. The rest of that section stays under the federal
+// guide.
+//
 // The list, colon, and heading rules also distill five style guides, linked
 // inline where the rule body uses them:
 //   - Google developer documentation style guide: colons

@@ -209,21 +209,27 @@ func TestCiteRuleInRulesBody(t *testing.T) {
 	}
 }
 
-// TestLinkPlacementRule checks the rule that decides where a link goes: in the
-// sentence that names the source, not only in a list at the end. A bare source
-// name in the body with its link parked in a footer makes the reader match the
-// two up, which is the work the link was meant to save.
+// TestLinkPlacementRule checks the rules that decide where a link goes: on the
+// words of the claim in the sentence that makes it, with any end list only
+// repeating it. A bare source name in the body with its link parked in a footer
+// makes the reader match the two up, which is the work the link was meant to
+// save. The sweep catches the link a normal read passes over.
 func TestLinkPlacementRule(t *testing.T) {
-	const want = "Link each source in the sentence it backs"
-	if !strings.Contains(plainRules, want) {
-		t.Fatalf("plain_rules.md is missing the link placement rule:\n%s", plainRules)
-	}
-	for name, prompt := range map[string]string{
-		"humanizePrompt": humanizePrompt(),
-		"Prompt":         Prompt(),
+	for _, want := range []string{
+		"in the sentence that makes the claim",
+		"repeats the inline links",
+		"Run a link sweep",
 	} {
-		if !strings.Contains(prompt, want) {
-			t.Errorf("%s does not carry the link placement rule", name)
+		if !strings.Contains(plainRules, want) {
+			t.Fatalf("plain_rules.md is missing %q:\n%s", want, plainRules)
+		}
+		for name, prompt := range map[string]string{
+			"humanizePrompt": humanizePrompt(),
+			"Prompt":         Prompt(),
+		} {
+			if !strings.Contains(prompt, want) {
+				t.Errorf("%s does not carry %q", name, want)
+			}
 		}
 	}
 }

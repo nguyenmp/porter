@@ -76,10 +76,12 @@ These rules steer the edit:
 - Rewrite so a term needs no definition. When a term must stay, define it at first use, unless the reader already knows it. Write out an abbreviation unless it is widely known. Keep each common word in its usual meaning.
 
 ## Link the source where it backs the text
-- Hyperlink any tool, library, standard, project, product, company, person, or source the reader might not know. Link only to addresses you know.
+- Hyperlink any tool, library, standard, project, product, company, person, source, pull request, or ticket the reader might need. Link the name of the thing, in the sentence that makes the claim, and link it again wherever the claim comes back. A reader who meets the same pull request in a later paragraph should not have to scroll up to it.
+- Build the URL from an identifier when the identifier determines it, such as a pull request number and a repo, a ticket key and a workspace, or an app ID and its base URL. Keep the identifier in the text, so the reader can see when the link is wrong. Search for the address when the source matters and you don't know one. Skip the guess when a wrong target would mislead.
 - Cite your sources. When a fact or quote comes from somewhere else, say where, so the reader can check it, and link the web source when you know its address. Skip this for common knowledge and for your own reasoning. Never make up a source.
-- Link each source in the sentence it backs. Add a list at the end only for a source several sentences depend on, or to repeat a linked source with its full title and date.
 - Write link text that says where the link leads, in place of "click here" or "read more". The text is a promise about the page behind it, so make the name match that page and be more specific rather than less. Add a short description when the link needs clarification. A screen reader user who moves through the page by its links gets the same promise.
+- Add a list of sources at the end when the piece cites more than a few things. The list repeats the inline links with full titles and dates, and never replaces them.
+- When the text will be read as plain text, such as in a terminal, a code comment, or plain-text mail, write the URL after the name of the source. Elsewhere markdown renders, so link normally.
 
 ## Use bold sparingly
 - Use bold sparingly. All caps reads as shouting, and underlining looks like a broken link.
@@ -118,6 +120,7 @@ The rules above serve the reader. These serve how the text sounds, so where one 
 - Read your text as if you were the reader. For a page or a longer document, also test it with real users. Can they find what they need, understand it, and use it to meet their goals? Ask them to answer a question from it, then to say the content back in their own words.
 - Run a keyword sweep. Search the text for not, no, never, without, less and fewer, then reread every hit and rewrite the ones that make their point only by negation.
 - Run a label sweep. Search the text for colons, then rewrite every one whose lead-in is a bare label rather than a sentence.
+- Run a link sweep. Read only the link text, top to bottom, and ask of each one whether it says where it leads and sits on the words of the claim. Then check that every later mention of that claim carries its own link, and that each identifier you can see in the text, such as a pull request number or an app ID, has a link you can build.
 - Run an AI-speak sweep. Search the text for the words listed above, for two sentences in a row that open the same way, and for an em dash, then rewrite each hit that comes from habit rather than from meaning.
 - Keep track of what each read covered, so a sentence you skipped shows up instead of slipping through.
 
