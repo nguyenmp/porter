@@ -567,3 +567,28 @@ func TestSilentPassSuppressesScorecard(t *testing.T) {
 		t.Errorf("the interactive skill must not suppress the scorecard; it keeps one in the scratch file")
 	}
 }
+
+// TestConcisenessPushInRulesBody checks the cut step lives in the shared rule
+// body next to the loop rule it rides on: one reread per scope that looks only
+// for words to cut. It is pinned because the loop alone lets a model read for
+// clarity and never for length, and because the step has to stay one pass per
+// scope rather than a loop of its own, which would keep trimming a text that
+// already reads well.
+func TestConcisenessPushInRulesBody(t *testing.T) {
+	for _, want := range []string{
+		"conciseness push",
+		"one pass per scope",
+	} {
+		if !strings.Contains(strings.ToLower(plainRules), want) {
+			t.Fatalf("plain_rules.md is missing %q:\n%s", want, plainRules)
+		}
+		for name, prompt := range map[string]string{
+			"humanizePrompt": humanizePrompt(),
+			"Prompt":         Prompt(),
+		} {
+			if !strings.Contains(strings.ToLower(prompt), want) {
+				t.Errorf("%s does not carry %q", name, want)
+			}
+		}
+	}
+}
