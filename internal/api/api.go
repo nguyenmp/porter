@@ -168,6 +168,16 @@ type SandboxOfferResponse struct {
 	Verdicts []SandboxVerdict `json:"verdicts"`
 }
 
+// MaxStreamLineBytes is the ceiling for one NDJSON line on the streams a client
+// reads from the server: exec requests, host requests, and event envelopes.
+// bufio.Scanner's default is 64 KiB, which tool arguments and tool results blow
+// past — a tool result rides a single escaped string, and a 49 KB result became
+// a 72 KB exec request. A larger line fails the scan, which kills the
+// connection, so the limit must sit above any payload the tools carry. The
+// scanner grows its buffer only when a long line arrives, so the ceiling costs
+// nothing until it is used, and it still bounds a corrupt or hostile stream.
+const MaxStreamLineBytes = 16 << 20 // 16 MiB
+
 // ExecRequest is one message the server pushes to a session's execution
 // provider over its exec subscription. A normal request carries a tool call to
 // run (CallID/Name/Arguments); a cancellation request carries only Cancel=true

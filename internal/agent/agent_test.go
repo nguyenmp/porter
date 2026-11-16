@@ -2315,9 +2315,11 @@ func TestRunTurnLabelsEmptyToolResult(t *testing.T) {
 }
 
 // quietSpoolProvider streams the given chunks for every tool except the private
-// spool write, which answers with an empty stream.
+// spool write. That write answers with an empty stream, or fails with spoolErr
+// when it is set, standing in for a provider whose confirmation never arrives.
 type quietSpoolProvider struct {
-	chunks []string
+	chunks   []string
+	spoolErr error
 }
 
 func (p *quietSpoolProvider) Defs() []llm.Tool    { return tools.Defs() }
@@ -2325,17 +2327,25 @@ func (p *quietSpoolProvider) Environment() string { return "" }
 
 func (p *quietSpoolProvider) Run(ctx context.Context, name string, args []byte) (io.ReadCloser, error) {
 	if name == tools.SpoolWriteTool {
+		if p.spoolErr != nil {
+			return &failingStream{err: p.spoolErr}, nil
+		}
 		return &chunkStream{}, nil
 	}
 	return &chunkStream{chunks: p.chunks}, nil
 }
 
-// TestRunTurnSpoolReportsPathWithoutConfirmation verifies spool_output still
-// tells the model where the file went when the provider returns no confirmation
-// text. The path comes from the call itself, so the model is never left without
-// a destination.
-func TestRunTurnSpoolReportsPathWithoutConfirmation(t *testing.T) {
-	output := "the result bytes"
+// failingStream fails every read, standing in for a result stream the provider
+// closed with an error instead of a result.
+type failingStream struct{ err error }
+
+func (s *failingStream) Read([]byte) (int, error) { return 0, s.err }
+func (s *failingStream) Close() error             { return nil }
+
+// spoolTurnResult runs a turn in which the model spools a shell result, and
+// returns the committed spool_output result the model would read next.
+func spoolTurnResult(t *testing.T, provider tools.Provider) string {
+	t.Helper()
 	turns := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -2361,19 +2371,39 @@ func TestRunTurnSpoolReportsPathWithoutConfirmation(t *testing.T) {
 	client := llm.NewClient(cfg, nil)
 
 	res, err := RunTurn(context.Background(), client, []llm.ChatMessage{llm.UserMessage("save it")},
-		&quietSpoolProvider{chunks: []string{output}}, nil, nil)
+		provider, nil, nil)
 	if err != nil {
 		t.Fatalf("RunTurn: %v", err)
 	}
-
-	var committed string
 	for _, m := range res.History {
 		if m.Role == "tool" && m.ToolCallID == "call_2" {
-			committed = m.Content
+			return m.Content
 		}
 	}
-	want := fmt.Sprintf("wrote %d bytes to .porter/out/call_1 (no confirmation text from the provider)", len(output))
-	if committed != want {
-		t.Errorf("spool_output result = %q, want %q", committed, want)
+	t.Fatal("no spool_output result in history")
+	return ""
+}
+
+// TestRunTurnSpoolEmptyConfirmationIsAnError checks that a provider streaming
+// nothing fails the call. An empty confirmation means the write never
+// happened, so reporting it as a success would send the model to a missing file.
+func TestRunTurnSpoolEmptyConfirmationIsAnError(t *testing.T) {
+	committed := spoolTurnResult(t, &quietSpoolProvider{chunks: []string{"the result bytes"}})
+	if !strings.HasPrefix(committed, "error: spool_output:") {
+		t.Errorf("spool_output result = %q, want an error", committed)
+	}
+	if !strings.Contains(committed, ".porter/out/call_1") {
+		t.Errorf("spool_output result = %q, want it to name the destination", committed)
+	}
+}
+
+// TestRunTurnSpoolReportsABrokenStream checks that the write's stream error
+// reaches the model: a dropped exec connection reported as a success is how a
+// spooled file came to be missing while the model believed it was there.
+func TestRunTurnSpoolReportsABrokenStream(t *testing.T) {
+	lost := errors.New("execution host disconnected")
+	committed := spoolTurnResult(t, &quietSpoolProvider{chunks: []string{"the result bytes"}, spoolErr: lost})
+	if !strings.Contains(committed, lost.Error()) {
+		t.Errorf("spool_output result = %q, want it to carry %q", committed, lost)
 	}
 }

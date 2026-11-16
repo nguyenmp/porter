@@ -204,6 +204,10 @@ func (c *Client) Subscribe(ctx context.Context, id string, since uint64, onEvent
 	}
 
 	sc := bufio.NewScanner(resp.Body)
+	// An envelope carries a full tool result, so its line is as long as the
+	// result: past the scanner's 64 KiB default the scan would fail and drop
+	// the subscription.
+	sc.Buffer(nil, api.MaxStreamLineBytes)
 	for sc.Scan() {
 		var env api.Envelope
 		if err := json.Unmarshal(sc.Bytes(), &env); err != nil {
@@ -285,6 +289,11 @@ func (c *Client) ServeExec(ctx context.Context, id string, dispatch func(ctx con
 	running := make(map[string]context.CancelFunc)
 
 	sc := bufio.NewScanner(resp.Body)
+	// An exec request carries a tool call's arguments, and a spool write carries
+	// a whole tool result, so the line can run to megabytes. Past the scanner's
+	// 64 KiB default the scan fails and the call is never dispatched, which is
+	// how spool_output lost a 49 KB result.
+	sc.Buffer(nil, api.MaxStreamLineBytes)
 	for sc.Scan() {
 		var er api.ExecRequest
 		if err := json.Unmarshal(sc.Bytes(), &er); err != nil {
@@ -490,6 +499,10 @@ func (c *Client) ServeHost(ctx context.Context, hostID, instance string, provisi
 	}
 
 	sc := bufio.NewScanner(resp.Body)
+	// A provision request names the environment to create, so give the scanner
+	// the same ceiling as the other server streams rather than its 64 KiB
+	// default.
+	sc.Buffer(nil, api.MaxStreamLineBytes)
 	for sc.Scan() {
 		var hr api.HostRequest
 		if err := json.Unmarshal(sc.Bytes(), &hr); err != nil {

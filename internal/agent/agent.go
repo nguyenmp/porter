@@ -643,19 +643,12 @@ func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage,
 					}
 					continue
 				}
-				var confirm strings.Builder
-				buf := make([]byte, 32*1024)
-				for {
-					n, rerr := wstream.Read(buf)
-					if n > 0 {
-						confirm.Write(buf[:n])
-					}
-					if rerr != nil {
-						break
-					}
-				}
+				// ReadAll keeps the stream's error. A write the provider never
+				// ran ends here as "execution host disconnected", and dropping
+				// that error would report a file that was never written.
+				raw, rerr := io.ReadAll(wstream)
 				_ = wstream.Close()
-				final := confirm.String()
+				final := string(raw)
 				switch cause := classifyRun(ctx, callCtx, runCtx); cause {
 				case runStopped, runCancelled:
 					// Cancelled while the write was in flight: commit the
@@ -696,11 +689,20 @@ func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage,
 					}
 					continue
 				}
-				if strings.TrimSpace(final) == "" {
-					// The provider closed the write's stream without a word.
-					// Name the destination from the call itself, so the model
-					// still knows where the file went.
-					final = fmt.Sprintf("wrote %d bytes to %s (no confirmation text from the provider)", len(content), path)
+				switch {
+				case rerr != nil:
+					// The stream broke before the provider finished the write:
+					// the model must know the file is not trustworthy.
+					chunk := "error: " + rerr.Error()
+					if strings.TrimSpace(final) == "" {
+						final = chunk
+					} else {
+						final += "\n" + chunk
+					}
+				case strings.TrimSpace(final) == "":
+					// The provider streamed nothing and said nothing: an empty
+					// confirmation is a failed write, not a silent success.
+					final = fmt.Sprintf("error: spool_output: nothing confirmed that %s was written (%d bytes); check the file exists before you rely on it", path, len(content))
 				}
 				if err := finishTool(final, false, startedAt, finishedAt); err != nil {
 					return res, err
@@ -801,19 +803,11 @@ func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage,
 					}
 					continue
 				}
-				var raw strings.Builder
-				buf := make([]byte, 32*1024)
-				for {
-					n, rerr := rstream.Read(buf)
-					if n > 0 {
-						raw.Write(buf[:n])
-					}
-					if rerr != nil {
-						break
-					}
-				}
+				// ReadAll keeps the stream's error, so a read the provider cut
+				// short is reported instead of decoded as a partial response.
+				raw, rerr := io.ReadAll(rstream)
 				_ = rstream.Close()
-				final := raw.String()
+				final := string(raw)
 				switch cause := classifyRun(ctx, callCtx, runCtx); cause {
 				case runStopped, runCancelled:
 					// Cancelled while the read was in flight: commit the
@@ -866,6 +860,12 @@ func RunTurn(ctx context.Context, client *llm.Client, history []llm.ChatMessage,
 				failAsset := func(format string, args ...any) error {
 					result := "error: publish_asset: " + fmt.Sprintf(format, args...)
 					return finishTool(result, false, startedAt, finishedAt)
+				}
+				if rerr != nil {
+					if err := failAsset("%s could not be read: %v", path, rerr); err != nil {
+						return res, err
+					}
+					continue
 				}
 				if err := json.Unmarshal([]byte(final), &rd); err != nil {
 					if err := failAsset("the file could not be read (malformed provider response: %v)", err); err != nil {
@@ -1350,19 +1350,14 @@ func readProviderFile(runCtx context.Context, js tools.Provider, path string) (d
 	if err != nil {
 		return nil, "", "error: read_image: " + err.Error()
 	}
-	var raw strings.Builder
-	buf := make([]byte, 32*1024)
-	for {
-		n, rerr := rstream.Read(buf)
-		if n > 0 {
-			raw.Write(buf[:n])
-		}
-		if rerr != nil {
-			break
-		}
-	}
+	// ReadAll keeps the stream's error: a read the provider cut short must not
+	// pass for a short file.
+	raw, rerr := io.ReadAll(rstream)
 	_ = rstream.Close()
-	final := raw.String()
+	final := string(raw)
+	if rerr != nil {
+		return nil, "", "error: read_image: " + path + " could not be read: " + rerr.Error()
+	}
 	if strings.TrimSpace(final) == "" {
 		return nil, "", "error: read_image: " + path + " could not be read (the run ended before the file arrived)"
 	}

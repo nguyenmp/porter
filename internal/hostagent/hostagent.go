@@ -441,7 +441,7 @@ func (p *provisioner) serve(ctx context.Context, sessionID, providerID string, d
 		if err := p.c.PostExecContext(ctx, sessionID, env); err != nil && ctx.Err() == nil {
 			log.Printf("execution host: sandbox %s: re-post context: %v", providerID, err)
 		}
-		_ = p.c.ServeExec(ctx, sessionID, func(ctx context.Context, name string, args []byte) (io.ReadCloser, error) {
+		err := p.c.ServeExec(ctx, sessionID, func(ctx context.Context, name string, args []byte) (io.ReadCloser, error) {
 			// MCP servers hosted on this machine (e.g. behind a VPN) are
 			// served here: the porter server routes CallMCP for a host-owned
 			// server down this exec channel, and the local hub runs the call
@@ -453,6 +453,12 @@ func (p *provisioner) serve(ctx context.Context, sessionID, providerID string, d
 		}, client.ExecConn{ID: providerID, Name: p.hostID, Kind: "host"})
 		if ctx.Err() != nil {
 			return
+		}
+		// Name why the stream ended: without this line a broken exec stream
+		// (a scan failure, a proxy cut) leaves no trace on the host, and the
+		// reconnect a second later looks routine.
+		if err != nil {
+			log.Printf("execution host: sandbox %s: exec stream: %v", providerID, err)
 		}
 		time.Sleep(time.Second)
 	}
