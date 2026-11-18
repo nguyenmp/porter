@@ -89,7 +89,10 @@ These rules steer the edit:
 
 ## Design the page for reading
 Skip this section for a chat reply. Markdown controls neither type nor layout.
-- Design for reading with these settings: ragged right, left-aligned margins rather than justified or centered; leading, the space between lines, two points larger than the type (12 over 14); a serif font for body text and a sans-serif font for headings.
+- Design for reading with these settings:
+  - ragged right, left-aligned margins rather than justified or centered
+  - leading, the space between lines, two points larger than the type (12 over 14)
+  - a serif font for body text and a sans-serif font for headings
 - Limit the document to five or six sections, about two per printed page.
 - Make headings bold and left-aligned, in upper and lower case. Triple-space before a heading and double-space after it. Use round or square bullets, at most two styles, and numbers only for a sequence. At the second level, use a dash in place of a hollow bullet. Use shading and borders to accent a chart, not as decoration.
 - Use no more than three typefaces, and don't mix fonts within the body.
