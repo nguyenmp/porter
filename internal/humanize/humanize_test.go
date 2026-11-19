@@ -218,6 +218,7 @@ func TestLinkPlacementRule(t *testing.T) {
 	for _, want := range []string{
 		"in the sentence that makes the claim",
 		"repeats the inline links",
+		"Pick the link form by the surface",
 		"Run a link sweep",
 	} {
 		if !strings.Contains(plainRules, want) {
