@@ -20,6 +20,7 @@ import (
 	"porter/internal/handoff"
 	"porter/internal/humanize"
 	"porter/internal/remoteedit"
+	"porter/internal/visual"
 )
 
 // maxFiles bounds the file listing included in the context so it stays a small
@@ -232,6 +233,7 @@ func builtinSkills() []api.Skill {
 		humanize.BuiltinSkill(),
 		remoteedit.BuiltinSkill(),
 		handoff.BuiltinSkill(),
+		visual.BuiltinSkill(),
 	}
 }
 

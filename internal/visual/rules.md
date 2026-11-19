@@ -45,11 +45,22 @@ These four phases set the order of an edit:
 - This section applies to any page with style. Chat replies and plain markdown skip it.
 - Keep the line length between 50 and 75 characters, ragged right, never justified.
 - Set the leading two points larger than the type, as in 12 over 14.
-- Use no more than three typefaces, and do not mix fonts in the body.
+- Use a serif face for body text and a sans-serif face for headings, no more than three typefaces in all, and never mix fonts in the body.
 - Build hierarchy from size, weight, and position before color.
-- Make headings left-aligned, in upper and lower case, and bold. Use the built-in list markup so a screen reader announces the list and its length.
-- Use round or square bullets, at most two styles, and numbers only for a sequence.
+- Make headings bold, left-aligned, and in upper and lower case, with triple spacing before and double spacing after.
+- Use round or square bullets, at most two styles, and numbers only for a sequence. At the second level of a bullet list use a dash, and at the second level of a numbered list use lowercase letters.
+- Use the built-in list markup, so a screen reader announces the list and its length.
+- Align a run-over line with the text, not with the bullet, and add space between items that run over several lines.
+- Limit the document to five or six sections, about two per printed page, and move a list longer than a screenful to its own page or an appendix.
+- When you repurpose print material, cut it by about half and keep only what helps the reader finish a task.
+- Use shading and borders to accent a chart, never as decoration.
 - Add a picture only when it shows something the words cannot.
+- Check the page for clutter before you finish, such as too many layout devices, odd gaps, and shapes that formed by accident.
+
+## Keep the accent for one job
+- Use neutrals for structure and one accent for the one thing the reader should notice or click. (Refactoring UI; house rule, 19 November 2026)
+- Check the accent against the contrast rule above, 4.5:1 for text and 3:1 for shapes.
+- This section serves taste before understanding, so every rule above it outranks it.
 
 ## Avoid the AI look
 - This list serves taste rather than understanding, so every rule above outranks it. It is dated because the model settles on a new look, and this list was checked on 19 November 2026.

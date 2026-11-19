@@ -108,20 +108,7 @@ A link lives on the surface, the app or format the reader sees, not in the text 
 
 ## Design the page for reading
 Skip this section for a chat reply. Markdown controls neither type nor layout.
-- Design for reading with these settings:
-  - ragged right, left-aligned margins rather than justified or centered
-  - leading, the space between lines, two points larger than the type (12 over 14)
-  - a serif font for body text and a sans-serif font for headings
-- Limit the document to five or six sections, about two per printed page.
-- Make headings bold and left-aligned, in upper and lower case. Triple-space before a heading and double-space after it. Use round or square bullets, at most two styles, and numbers only for a sequence. At the second level, use a dash in place of a hollow bullet. Use shading and borders to accent a chart, not as decoration.
-- Use no more than three typefaces, and don't mix fonts within the body.
-- Use the built-in list markup, so a screen reader announces the list and its length.
-- Align a run-over line with the text, not with the bullet. Add space between items when they run over several lines.
-- At the second level of a numbered list, use lowercase letters. Decide once whether numbering carries on across lists, and keep to it.
-- When you repurpose print material, cut it by about half and keep only what helps the reader finish a task. The web is a place for action, not narrative.
-- Add a picture only when it shows something the words can't.
-- Move a list longer than a screenful to its own page or an appendix.
-- Check the page for clutter before you finish, such as too many layout devices, odd gaps, and shapes that formed by accident.
+- A page with style is a visual design job: load the visual-design skill for type, layout, and color. This file keeps the words.
 
 ## Avoid AI-speak
 The rules above serve the reader. These serve how the text sounds, so where one of them fights a rule above, the rule above wins. Keep the headings, the bullets, the short sentences, and the you voice.
