@@ -235,6 +235,36 @@ func TestLinkPlacementRule(t *testing.T) {
 	}
 }
 
+// TestFourPhasesInRulesBody checks the phases live in the shared rule body, so
+// the skill and the background pass run the same order from one copy. The order
+// is the point: a rewrite that only trims words cannot condense, and a check run
+// before plain language verifies text that no longer exists.
+func TestFourPhasesInRulesBody(t *testing.T) {
+	phases := []string{"1. Condense.", "2. Expand.", "3. Write plainly.", "4. Verify."}
+	if !strings.Contains(plainRules, "## Work in four phases") {
+		t.Fatalf("plain_rules.md is missing the phase block:\n%s", plainRules)
+	}
+	at := -1
+	for _, phase := range phases {
+		i := strings.Index(plainRules, phase)
+		if i < 0 {
+			t.Fatalf("plain_rules.md is missing %q:\n%s", phase, plainRules)
+		}
+		if i < at {
+			t.Errorf("%q comes out of order in plain_rules.md", phase)
+		}
+		at = i
+		for name, prompt := range map[string]string{
+			"humanizePrompt": humanizePrompt(),
+			"Prompt":         Prompt(),
+		} {
+			if !strings.Contains(prompt, phase) {
+				t.Errorf("%s does not carry %q", name, phase)
+			}
+		}
+	}
+}
+
 // TestDirectivePointsAtSkill verifies the standing style stays lean: it names
 // the plain-language skill and tells the model to load it, rather than
 // restating the rules. The rule body lives in one copy (plain_rules.md),

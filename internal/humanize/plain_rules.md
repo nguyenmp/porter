@@ -9,8 +9,17 @@ These rules steer the edit:
 - Preserve the message. You may reformat, rephrase, and reorganize the text. You may add a heading, list, or table only where it removes words. Do not change what the original conveys. Keep every fact, name, number, and date as given. Do not add, drop, or alter anything in the original. Keep code, URLs, and quoted text exact.
 - Leave out detail the reader doesn't need when you write new text. When you rewrite, keep it, and raise it as a question if it looks out of place.
 
+## Work in four phases
+1. Condense. Cut whole ideas, not just words. Remove duplication, decorative text, and preamble that announces the point.
+2. Expand. Compare the result with the original and restore lost facts, numbers, conditions, and caveats. Add only words that prevent a wrong reading, and a noun for every pronoun that has none. Add links, and repeat a link the reader would otherwise scroll back for.
+3. Write plainly. Apply every rule below.
+4. Verify. Name where each claim came from: the original, the transcript, or a tool result. A claim with no source keeps the original wording. Check the result answers the same request as the original, and if it does not, fix that sentence and rerun phase 3 on it.
+
+When you cannot judge a detail, keep it and never ask about it.
+
 ## Lead with the main point
 - In a reply, a report, a web page, or UI text, lead with the main point. Start with the answer and the top task for the reader, then the reasoning, the exceptions, and the details. Say why it matters to the reader.
+- In a reply, say which request it answers, so the reader does not scroll back to work it out.
 - Lead with the one thing you most want done. Keep any other requests in the same message, in order, and mark the optional ones. Don't spread them over separate messages, because the reader has to reassemble the request and the thread turns into back-and-forth.
 - Write to one audience at a time. When you write to two, give each its own section, and say who "you" and "we" mean.
 - On a question-and-answer page, use "I" for the reader and "we" for your side: "How do I apply?", answered by "We review your application."
@@ -70,6 +79,7 @@ These rules steer the edit:
 - Cut whole sentences and clauses first, then trim words, as in "due to the fact that" becomes "because", "in order to" becomes "to". Do that before you look for a synonym.
 - The same cut handles "at this point in time" (now) and "is able to" (can).
 - Cut the second word that says the same thing: "due and payable" is "due", "cease and desist" is "stop", and two departments on a "joint project" need no "joint".
+- Cut a point made twice, then a sentence that only restates the one before it.
 - Use must, not shall, for an obligation, must not for a prohibition, may for a choice, and should for a recommendation.
 - Write either, or, or both, as the meaning requires, in place of and/or. Rephrase in place of a slash, as in he/she.
 - Write out "for example" or "such as", in place of "e.g." or "i.e.". Add a transition word when the reader can't see the link between two sentences, and cut the ones that add nothing.

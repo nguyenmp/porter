@@ -40,7 +40,7 @@ import (
 // PromptVersion identifies the prompt revision that produced a variant. It is
 // stamped on every pass so the UI can explain why a tab reads the way it does,
 // and should be bumped whenever the prompt below changes.
-const PromptVersion = "plain-language-v50"
+const PromptVersion = "plain-language-v51"
 
 // SkillName is the name the built-in plain-language skill is exposed under,
 // both in the load_skill listing and as the sentinel path (api.BuiltinPrefix +
@@ -92,12 +92,13 @@ const (
 // share: the definition, the rule that settles a conflict (clarity wins, and
 // length is a rule of thumb), the four rules that steer an edit (where to spend
 // effort and in what order, how many words to cut, what to protect, and what
-// must not change), and the writing rules grouped by structure, sentences,
-// words, links, emphasis, page layout, AI-speak, and review. The sections run
-// from the largest concern to the smallest, so a model reading top to bottom
-// fixes the shape of the text before it polishes words, and review comes last
-// because it loops back over every rule at four scopes, widest first: whole,
-// section, paragraph, sentence. AI-speak sits just before review
+// must not change), the four phases that set the order of an edit (condense,
+// expand, write plainly, verify), and the writing rules grouped by structure,
+// sentences, words, links, emphasis, page layout, AI-speak, and review. The
+// sections run from the largest concern to the smallest, so a model reading top
+// to bottom fixes the shape of the text before it polishes words, and review
+// comes last because it loops back over every rule at four scopes, widest first:
+// whole, section, paragraph, sentence. AI-speak sits just before review
 // because it is the one group that serves how the text sounds rather than what
 // the reader understands, so every rule above it outranks it.
 // Sections hold one idea per rule and run a few dozen words each, so the body
@@ -141,6 +142,14 @@ var plainRules = strings.TrimSuffix(plainRulesFile, "\n")
 // converts the text. An API insert keeps the words and drops the link, which is
 // how a Google Doc came out with typed URLs. The rest of that section stays under
 // the federal guide.
+//
+// The order the four phases impose is a house rule, agreed 19 November 2026, and
+// no guide states it. Condense first, because plain language caps a cut at a
+// fifth and protects every fact, so it cannot remove an idea; expand next, so a
+// big cut cannot lose a fact or a reader who has to scroll back; plain language
+// third, because its rules settle what the first two disagree about; verify
+// last, because every earlier phase can change a claim, and a check on text that
+// no longer exists proves nothing.
 //
 // The list, colon, and heading rules also distill five style guides, linked
 // inline where the rule body uses them:
