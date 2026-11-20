@@ -73,6 +73,16 @@
 					<summary title="{{if $t.Name}}{{clock $m.StartedAt}} – {{clock $m.FinishedAt}}{{end}}">tool result: {{$t.Name}}{{if $purpose}} — {{$purpose}}{{else if $t.Arguments}} {{argsSnippet $t.Arguments}}{{end}}{{if $m.Cancelled}} · cancelled{{if $m.StartedAt}} · {{dur $m.StartedAt $m.FinishedAt}}{{end}}{{else if $m.TimedOut}} · timed out{{if $m.StartedAt}} · {{dur $m.StartedAt $m.FinishedAt}}{{end}}{{else}}{{if $code}} · {{$code}}{{end}}{{if $m.StartedAt}} · {{dur $m.StartedAt $m.FinishedAt}}{{end}}{{end}}{{if $m.ToolOutput}}{{if $m.ToolOutput.Recall}}<span class="tool-output-badge" title="read_output window served to the model; the full output stays under the source tool result">recall {{fmtBytes $m.ToolOutput.ShownBytes}}</span>{{else if $m.ToolOutput.Truncated}}<span class="tool-output-badge" title="This tool result was truncated in the model's context; the full output is shown here. Load the middle with read_output.">{{fmtBytes $m.ToolOutput.TotalBytes}} · model saw {{fmtBytes $m.ToolOutput.ShownBytes}}</span>{{end}}{{end}}</summary>
 					<pre><code>{{nl2br $m.Content}}</code></pre>
 				</details>
+				{{/* A picture the result carries for the model to look at
+				     (read_image) draws below the code box, so the reader sees
+				     what the model saw without opening the output. It sits
+				     outside the <details> because a closed result hides what
+				     it holds; the link reaches the full-size asset. */}}
+				{{with $m.ToolOutput}}{{if .Images}}
+					<div class="tool-images">
+						{{range .Images}}<a class="tool-image" href="{{imageURL .URL}}" target="_blank" rel="noopener noreferrer" title="Open this picture at full size"><img class="msg-image" src="{{imageURL .URL}}" alt="{{if .Name}}{{.Name}}{{else}}tool image{{end}}" loading="lazy"></a>{{end}}
+					</div>
+				{{end}}{{end}}
 			{{end}}
 		{{end}}
 	{{else if .Footer}}

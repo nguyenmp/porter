@@ -1,10 +1,13 @@
 package server
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -154,5 +157,99 @@ func iframeThenReplyLLM() http.HandlerFunc {
 		fmt.Fprint(w,
 			`data: {"choices":[{"delta":{"content":"done"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`+"\n\n"+
 				`data: [DONE]`+"\n")
+	}
+}
+
+// readImageThenReplyLLM asks for a read_image call on the given file on the
+// first request, then replies plainly on the second.
+func readImageThenReplyLLM(path string) http.HandlerFunc {
+	args, err := json.Marshal(map[string]any{
+		"path":                      path,
+		"porter_action_description": "look at the screenshot",
+		"porter_timeout_seconds":    30,
+	})
+	if err != nil {
+		panic(err)
+	}
+	var mu sync.Mutex
+	n := 0
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		mu.Lock()
+		n++
+		call := n
+		mu.Unlock()
+		if call == 1 {
+			fmt.Fprint(w,
+				`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","type":"function","function":{"name":"read_image","arguments":`+strconv.Quote(string(args))+`}}]},"finish_reason":"tool_calls"}]}`+"\n\n"+
+					`data: [DONE]`+"\n")
+			return
+		}
+		fmt.Fprint(w,
+			`data: {"choices":[{"delta":{"content":"done"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`+"\n\n"+
+				`data: [DONE]`+"\n")
+	}
+}
+
+// TestReadImageViewDrawsPicture drives a whole read_image turn through the
+// server and checks that the picture reaches both views: the live tool_result
+// envelope carries it in its metadata, and /view draws it below the collapsed
+// code box, outside the <details>, where a reload shows it without a click.
+func TestReadImageViewDrawsPicture(t *testing.T) {
+	pic := filepath.Join(t.TempDir(), "shot.png")
+	if err := os.WriteFile(pic, tinyPNG(t), 0o644); err != nil {
+		t.Fatalf("write picture: %v", err)
+	}
+	_, ts := startServerDB(t, filepath.Join(t.TempDir(), "porter.db"), readImageThenReplyLLM(pic))
+	id, got, _ := runOneTurnID(t, ts.URL, "look at shot.png")
+
+	var url string
+	for _, env := range got {
+		if env.Kind != api.KindToolResult || env.Name != "read_image" {
+			continue
+		}
+		if env.ToolOutput == nil || len(env.ToolOutput.Images) != 1 {
+			t.Fatalf("read_image result carries no picture: %+v", env.ToolOutput)
+		}
+		url = env.ToolOutput.Images[0].URL
+	}
+	if url == "" {
+		t.Fatalf("no read_image tool_result on the bus; envelopes = %+v", got)
+	}
+	if !strings.HasPrefix(url, "/assets/sessions/"+id+"/") {
+		t.Errorf("picture URL = %q, want an asset published for this session", url)
+	}
+
+	view, err := http.Get(ts.URL + "/api/sessions/" + id + "/view")
+	if err != nil {
+		t.Fatalf("GET /view: %v", err)
+	}
+	defer view.Body.Close()
+	body := new(strings.Builder)
+	_, _ = io.Copy(body, view.Body)
+	html := body.String()
+	if !strings.Contains(html, `class="tool-images"`) {
+		t.Errorf("/view has no picture strip:\n%s", html)
+	}
+	if !strings.Contains(html, `src="`+url+`"`) {
+		t.Errorf("/view does not draw the picture %q:\n%s", url, html)
+	}
+	if !strings.Contains(html, `href="`+url+`"`) {
+		t.Errorf("/view does not link the full-size picture %q:\n%s", url, html)
+	}
+	// Outside the <details>: a closed result hides what it holds, so a picture
+	// inside one would never be seen.
+	if close := strings.Index(html, "</details>"); close < 0 || strings.Index(html, `class="tool-images"`) < close {
+		t.Errorf("/view put the picture inside the tool result's closed <details>:\n%s", html)
+	}
+
+	// The URL it draws must actually serve the picture.
+	resp, err := http.Get(ts.URL + url)
+	if err != nil {
+		t.Fatalf("GET %s: %v", url, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || resp.Header.Get("Content-Type") != "image/png" {
+		t.Errorf("GET %s = %d %q, want 200 image/png", url, resp.StatusCode, resp.Header.Get("Content-Type"))
 	}
 }

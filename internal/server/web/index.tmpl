@@ -2029,7 +2029,13 @@
     if (!owner) { chat.appendChild(el); return; }
     let point = owner;
     let nxt = owner.nextElementSibling;
-    while (nxt && nxt.classList.contains('tool-result')) {
+    // A tool result may be followed by its own picture strip (.tool-images)
+    // and its time panel (.msg-meta); step over all three so a later result
+    // lands after the earlier one's chrome instead of between the two.
+    const isToolChrome = (n) => n.classList.contains('tool-result') ||
+                                 n.classList.contains('tool-images') ||
+                                 n.classList.contains('msg-meta');
+    while (nxt && isToolChrome(nxt)) {
       point = nxt;
       nxt = nxt.nextElementSibling;
     }
@@ -2120,6 +2126,45 @@
     }
   }
 
+  // renderToolImages draws the pictures a tool result carries for the model to
+  // look at (read_image) below the result's code box, so the reader sees what
+  // the model saw without opening the output. The strip sits outside the
+  // <details>, because a closed result hides what it holds. It is rebuilt from
+  // the run's images on every call, so a repeated or replayed event cannot
+  // duplicate a picture. src is set as a property, never concatenated into
+  // HTML, and the picture links to the full-size asset.
+  function renderToolImages(run) {
+    const el = run && run.resultEl;
+    if (!el || isIframeRun(run)) return;
+    const images = (run.toolOutput && run.toolOutput.images) || [];
+    if (!images.length) return;
+    if (!run.imagesEl) {
+      run.imagesEl = document.createElement('div');
+      run.imagesEl.className = 'tool-images';
+    }
+    // Keep the strip directly below its own result even after a time chip or
+    // another result was inserted, and mark the strip empty first so a rebuild
+    // never leaves a stale picture behind.
+    if (el.nextElementSibling !== run.imagesEl) el.insertAdjacentElement('afterend', run.imagesEl);
+    run.imagesEl.textContent = '';
+    for (const img of images) {
+      if (!img || !img.url) continue;
+      const link = document.createElement('a');
+      link.className = 'tool-image';
+      link.href = img.url;
+      link.target = '_blank';
+      link.rel = 'noopener noreferrer';
+      link.title = 'Open this picture at full size';
+      const pic = document.createElement('img');
+      pic.className = 'msg-image';
+      pic.alt = img.name || 'tool image';
+      pic.loading = 'lazy';
+      pic.src = img.url;
+      link.appendChild(pic);
+      run.imagesEl.appendChild(link);
+    }
+  }
+
   // Redraw a tool-result block from its run state: name + args snippet, then
   // the status — a server-derived duration once done, a live elapsed timer
   // while running, "cancelled" when the user aborted the run. textContent keeps
@@ -2182,6 +2227,7 @@
       el.querySelector('.tool-result-name').insertAdjacentHTML('beforeend', toolOutputBadge(run.toolOutput));
     }
     el.querySelector('.tool-result-body').textContent = run.result;
+    renderToolImages(run);
     const cancelBtn = el.querySelector('.tool-cancel');
     if (cancelBtn) {
       cancelBtn.hidden = run.status !== 'running';
@@ -2646,6 +2692,7 @@
           // message, matching /view's history layout (live placement already
           // does this via insertToolResult).
           insertToolResult(run.resultEl);
+          renderToolImages(run);
           stampToolRun(run);
         }
         break;

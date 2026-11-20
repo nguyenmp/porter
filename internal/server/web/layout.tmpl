@@ -156,6 +156,13 @@
 			margin: 0.2rem 0;
 			background: #fff;
 		}
+		/* The picture a tool result carries for the model to look at
+		   (read_image). It draws below the result's collapsed code box, so a
+		   reader sees what the model saw without opening the output. The image
+		   reuses .msg-image's height cap; the link around it reaches the
+		   full-size asset. */
+		.tool-images { margin: 0.35rem 0 0.5rem; }
+		.tool-image { display: block; width: fit-content; }
 		/* Images inside an assistant reply. The markdown renderer turns
 		   ![alt](url) into a bare <img>, which has no .msg-image class, so
 		   without this rule the browser draws it at its native pixel size and a

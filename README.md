@@ -321,13 +321,15 @@ descriptions point at each other — `publish_asset` says to pass HTML URLs to
 learns them as one flow: create a file, publish it, show it.
 
 To *look* at a picture rather than show it, the model calls `read_image` with a
-path. The file becomes an asset as well, and the result names its URL. The
-picture is also attached to the model's own view of the conversation, on a user
-message that follows the turn's tool results — a tool result holds text only, so
-the picture cannot ride there. The model therefore sees the picture on its next
-turn and can keep referring to it. Nothing is added to the saved history: the
-attachment exists only in the copy sent to the model, so it never shows as a
-message the user did not write.
+path. The file becomes an asset as well, and the result names its URL. The chat
+draws that picture below the tool result's collapsed code box, so you see what
+the model saw without opening the output, and clicking it opens the full-size
+asset. The picture is also attached to the model's own view of the conversation,
+on a user message that follows the turn's tool results — a tool result holds
+text only, so the picture cannot ride there. The model therefore sees the
+picture on its next turn and can keep referring to it. Nothing is added to the
+saved history: the attachment exists only in the copy sent to the model, so it
+never shows as a message the user did not write.
 
 To *make* a picture, the model calls `generate_image` with a prompt. The picture
 is stored as an asset and the result names its URL, which the model embeds in a
