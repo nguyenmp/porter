@@ -3,6 +3,7 @@ package exec
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -386,5 +387,63 @@ func TestFindSkillsIncludesBuiltin(t *testing.T) {
 		if s.Description == "" {
 			t.Errorf("built-in skill %q description is empty", name)
 		}
+	}
+}
+
+// TestDiscoverRootsGitNote checks that a sandbox holding a linked worktree warns
+// against --depth fetches, and that a plain clone gets no note: it shares
+// nothing with any other checkout, so there is nothing to warn about.
+func TestDiscoverRootsGitNote(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	repo := t.TempDir()
+	runGit(t, repo, "init", "-q", "-b", "dev")
+	runGit(t, repo, "commit", "-q", "--allow-empty", "-m", "root")
+	sandbox := t.TempDir() // the sandbox directory Porter lays worktrees out in
+	wt := filepath.Join(sandbox, "provider-1")
+	runGit(t, repo, "worktree", "add", "-q", "-b", "porter/provider-1", wt)
+
+	ctx, err := DiscoverRoots(sandbox, []string{wt})
+	if err != nil {
+		t.Fatalf("DiscoverRoots: %v", err)
+	}
+	// git records the worktree's parent with symlinks resolved (t.TempDir is
+	// /var/... on macOS, a link to /private/var/...).
+	parent, err := filepath.EvalSymlinks(repo)
+	if err != nil {
+		t.Fatalf("EvalSymlinks: %v", err)
+	}
+	for _, want := range []string{
+		"linked worktree",
+		wt + " (branch porter/provider-1)",
+		"worktree of " + parent,
+		"Never fetch with --depth",
+		"git switch --detach FETCH_HEAD",
+		"git fetch --unshallow origin",
+	} {
+		if !strings.Contains(ctx.GitNote, want) {
+			t.Errorf("git note missing %q:\n%s", want, ctx.GitNote)
+		}
+	}
+	if msg := SystemMessage(ctx); !strings.Contains(msg, "Never fetch with --depth") {
+		t.Errorf("system message missing git note:\n%s", msg)
+	}
+
+	plain, err := DiscoverRoots(repo, nil)
+	if err != nil {
+		t.Fatalf("DiscoverRoots(repo): %v", err)
+	}
+	if plain.GitNote != "" {
+		t.Errorf("git note for a plain clone = %q, want empty", plain.GitNote)
+	}
+}
+
+// runGit runs git in dir and fails the test on error.
+func runGit(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v: %s", args, err, out)
 	}
 }

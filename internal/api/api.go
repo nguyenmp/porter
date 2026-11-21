@@ -603,6 +603,13 @@ type ExecContext struct {
 	Name   string `json:"name,omitempty"`
 	System string `json:"system"`
 	CWD    string `json:"cwd"`
+	// GitNote is a short warning about the sandbox's git checkouts, rendered in
+	// the model's environment message. A sandbox provisioned as a git worktree
+	// shares one object store and one .git/shallow file with its parent repo,
+	// so a --depth fetch there makes the parent shallow for every worktree and
+	// breaks git merge-base. The host fills the note when a root is a linked
+	// worktree; it is empty when there is nothing shared to warn about.
+	GitNote string `json:"git_note,omitempty"`
 	// Repos lists the local git repositories the provider can sandbox
 	// sessions in (a git worktree per session). Execution hosts discover the
 	// repos under the user's home directory and report them so the web UI's

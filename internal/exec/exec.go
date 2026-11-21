@@ -136,12 +136,15 @@ func DiscoverRoots(cwd string, extraRoots []string) (api.ExecContext, error) {
 	roots := make([]string, 0, len(extraRoots)+3)
 	roots = append(roots, extraRoots...)
 	roots = append(roots, SkillRoots(cwd)...)
+	// The git note covers the checkouts the sandbox actually holds, not the
+	// skill roots: cwd (the sandbox directory) plus each worktree in it.
 	return api.ExecContext{
-		System: System(),
-		CWD:    cwd,
-		Files:  files,
-		Skills: FindSkillsIn(roots),
-		CLIs:   FindCLIs(),
+		System:  System(),
+		CWD:     cwd,
+		GitNote: gitNote(append([]string{cwd}, extraRoots...)),
+		Files:   files,
+		Skills:  FindSkillsIn(roots),
+		CLIs:    FindCLIs(),
 	}, nil
 }
 
@@ -155,6 +158,9 @@ func SystemMessage(c api.ExecContext) string {
 	}
 	if c.CWD != "" {
 		fmt.Fprintf(&b, "Working directory: %s\n", c.CWD)
+	}
+	if c.GitNote != "" {
+		fmt.Fprintf(&b, "\n%s\n", c.GitNote)
 	}
 	if len(c.Files) > 0 {
 		b.WriteString("\nFiles in the working directory:\n")
@@ -175,6 +181,89 @@ func SystemMessage(c api.ExecContext) string {
 		}
 	}
 	return strings.TrimSpace(b.String())
+}
+
+// gitNote is the warning rendered into a sandbox's environment message when one
+// of its roots is a linked git worktree. Worktrees share their parent repo's
+// object store and its single .git/shallow file, so a `git fetch --depth` in
+// one sandbox makes the parent shallow for every worktree of it — including
+// the user's main checkout — and `git merge-base` then fails. Sessions reached
+// for --depth to read one old commit or PR without paying for a full fetch, so
+// the note names the cheap alternative. It returns "" when no root is a linked
+// worktree: a plain clone shares nothing, and a repo with no worktree in this
+// sandbox cannot be reached from here.
+func gitNote(roots []string) string {
+	var wts []string // "<path> (branch <name>) — worktree of <repo>", one per worktree
+	for _, root := range roots {
+		repo, gitdir, ok := linkedWorktree(root)
+		if !ok {
+			continue
+		}
+		line := root
+		if branch := headBranch(gitdir); branch != "" {
+			line += " (branch " + branch + ")"
+		}
+		wts = append(wts, line+" — worktree of "+repo)
+	}
+	if len(wts) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("Git: each checkout below is a linked worktree. The worktrees and their\n")
+	b.WriteString("parent repo share one object store and one .git/shallow file.\n")
+	for _, w := range wts {
+		b.WriteString("- " + w + "\n")
+	}
+	b.WriteString("- Never fetch with --depth. It makes the parent shallow for every worktree,\n")
+	b.WriteString("  and git merge-base then fails.\n")
+	b.WriteString("- Read a pull request without a branch name: git fetch origin pull/<n>/head,\n")
+	b.WriteString("  then git switch --detach FETCH_HEAD\n")
+	b.WriteString("- Update from a branch: git fetch origin <branch>, then git rebase\n")
+	b.WriteString("  origin/<branch> (or git merge origin/<branch>)\n")
+	b.WriteString("- If Git reports it cannot determine a merge base: git fetch --unshallow origin")
+	return b.String()
+}
+
+// linkedWorktree reports whether root is a linked worktree (created by `git
+// worktree add`, as Porter's sandboxes are) and returns the parent repo and the
+// worktree's git directory. A linked worktree's .git is a file holding
+// "gitdir: <repo>/.git/worktrees/<name>"; a plain clone's .git is a directory
+// and is not one. Nested repos inside root are not considered: a submodule
+// points at <super>/.git/modules/<name> and shares nothing with the parent.
+func linkedWorktree(root string) (repo, gitdir string, ok bool) {
+	data, err := os.ReadFile(filepath.Join(root, ".git"))
+	if err != nil {
+		return "", "", false // no .git, or it is a directory (a plain clone)
+	}
+	line, _, _ := strings.Cut(string(data), "\n")
+	target, found := strings.CutPrefix(strings.TrimSpace(line), "gitdir:")
+	if !found {
+		return "", "", false
+	}
+	target = strings.TrimSpace(target)
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(root, target)
+	}
+	target = filepath.Clean(target)
+	i := strings.LastIndex(target, string(filepath.Separator)+".git"+string(filepath.Separator)+"worktrees"+string(filepath.Separator))
+	if i <= 0 {
+		return "", "", false
+	}
+	return target[:i], target, true
+}
+
+// headBranch returns the branch gitdir's HEAD points at, or "" when HEAD is
+// detached or unreadable. The note only needs it to label a worktree.
+func headBranch(gitdir string) string {
+	data, err := os.ReadFile(filepath.Join(gitdir, "HEAD"))
+	if err != nil {
+		return ""
+	}
+	ref, ok := strings.CutPrefix(strings.TrimSpace(string(data)), "ref: refs/heads/")
+	if !ok {
+		return ""
+	}
+	return ref
 }
 
 // FindSkills discovers skills under the repo root (via `git rev-parse
