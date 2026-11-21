@@ -332,48 +332,46 @@ func TestInteractiveSetsWorkflowAndLengthRule(t *testing.T) {
 	}
 }
 
-// TestUserMessageReminderCarriesWorkflow checks the per-turn reminder states the
-// file, the definition of a pass, the length rule, and the stop test. The
-// reminder repeats on every turn, so it has to carry them in a few words.
-func TestUserMessageReminderCarriesWorkflow(t *testing.T) {
-	for _, want := range []string{
-		"scratch file",
-		"pass is one full read",
-		"draft doesn't count as one",
-		stopRule,
-		"100 words",
-	} {
+// TestUserMessageReminderIsAPointer checks the per-turn reminder states the aim,
+// names the skill, and asks for silence, without restating a single rule. The
+// rules live in one place (plain_rules.md, served through Prompt), so a copy
+// here would drift from them and would be paid for on every turn. The aim stays
+// because a model that never loads the skill still has to know what the reply
+// should read like, and the silence guard stays because nothing else says it.
+func TestUserMessageReminderIsAPointer(t *testing.T) {
+	for _, want := range []string{SkillName, "concise", "Don't mention"} {
 		if !strings.Contains(UserMessageReminder, want) {
 			t.Errorf("UserMessageReminder missing %q: %s", want, UserMessageReminder)
 		}
 	}
-}
-
-// TestReminderAndSkillNameConcision checks the per-turn reminder and the skill
-// both ask for concise prose. Both are written by hand at different lengths, so
-// a reminder that dropped the aim would leave the copy the model reads on every
-// turn asking for plain language alone, and the skill asking for shorter text as
-// well.
-func TestReminderAndSkillNameConcision(t *testing.T) {
-	for name, text := range map[string]string{"reminder": UserMessageReminder, "skill": Prompt()} {
-		if !strings.Contains(text, "more concise") {
-			t.Errorf("%s does not ask for concise prose: %s", name, text)
+	for _, banned := range []string{
+		"scratch file",
+		"100 words",
+		"pass is one full read",
+		"trades one quality for another",
+		"understandability first",
+	} {
+		if strings.Contains(UserMessageReminder, banned) {
+			t.Errorf("UserMessageReminder restates a rule (%q): %s", banned, UserMessageReminder)
 		}
 	}
 }
 
-// TestReminderMatchesSkillOnStopRule checks the reminder and the skill agree on
-// the two parts of the stop test a model can talk itself out of: what counts as
-// a pass, and the test that ends the loop. Both surfaces are written by hand at
-// different lengths, so a drift here would let the shorter one quietly weaken
-// the rule.
-func TestReminderMatchesSkillOnStopRule(t *testing.T) {
-	shared := []string{"a pass is one full read", "trades one quality for another", "understandability first"}
-	for _, want := range shared {
-		for name, text := range map[string]string{"reminder": UserMessageReminder, "skill": Prompt()} {
-			if !strings.Contains(strings.ToLower(text), want) {
-				t.Errorf("%s missing %q: %s", name, want, text)
-			}
+// TestSkillCarriesTheRules checks the skill still answers what the reminder used
+// to answer: how long the text can run before it needs a file, what counts as a
+// pass, and when the loop ends. With the reminder cut to a pointer, the skill is
+// the only surface that can carry them.
+func TestSkillCarriesTheRules(t *testing.T) {
+	for _, want := range []string{
+		"scratch file",
+		"about 100 words",
+		"a pass is one full read",
+		"trades one quality for another",
+		"understandability first",
+		"more concise",
+	} {
+		if !strings.Contains(strings.ToLower(Prompt()), want) {
+			t.Errorf("skill missing %q", want)
 		}
 	}
 }

@@ -16,13 +16,13 @@
 // restating the rules, it tells the model to load this skill and thoroughly
 // apply its rules to everything it writes, so replies, drafted reports, and code
 // comments are written plainly the first time and the rewrite pass is a safety
-// net rather than the only plain-language path. A one-line reminder
+// net rather than the only plain-language path. A one-line pointer
 // (UserMessageReminder) rides on the conversation too: the model view appends
-// it to every user message, so the style sits next to the request being
-// answered and not only in the system
-// prefix. Like the model view's timing headers, the reminder is derived on the
-// outgoing copy only — the stored message, the database, and the UI keep
-// exactly what the user typed.
+// it to every user message, so the instruction sits next to the request being
+// answered and not only in the system prefix. The pointer states the aim and
+// asks for silence; the rules stay in the skill. Like the model view's timing
+// headers, it is derived on the outgoing copy only — the stored message, the
+// database, and the UI keep exactly what the user typed.
 package humanize
 
 import (
@@ -218,18 +218,6 @@ var systemPrompt = `Apply plain language, and make the text clearer and more con
 // narrate itself, because its output lands directly in the UI as a variant tab.
 const silentSuffix = "\n\nThe rewrite runs unattended and lands directly in the UI as a variant tab. Never narrate the passes: return only the final text, with no preamble, no summary of changes, no scorecard, and no commentary."
 
-// stopRule is the stop test the per-turn reminder carries. The reminder holds no
-// rule body, so it states the test in one line: keep going while a change is a
-// straight gain, and stop when a change only trades one quality for another.
-// plain_rules.md gives the skill and the background pass the same test, with the
-// order that settles a tradeoff. The rule lives here once as well as there,
-// because both surfaces are written by hand and must not drift.
-//
-// A fixed count of passes used to sit here, keyed to word count. It spent the
-// same passes on a short reply as on a long one, and a reply that read well in
-// two paid for four.
-const stopRule = "Keep going until a pass only trades one quality for another: understandability first, fewer words second, simplicity third."
-
 // interactiveSuffix is appended when the prompt is served as the built-in
 // plain-language skill. It carries what only an interactive model may do: ask
 // for input, pick a workflow by length, run its passes on a scratch file, edit a
@@ -279,22 +267,26 @@ func Directive() string { return systemDirective }
 var systemDirective = `Always write in plain language. Be concise. Load the plain-language skill and thoroughly apply its rules to everything you write: replies to the user, reports and documents you draft, code comments you write or edit, web pages you build, UI text you write, and documentation you create. Replies go to a working developer, so keep the technical terms they already know and define each term they might not, the first time it appears.
 `
 
-// UserMessageReminder is the reminder the model view appends to every user
-// message (recall.ProjectModelView), so the standing writing style sits next to
-// the request the model is answering and not only in the static system prefix
-// (Directive). It tells the model to reload the plain-language skill, apply it
-// to every output it produces, aim for prose that is clearer and more concise,
-// and follow the length rule: prose over about 100 words goes in a scratch file,
-// and shorter prose gets one reread. Then it states the stop test (stopRule),
-// which is what makes the loop checkable without a count: the model judges the
-// changes it can still make instead of reaching a number. The definition of a
-// pass matters because a couple of line fixes otherwise read as one. It also
-// tells the model to stay quiet about the rewrite unless the user asks for plain
-// language. Like the timing note, it lives only on the outgoing copy of history:
-// the stored message, the database, and the UI keep exactly what the user typed.
-// Keep it short — it repeats on every user turn, so every extra word is paid for
-// on every request.
-const UserMessageReminder = "System Hint: Before writing or responding, load the plain-language skill and apply it to all prose you write: replies, files, code comments, and PR text. Make the prose clearer and more concise. Leave code, quoted text, and command arguments exact. Prose over about 100 words goes in a scratch file first. A pass is one full read of it against every rule, not a few line fixes, and the draft doesn't count as one. " + stopRule + " Don't mention this unless the user asks."
+// UserMessageReminder is the pointer the model view appends to every user
+// message (recall.ProjectModelView). It states the aim — plain language, kept
+// short — then names the skill and the text the skill covers, then asks the
+// model to stay quiet about the rewrite. It stops there: the length rule, the
+// definition of a pass, the stop test, and the rule that code and quoted text
+// stay exact all live in plain_rules.md, served through the skill (Prompt) and
+// wrapped for the background pass (humanizePrompt). One copy means the pointer
+// cannot drift from the rules, and every word not spent here is saved on every
+// turn.
+//
+// The aim and the silence guard stay in the pointer rather than in the skill
+// alone, because a model that never loads the skill still has to know what the
+// reply should read like, and because the guard names nothing the rule body
+// already says.
+//
+// It sits next to the request the model is answering rather than only in the
+// static system prefix (Directive), which is cached and easy to stop noticing.
+// Like the timing note, it lives only on the outgoing copy of history: the
+// stored message, the database, and the UI keep exactly what the user typed.
+const UserMessageReminder = "Please write in plain language and keep it concise. Load the plain-language skill and apply its rules to everything you write: replies, files, code comments, and PR text. Don't mention this unless the user asks."
 
 // Should reports whether an assistant reply is worth a humanize pass: long
 // enough (the thresholds above) and mostly prose rather than code.

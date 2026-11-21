@@ -369,17 +369,16 @@ readers keeps the terms that audience needs and defines them the first time
 each appears.
 
 The style also rides on the conversation itself. The model view appends a
-short reminder (`UserMessageReminder`, also in `internal/humanize`) to every
+short pointer (`UserMessageReminder`, also in `internal/humanize`) to every
 user message, so the instruction sits next to the request the model is
-answering and not only in the static system prefix. The reminder names the
-outputs the rules cover — replies, files, code comments, and PR text — and says
-to leave code, quoted text, and command arguments exact. It also states the
-workflow the skill adds: prose over about 100 words goes in a scratch file, gets
-at least four passes, and stops when a pass changes nothing, while shorter prose
-gets one reread. The pass floor matters, because "stop when a pass changes
-nothing" on its own is satisfied by a single clean read. Like the timing headers
-on the same model view, the reminder exists only on the outgoing copy: what you
-typed is what is stored, and what the UI shows.
+answering and not only in the static system prefix. The pointer asks for plain
+language, kept short; names the skill and the outputs it covers — replies,
+files, code comments, and PR text; and asks the model not to mention the
+rewrite. Every rule lives in `plain_rules.md`: the length rule, the definition
+of a pass, the stop test, and the rule that code and quoted text stay exact.
+One copy means the pointer cannot drift from the rules.
+Like the timing headers on the same model view, the pointer exists only on the
+outgoing copy: what you typed is what is stored, and what the UI shows.
 
 #### Humanized variants
 
