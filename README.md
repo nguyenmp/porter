@@ -211,6 +211,14 @@ precision and price, and can write one eval entry per endpoint.
 
 The server owns conversation state, and since the SQLite-backed history roadmap item it persists every session — its creation time, full committed history (including tool timing, reasoning, and tool calls), and the bus position clients resume from — to a SQLite database at `porter.db` in the working directory. When running via `make server` (which mounts the repo at `/app`) or `porter-macos` from the repo, the file lands in the repo and is gitignored, exactly like `porter.log`. Because committed state lives in the database, sessions survive server restarts: a restarted server loads them back and the sidebar, `/view`, and SSE resume all keep working.
 
+### Searching the chat history
+
+Every message lives in `porter.db`, and the `history-search` skill teaches the agent to query it, so "find the chat where we set up the Caddy rule" works. The skill is compiled into the binary like the plain-language prompt, and it is the whole feature: no search tool, no endpoint, no Go query code.
+
+The index is what makes it useful. Message text carries a full-text index (an FTS5 table, `messages_fts`) that the server keeps in step as messages arrive. Without it, a common word means ordering tens of thousands of rows by recency; with it, the agent ranks the hits with `bm25()` and prints a short excerpt from `snippet()`. The size is what makes that matter: 205,000 messages hold 750 MB of text, and "port" alone matches 50,501 of them.
+
+The skill always opens the file with `sqlite3 -readonly`, because it is the live database behind the chat. Commands run inside the server's container, so the path is `/data/porter.db`. A chat whose commands run on another machine, such as a laptop sandbox, has no such file, and the skill tells the user to switch that chat's execution environment to local.
+
 ### Archiving sessions
 
 The web sidebar keeps every session in one list, newest first. To keep the
@@ -541,6 +549,13 @@ Build order:
 - [x] Image attachments (web UI only: paste a screenshot or pick a file, up to 4 per message, 5 MiB each). A PNG or JPEG up to 25 MiB is accepted and shrunk to the 5 MiB cap before it is stored, so a retina screenshot goes through without cropping; a GIF or WebP over the cap is refused, because re-encoding it would keep only the first frame. An upload is published as an asset, and the message names it by that URL; the LLM client turns the URL back into inline base64 bytes when it builds a request, so the provider never has to reach the porter server. The media type comes from the file's own bytes, and only raster images are accepted. A server with no asset store refuses an upload with a clear message. A refused upload says why, in the composer: the composer checks the size before it sends, and a send that fails — refused by the server or never delivered — keeps the text and the attachments and shows the reason in a toast. The image rides along with the history on every later request, so an old image costs on every turn — dropping old images in the model view is the waiting improvement.
 - [x] `read_image` — the model reads a picture from the execution environment and sees it on its next turn. A picture over 5 MiB is shrunk to fit first, because the model view re-sends it on every later request, and a GIF or WebP over that size is refused rather than flattened to one frame. The picture is published as an asset, so the result names its URL, and it is attached to the model's view of the conversation only: the saved history keeps the result as text.
 - [x] `generate_image` — make a picture from a prompt, with optional input pictures named by asset URL to guide or edit it. The picture is stored as an asset and the result names its URL; the model never carries the bytes.
+- [x] Chat history search — the `history-search` skill plus a full-text index
+      (`messages_fts`, FTS5) over message text, so the agent can find an
+      earlier chat by what was said in it. The skill carries the schema, a
+      read-only query ranked by `bm25()`, and the rule that the live
+      database is never written. No tool and no endpoint: the agent runs
+      `sqlite3 -readonly` itself, which is why the runtime image now
+      installs the sqlite CLI.
 - [ ] Token budget before send
 - [x] Dynamic MCP
 

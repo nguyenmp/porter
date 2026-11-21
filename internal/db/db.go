@@ -22,7 +22,7 @@ var ErrNotFound = errors.New("db: session not found")
 
 // schemaVersion is the current schema revision, tracked in PRAGMA user_version.
 // Bump it and extend migrate when the schema changes.
-const schemaVersion = 13
+const schemaVersion = 14
 
 // DB wraps the SQLite database handle. It deliberately uses a single
 // connection: pragmas like foreign_keys are per-connection, and a single
@@ -335,6 +335,42 @@ CREATE TABLE IF NOT EXISTS providers (
 			return fmt.Errorf("apply schema v13: %w", err)
 		}
 		if _, err := d.db.Exec("PRAGMA user_version=13"); err != nil {
+			return fmt.Errorf("set user_version: %w", err)
+		}
+	}
+	if v < 14 {
+		// v14: the full-text index over message content, so a chat can search
+		// every earlier chat. The index serves SQL the agent writes itself (the
+		// history-search skill), not a Go function, so it stores no copy of the
+		// text: FTS5 external content keeps only the inverted index and reads
+		// the words back from messages by rowid. Triggers keep the index in
+		// step with the append-only message stream — the update and delete arms
+		// are for repairs and future removals — and the rebuild at the end
+		// indexes every message already stored. An index is what makes this
+		// work: "port" matches 50,501 messages here, and recency alone cannot
+		// order them, while bm25() ranks them and snippet() cuts the excerpt.
+		const ddl = `
+CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+	content,
+	content='messages',
+	content_rowid='rowid'
+);
+CREATE TRIGGER IF NOT EXISTS messages_fts_insert AFTER INSERT ON messages BEGIN
+	INSERT INTO messages_fts(rowid, content) VALUES (new.rowid, new.content);
+END;
+CREATE TRIGGER IF NOT EXISTS messages_fts_delete AFTER DELETE ON messages BEGIN
+	INSERT INTO messages_fts(messages_fts, rowid, content) VALUES('delete', old.rowid, old.content);
+END;
+CREATE TRIGGER IF NOT EXISTS messages_fts_update AFTER UPDATE ON messages BEGIN
+	INSERT INTO messages_fts(messages_fts, rowid, content) VALUES('delete', old.rowid, old.content);
+	INSERT INTO messages_fts(rowid, content) VALUES (new.rowid, new.content);
+END;
+INSERT INTO messages_fts(messages_fts) VALUES('rebuild');
+`
+		if _, err := d.db.Exec(ddl); err != nil {
+			return fmt.Errorf("apply schema v14: %w", err)
+		}
+		if _, err := d.db.Exec("PRAGMA user_version=14"); err != nil {
 			return fmt.Errorf("set user_version: %w", err)
 		}
 	}

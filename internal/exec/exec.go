@@ -18,6 +18,7 @@ import (
 
 	"porter/internal/api"
 	"porter/internal/handoff"
+	"porter/internal/historysearch"
 	"porter/internal/humanize"
 	"porter/internal/remoteedit"
 	"porter/internal/visual"
@@ -233,6 +234,7 @@ func builtinSkills() []api.Skill {
 		humanize.BuiltinSkill(),
 		remoteedit.BuiltinSkill(),
 		handoff.BuiltinSkill(),
+		historysearch.BuiltinSkill(),
 		visual.BuiltinSkill(),
 	}
 }

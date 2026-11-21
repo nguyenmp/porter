@@ -16,6 +16,7 @@ import (
 
 	"porter/internal/api"
 	"porter/internal/handoff"
+	"porter/internal/historysearch"
 	"porter/internal/humanize"
 	"porter/internal/remoteedit"
 )
@@ -457,5 +458,35 @@ func TestShellDefExplainsBackgrounding(t *testing.T) {
 		if !strings.Contains(shellDesc, want) {
 			t.Errorf("shell description missing %q:\n%s", want, shellDesc)
 		}
+	}
+}
+
+// TestLoadSkillReturnsHistorySearchBuiltinBody verifies the built-in
+// history-search skill (a fourth compiled-in skill, like plain-language,
+// editing-remote-files, and handoff) is served from memory with no file on
+// disk, and that its body carries the query and the read-only rule the model
+// depends on.
+func TestLoadSkillReturnsHistorySearchBuiltinBody(t *testing.T) {
+	d := NewDispatcherWithSkills([]api.Skill{historysearch.BuiltinSkill()})
+
+	// The sentinel path is not a real file: resolution must come from memory.
+	if _, err := os.Stat(historysearch.BuiltinSkill().Path); !os.IsNotExist(err) {
+		t.Fatalf("built-in sentinel path %q unexpectedly exists on disk", historysearch.BuiltinSkill().Path)
+	}
+
+	res, err := run(context.Background(), d, "load_skill", []byte(`{"name":"`+historysearch.SkillName+`"}`))
+	if err != nil {
+		t.Fatalf("Run load_skill (built-in): %v", err)
+	}
+	if res != historysearch.Prompt()+"\nexit code: 0\n" {
+		t.Errorf("built-in load_skill result mismatch:\n got %q\nwant prompt body with exit line", res)
+	}
+	for _, want := range []string{"sqlite3 -readonly /data/porter.db", "messages_fts", "bm25("} {
+		if !strings.Contains(res, want) {
+			t.Errorf("built-in load_skill result missing %q", want)
+		}
+	}
+	if !strings.Contains(res, "exit code: 0") {
+		t.Errorf("built-in load_skill result missing exit-status line: %q", res)
 	}
 }

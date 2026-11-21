@@ -10,8 +10,9 @@ RUN CGO_ENABLED=0 go build -o /porter ./cmd/porter
 # Runtime stage: slim Alpine
 FROM alpine:3.22
 
-# CA certs for HTTPS calls to the LLM API.
-RUN apk add --no-cache ca-certificates
+# CA certs for HTTPS calls to the LLM API, plus the sqlite3 CLI the
+# history-search skill runs against porter.db.
+RUN apk add --no-cache ca-certificates sqlite
 
 COPY --from=build /porter /usr/local/bin/porter
 ENTRYPOINT ["/usr/local/bin/porter"]

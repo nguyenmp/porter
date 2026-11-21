@@ -20,6 +20,7 @@ import (
 
 	"porter/internal/api"
 	"porter/internal/handoff"
+	"porter/internal/historysearch"
 	"porter/internal/humanize"
 	"porter/internal/llm"
 	"porter/internal/projectdoc"
@@ -323,10 +324,10 @@ func fileToolPath(name string, args []byte) (string, bool) {
 // runLoadSkill returns a skill's body as a stream (with the conventional
 // trailing exit-status line so the agent's tool handling is uniform). A
 // filesystem skill is read from its SKILL.md; a built-in skill (sentinel Path
-// under api.BuiltinPrefix, e.g. the plain-language, editing-remote-files, and
-// handoff prompts) is served from
-// memory, because the server is a single binary with no skill files in its
-// build. It returns an error only when the skill is unknown or unreadable.
+// under api.BuiltinPrefix, e.g. the plain-language, editing-remote-files,
+// handoff, and history-search prompts) is served from memory, because the
+// server is a single binary with no skill files in its build. It returns an
+// error only when the skill is unknown or unreadable.
 func (d *Dispatcher) runLoadSkill(args []byte) (io.ReadCloser, error) {
 	var in struct {
 		Name string `json:"name"`
@@ -366,6 +367,8 @@ func builtinBody(name string) (string, bool) {
 		return humanize.Prompt(), true
 	case remoteedit.SkillName:
 		return remoteedit.Prompt(), true
+	case historysearch.SkillName:
+		return historysearch.Prompt(), true
 	case handoff.SkillName:
 		return handoff.Prompt(), true
 	}

@@ -9,6 +9,7 @@ import (
 
 	"porter/internal/api"
 	"porter/internal/handoff"
+	"porter/internal/historysearch"
 	"porter/internal/humanize"
 	"porter/internal/remoteedit"
 	"porter/internal/visual"
@@ -329,8 +330,8 @@ func TestFindSkillsInOrdering(t *testing.T) {
 	for _, s := range skills {
 		byName[s.Name] = s
 	}
-	if len(byName) != 5 {
-		t.Fatalf("FindSkillsIn = %d unique skills, want 5 (filesystem dup + every built-in)", len(byName))
+	if len(byName) != 6 {
+		t.Fatalf("FindSkillsIn = %d unique skills, want 6 (filesystem dup + every built-in)", len(byName))
 	}
 	want := filepath.Join(root1, ".agents", "skills", "dup", "SKILL.md")
 	if got := byName["dup"].Path; got != want {
@@ -346,8 +347,8 @@ func TestFindSkillsInOrdering(t *testing.T) {
 	for _, s := range skills {
 		byName[s.Name] = s
 	}
-	if len(skills) != 4 {
-		t.Fatalf("FindSkillsIn with colliding skill = %d skills, want 4 (the four built-ins)", len(skills))
+	if len(skills) != 5 {
+		t.Fatalf("FindSkillsIn with colliding skill = %d skills, want 5 (the five built-ins)", len(skills))
 	}
 	if got := byName[humanize.SkillName].Path; got != api.BuiltinPrefix+humanize.SkillName {
 		t.Errorf("filesystem skill shadowed the built-in; path = %q, want %q", got, api.BuiltinPrefix+humanize.SkillName)
@@ -362,18 +363,18 @@ func TestFindSkillsInOrdering(t *testing.T) {
 
 func TestFindSkillsIncludesBuiltin(t *testing.T) {
 	// With no skills anywhere, the binary's built-in skills (plain-language,
-	// editing-remote-files, handoff, and visual-design) are still discovered: the server is a
+	// editing-remote-files, handoff, visual-design, and history-search) are still discovered: the server is a
 	// single binary with no SKILL.md files, so they are hard-coded and served
 	// from memory (sentinel path).
 	skills := FindSkillsIn(nil)
-	if len(skills) != 4 {
-		t.Fatalf("FindSkillsIn(nil) = %d skills, want 4 (every built-in)", len(skills))
+	if len(skills) != 5 {
+		t.Fatalf("FindSkillsIn(nil) = %d skills, want 5 (every built-in)", len(skills))
 	}
 	byName := make(map[string]api.Skill, len(skills))
 	for _, s := range skills {
 		byName[s.Name] = s
 	}
-	for _, name := range []string{humanize.SkillName, remoteedit.SkillName, handoff.SkillName, visual.SkillName} {
+	for _, name := range []string{humanize.SkillName, remoteedit.SkillName, handoff.SkillName, visual.SkillName, historysearch.SkillName} {
 		s, ok := byName[name]
 		if !ok {
 			t.Errorf("missing built-in skill %q in %v", name, skills)
