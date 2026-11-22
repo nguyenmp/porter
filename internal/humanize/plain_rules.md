@@ -15,6 +15,8 @@ These rules steer the edit:
 3. Write plainly. Apply every rule below.
 4. Verify. Name where each claim came from: the original, the transcript, or a tool result. A claim with no source keeps the original wording. Check the result answers the same request as the original, and if it does not, fix that sentence and rerun phase 3 on it.
 
+A chat reply is text too. The phases apply to it the same way: the reply gets its passes over the draft before you send it, not only the files you wrote along the way.
+
 When you cannot judge a detail, keep it and never ask about it.
 
 ## Lead with the main point

@@ -332,16 +332,16 @@ func TestInteractiveSetsWorkflowAndLengthRule(t *testing.T) {
 	}
 }
 
-// TestUserMessageReminderIsAPointer checks the per-turn reminder states the aim,
-// names the skill, and asks for silence, without restating a single rule. The
-// rules live in one place (plain_rules.md, served through Prompt), so a copy
-// here would drift from them and would be paid for on every turn. The aim stays
-// because a model that never loads the skill still has to know what the reply
-// should read like, and the silence guard stays because nothing else says it.
-func TestUserMessageReminderIsAPointer(t *testing.T) {
+// TestReplyReminderIsAPointer checks the reminder states the aim, names the
+// skill, and asks for silence, without restating a single rule. The rules live
+// in one place (plain_rules.md, served through Prompt), so a copy here would
+// drift from them and would be paid for on every request. The aim stays because
+// a model that never loads the skill still has to know what the reply should
+// read like, and the silence guard stays because nothing else says it.
+func TestReplyReminderIsAPointer(t *testing.T) {
 	for _, want := range []string{SkillName, "concise", "Don't mention"} {
-		if !strings.Contains(UserMessageReminder, want) {
-			t.Errorf("UserMessageReminder missing %q: %s", want, UserMessageReminder)
+		if !strings.Contains(ReplyReminder, want) {
+			t.Errorf("ReplyReminder missing %q: %s", want, ReplyReminder)
 		}
 	}
 	for _, banned := range []string{
@@ -351,8 +351,8 @@ func TestUserMessageReminderIsAPointer(t *testing.T) {
 		"trades one quality for another",
 		"understandability first",
 	} {
-		if strings.Contains(UserMessageReminder, banned) {
-			t.Errorf("UserMessageReminder restates a rule (%q): %s", banned, UserMessageReminder)
+		if strings.Contains(ReplyReminder, banned) {
+			t.Errorf("ReplyReminder restates a rule (%q): %s", banned, ReplyReminder)
 		}
 	}
 }
@@ -385,7 +385,7 @@ func TestPromptSetsNoPassCount(t *testing.T) {
 	numbers := []string{"two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"}
 	for name, text := range map[string]string{
 		"skill":      Prompt(),
-		"reminder":   UserMessageReminder,
+		"reminder":   ReplyReminder,
 		"background": humanizePrompt(),
 	} {
 		lower := strings.ToLower(text)

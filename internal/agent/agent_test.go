@@ -25,6 +25,7 @@ import (
 	"porter/internal/asset"
 	"porter/internal/codec"
 	"porter/internal/config"
+	"porter/internal/humanize"
 	"porter/internal/llm"
 	"porter/internal/recall"
 	"porter/internal/tools"
@@ -1730,15 +1731,7 @@ func contractlessServer(t *testing.T) *httptest.Server {
 		}
 		// Count how many turns this stream has served by inspecting the last
 		// message's role.
-		last := ""
-		if len(req.Messages) > 0 {
-			var m struct {
-				Role string `json:"role"`
-			}
-			_ = json.Unmarshal(req.Messages[len(req.Messages)-1], &m)
-			last = m.Role
-		}
-		if last != "tool" {
+		if lastRole(t, req.Messages) != "tool" {
 			// First request: ask for a contract-less tool call.
 			fmt.Fprintf(w,
 				`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"shell","arguments":"{\"command\":\"echo hi\"}"}}]},"finish_reason":"tool_calls"}]}`+"\n\n"+
@@ -1750,6 +1743,28 @@ func contractlessServer(t *testing.T) *httptest.Server {
 			`data: {"choices":[{"delta":{"content":"done"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`+"\n\n"+
 				`data: [DONE]`+"\n")
 	}))
+}
+
+// lastRole reports the role of the last message in a captured request, skipping
+// the plain-language reminder the model view closes every request with
+// (humanize.ReplyReminder). A fake provider counts the turns it has served by
+// that role, so the reminder has to be invisible to it: it is model-view text,
+// not part of the conversation being scripted.
+func lastRole(t *testing.T, raw []json.RawMessage) string {
+	t.Helper()
+	for i := len(raw) - 1; i >= 0; i-- {
+		var m struct {
+			Role string `json:"role"`
+		}
+		if err := json.Unmarshal(raw[i], &m); err != nil {
+			continue
+		}
+		if m.Role == "user" && bytes.Contains(raw[i], []byte(humanize.ReplyReminder)) {
+			continue
+		}
+		return m.Role
+	}
+	return ""
 }
 
 // TestRunTurnRejectsContractlessCall verifies a tool call that omits the
@@ -1807,15 +1822,7 @@ func timeoutServer(t *testing.T) *httptest.Server {
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			t.Errorf("decode request: %v", err)
 		}
-		last := ""
-		if len(req.Messages) > 0 {
-			var m struct {
-				Role string `json:"role"`
-			}
-			_ = json.Unmarshal(req.Messages[len(req.Messages)-1], &m)
-			last = m.Role
-		}
-		if last != "tool" {
+		if lastRole(t, req.Messages) != "tool" {
 			fmt.Fprintf(w,
 				`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"shell","arguments":"{\"command\":\"sleep 30\",\"porter_action_description\":\"time out on purpose\",\"porter_timeout_seconds\":1}"}}]},"finish_reason":"tool_calls"}]}`+"\n\n"+
 					`data: [DONE]`+"\n")

@@ -114,9 +114,16 @@ func TestProjectModelView(t *testing.T) {
 	if history[2].Content != full {
 		t.Errorf("ProjectModelView mutated its input; history should hold the full output")
 	}
-	// User message carries the plain-language reminder (appended after the text).
-	if want := "hi\n\n" + humanize.UserMessageReminder; out[0].Content != want {
-		t.Errorf("user message view = %q, want %q", out[0].Content, want)
+	// The user's text goes out exactly as typed; the plain-language reminder
+	// closes the view in a user message of its own.
+	if out[0].Content != "hi" {
+		t.Errorf("user message view = %q, want %q", out[0].Content, "hi")
+	}
+	if n := len(out); n != len(history)+1 {
+		t.Fatalf("view has %d messages, want %d", n, len(history)+1)
+	}
+	if last := out[len(out)-1]; last.Role != "user" || last.Content != humanize.ReplyReminder {
+		t.Errorf("view does not end on the reminder: role %q content %q", last.Role, last.Content)
 	}
 	// Big tool message truncated in the view.
 	if !strings.HasPrefix(out[2].Content, "[tool output:") {
@@ -354,10 +361,13 @@ func TestProjectModelViewTiming(t *testing.T) {
 	if history[0].Content != "hi" || history[2].Content != full {
 		t.Errorf("ProjectModelView mutated its input")
 	}
-	// A timed user message is annotated, with the reminder appended after the
-	// text so the timing note still leads.
-	if want := "[sent 2025-09-04 15:42:11 UTC]\nhi\n\n" + humanize.UserMessageReminder; out[0].Content != want {
+	// A timed user message is annotated and keeps exactly the text the user
+	// typed under the header; the reminder closes the view.
+	if want := "[sent 2025-09-04 15:42:11 UTC]\nhi"; out[0].Content != want {
 		t.Errorf("user view = %q, want %q", out[0].Content, want)
+	}
+	if last := out[len(out)-1]; last.Content != humanize.ReplyReminder {
+		t.Errorf("view does not end on the reminder: %q", last.Content)
 	}
 	// A big timed tool result is truncated AND annotated, timing note first.
 	if !strings.HasPrefix(out[2].Content, "[ran 3m 12s, finished 2025-09-04 15:45:23 UTC]\n[tool output:") {
@@ -376,14 +386,14 @@ func TestProjectModelViewTiming(t *testing.T) {
 	}
 }
 
-// TestProjectModelViewUserReminder verifies the projection appends the
-// plain-language reminder to every user message — the request the model is
-// about to answer — and to nothing else: assistant replies, tool results, and
-// system notices go to the model exactly as committed, and the stored history
-// keeps what the user typed. That is the whole point of putting it in the
-// projection: the reminder is model-view-only, like the timing note, so it
-// never reaches the database or the UI.
-func TestProjectModelViewUserReminder(t *testing.T) {
+// TestProjectModelViewReplyReminder verifies the projection closes the view with
+// one user message carrying the plain-language reminder, and leaves the user's
+// own messages exactly as typed. Placement is the point: a turn of forty tool
+// calls separates the request from the reply, so a rule attached to the request
+// was read once and then forgotten, while one at the end is the last thing the
+// model reads before it writes. The reminder is model-view-only, like the
+// timing note, so it never reaches the database or the UI.
+func TestProjectModelViewReplyReminder(t *testing.T) {
 	history := []llm.ChatMessage{
 		llm.UserMessage("first"),
 		llm.AssistantMessage("a reply", "", nil),
@@ -399,34 +409,40 @@ func TestProjectModelViewUserReminder(t *testing.T) {
 	}
 	out := ProjectModelView(history)
 
-	for i, want := range map[int]string{
-		0: "first\n\n" + humanize.UserMessageReminder,
-		3: "second\n\n" + humanize.UserMessageReminder,
-	} {
-		if out[i].Content != want {
-			t.Errorf("out[%d] = %q, want %q", i, out[i].Content, want)
-		}
+	// The reminder is the last message, alone in its own user turn.
+	if n := len(out); n != len(history)+1 {
+		t.Fatalf("view has %d messages, want %d", n, len(history)+1)
 	}
-	// Only user messages change; every other role goes out as committed.
-	for _, i := range []int{1, 2, 4, 5} {
-		if out[i].Content != history[i].Content {
+	if last := out[len(out)-1]; last.Role != "user" || last.Content != humanize.ReplyReminder {
+		t.Errorf("last message = (%q, %q), want a user message holding the reminder", last.Role, last.Content)
+	}
+	// Everything committed goes out as committed, the user's text included.
+	for i, m := range history {
+		if out[i].Role != m.Role || out[i].Content != m.Content {
 			t.Errorf("out[%d] (role %s) changed: %q", i, out[i].Role, out[i].Content)
 		}
 	}
 	// The input is never mutated: stored history stays exactly as typed.
 	for _, m := range history {
-		if strings.Contains(m.Content, humanize.UserMessageReminder) {
+		if strings.Contains(m.Content, humanize.ReplyReminder) {
 			t.Errorf("stored history was mutated: role %s content %q", m.Role, m.Content)
 		}
 	}
-	// The guard keeps the projection idempotent: re-projecting a view does not
-	// double the reminder.
-	again := ProjectModelView(out)
-	if again[0].Content != out[0].Content {
-		t.Errorf("re-projection changed the reminder: %q -> %q", out[0].Content, again[0].Content)
+	// A history that ends on the user's request gets the reminder after it, so
+	// two user messages in a row go out. That shape is valid in the chat format,
+	// and the reminder's opening clause keeps it from reading as a new request.
+	short := ProjectModelView([]llm.ChatMessage{llm.UserMessage("just one")})
+	if len(short) != 2 || short[0].Content != "just one" || short[1].Content != humanize.ReplyReminder {
+		t.Errorf("single-request view = %v, want the request then the reminder", short)
 	}
-	if n := strings.Count(again[0].Content, humanize.UserMessageReminder); n != 1 {
-		t.Errorf("reminder appears %d times on a user message, want 1", n)
+	// The guard keeps the projection idempotent: re-projecting a view does not
+	// add a second reminder.
+	again := ProjectModelView(out)
+	if len(again) != len(out) {
+		t.Errorf("re-projection added a message: %d -> %d", len(out), len(again))
+	}
+	if n := strings.Count(again[len(again)-1].Content, humanize.ReplyReminder); n != 1 {
+		t.Errorf("reminder appears %d times in the view, want 1", n)
 	}
 }
 
@@ -509,8 +525,9 @@ func TestProjectModelViewAttachesToolImages(t *testing.T) {
 	}
 
 	out := ProjectModelView(history)
-	if len(out) != len(history)+1 {
-		t.Fatalf("projected %d messages, want %d", len(out), len(history)+1)
+	// One message for the image note, one for the closing reminder.
+	if len(out) != len(history)+2 {
+		t.Fatalf("projected %d messages, want %d", len(out), len(history)+2)
 	}
 	note := out[3]
 	if !isAttachedImagesNote(note) {
@@ -560,8 +577,12 @@ func TestProjectModelViewGroupsParallelToolImages(t *testing.T) {
 		msgB,
 	}
 	out := ProjectModelView(history)
-	if len(out) != 5 {
-		t.Fatalf("projected %d messages, want 5 (both results, then one note)", len(out))
+	// Both results, then one note, then the closing reminder.
+	if len(out) != 6 {
+		t.Fatalf("projected %d messages, want 6 (both results, then one note, then the reminder)", len(out))
+	}
+	if last := out[len(out)-1]; last.Content != humanize.ReplyReminder {
+		t.Errorf("view does not end on the reminder: %q", last.Content)
 	}
 	if out[2].Role != "tool" || out[3].Role != "tool" {
 		t.Fatalf("tool results are not adjacent: %q, %q", out[2].Role, out[3].Role)

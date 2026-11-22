@@ -4051,7 +4051,7 @@ func TestMessageOutputReachesEnvelopeAndView(t *testing.T) {
 // provider that captures every request body, and asserts two things: the
 // outgoing model requests carry the model-view annotations (the compact timing
 // headers [sent ...], [ran ... finished ...], and the plain-language reminder
-// humanize.UserMessageReminder on the user message), and the stored history
+// humanize.ReplyReminder that closes the view), and the stored history
 // does NOT — those exist only on the outgoing copy of the model-view
 // projection, never in the database or the UI.
 func TestModelViewAnnotationsReachModelNotStorage(t *testing.T) {
@@ -4084,7 +4084,7 @@ func TestModelViewAnnotationsReachModelNotStorage(t *testing.T) {
 		if strings.Contains(m.Content, "[sent ") || strings.Contains(m.Content, "[ran ") {
 			t.Errorf("stored history is annotated (role=%s): %q", m.Role, m.Content)
 		}
-		if strings.Contains(m.Content, humanize.UserMessageReminder) {
+		if strings.Contains(m.Content, humanize.ReplyReminder) {
 			t.Errorf("stored history carries the plain-language reminder (role=%s): %q", m.Role, m.Content)
 		}
 	}
@@ -4101,10 +4101,11 @@ func TestModelViewAnnotationsReachModelNotStorage(t *testing.T) {
 	if !strings.Contains(b1, "[sent ") {
 		t.Errorf("request 1 lacks a [sent ...] annotation:\n%.400s", b1)
 	}
-	// Every user message carries the plain-language reminder on the outgoing
-	// copy, in both requests (the user message stays in the history).
+	// Every request closes with the plain-language reminder on the outgoing
+	// copy: the turn's first request ends on the user's message, the second
+	// ends on the tool result, and the reminder follows each.
 	for i, b := range []string{b1, b2} {
-		if !strings.Contains(b, humanize.UserMessageReminder) {
+		if !strings.Contains(b, humanize.ReplyReminder) {
 			t.Errorf("request %d lacks the user-message reminder:\n%.800s", i+1, b)
 		}
 	}

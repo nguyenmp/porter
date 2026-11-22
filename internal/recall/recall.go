@@ -72,16 +72,18 @@ func Meta(content string) *llm.ToolOutputMeta {
 // The projection also annotates each message with a compact timing header
 // (e.g. "[sent 2025-09-04 15:42:11 UTC]" on a user message, "[ran 3m 12s,
 // finished ...]" on a tool result) so the model can see when things happened
-// and how long its tools ran. And it appends a one-line plain-language
-// reminder (humanize.UserMessageReminder) to every user message, so the
-// standing writing style sits next to the request as well as in the system
-// prefix. The clocks are json:"-" on ChatMessage — they never serialize as
-// fields — so this bracketed text (in the content, the same way truncation and
-// recall hints are presented) is the only route by which timing reaches the
-// model, and it exists solely on this outgoing copy: history, the database,
-// and the UI are never annotated. Timestamps and the reminder are deterministic
-// (derived from committed clocks and a constant), so they never bust the
-// provider's prefix cache.
+// and how long its tools ran. And it closes the view with one user message
+// carrying the plain-language reminder (humanize.ReplyReminder), so the writing
+// style is the last thing the model reads before it writes a reply, not a copy
+// buried in the first user message of the turn. A turn of forty tool calls puts
+// the request far from the reply, and a rule that sat next to the request was
+// read once and then forgotten. The clocks are json:"-" on ChatMessage — they
+// never serialize as fields — so this bracketed text (in the content, the same
+// way truncation and recall hints are presented) is the only route by which
+// timing reaches the model, and it exists solely on this outgoing copy:
+// history, the database, and the UI are never annotated. Timestamps and the
+// reminder are deterministic (derived from committed clocks and a constant), so
+// they never bust the provider's prefix cache.
 func ProjectModelView(msgs []llm.ChatMessage) []llm.ChatMessage {
 	// Every request must answer every tool call it carries: a provider rejects
 	// history where a call has no result, which is what a stop or a restart
@@ -155,17 +157,6 @@ func ProjectModelView(msgs []llm.ChatMessage) []llm.ChatMessage {
 				}
 			}
 		}
-		// Every user message carries the one-line plain-language reminder. It is
-		// added here and nowhere else: the stored message, the database, and the
-		// UI keep exactly what the user typed. The HasSuffix guard keeps the
-		// projection idempotent, so a message that already ends with the
-		// reminder (typically a second pass, in a test or a retry) is not
-		// doubled. The attached-images note is excluded: it is the harness's
-		// text, not the user's.
-		if m.Role == "user" && m.Content != "" && !isAttachedImagesNote(m) &&
-			!strings.HasSuffix(m.Content, humanize.UserMessageReminder) {
-			m.Content += "\n\n" + humanize.UserMessageReminder
-		}
 		// Timing annotation comes last so it always sits in front of any
 		// truncation/recall header, and the stored content is never touched.
 		if m.Content != "" {
@@ -176,6 +167,18 @@ func ProjectModelView(msgs []llm.ChatMessage) []llm.ChatMessage {
 		out = append(out, m)
 	}
 	flushImages()
+	// The plain-language reminder closes the view, so the model reads it last,
+	// right before it writes. It rides in its own user message rather than in
+	// the user's text: the stored message, the database, and the UI keep exactly
+	// what the user typed. Two user messages in a row are valid in the chat
+	// format, and the reminder is worded as a condition on the reply ("when you
+	// write your reply") so the model does not read it as a fresh request and
+	// stop working. The equality guard keeps the projection idempotent: a second
+	// projection over an already-projected view ends on the reminder and adds
+	// nothing.
+	if n := len(out); n > 0 && out[n-1].Content != humanize.ReplyReminder {
+		out = append(out, llm.UserMessage(humanize.ReplyReminder))
+	}
 	return out
 }
 

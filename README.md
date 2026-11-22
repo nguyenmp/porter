@@ -368,10 +368,12 @@ terms you already know stay as-is and undefined, while text drafted for other
 readers keeps the terms that audience needs and defines them the first time
 each appears.
 
-The style also rides on the conversation itself. The model view appends a
-short pointer (`UserMessageReminder`, also in `internal/humanize`) to every
-user message, so the instruction sits next to the request the model is
-answering and not only in the static system prefix. The pointer asks for plain
+The style also rides on the conversation itself. The model view closes with a
+short pointer (`ReplyReminder`, also in `internal/humanize`), in a user message
+of its own, so the instruction is the last thing the model reads before it
+writes and not only a line in the static system prefix. A turn of forty tool
+calls separates the request from the reply, so a pointer attached to the
+request was read once and then forgotten. The pointer asks for plain
 language, kept short; names the skill and the outputs it covers — replies,
 files, code comments, and PR text; and asks the model not to mention the
 rewrite. Every rule lives in `plain_rules.md`: the length rule, the definition

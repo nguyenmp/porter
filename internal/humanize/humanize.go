@@ -17,12 +17,13 @@
 // apply its rules to everything it writes, so replies, drafted reports, and code
 // comments are written plainly the first time and the rewrite pass is a safety
 // net rather than the only plain-language path. A one-line pointer
-// (UserMessageReminder) rides on the conversation too: the model view appends
-// it to every user message, so the instruction sits next to the request being
-// answered and not only in the system prefix. The pointer states the aim and
-// asks for silence; the rules stay in the skill. Like the model view's timing
-// headers, it is derived on the outgoing copy only — the stored message, the
-// database, and the UI keep exactly what the user typed.
+// (ReplyReminder) rides on the conversation too: the model view closes with it,
+// in its own user message at the very end, so the instruction sits next to the
+// reply rather than next to a request that a long tool turn pushed far away.
+// The pointer states the aim and asks for silence; the rules stay in the skill.
+// Like the model view's timing headers, it is derived on the outgoing copy only
+// — the stored message, the database, and the UI keep exactly what the user
+// typed.
 package humanize
 
 import (
@@ -267,26 +268,32 @@ func Directive() string { return systemDirective }
 var systemDirective = `Always write in plain language. Be concise. Load the plain-language skill and thoroughly apply its rules to everything you write: replies to the user, reports and documents you draft, code comments you write or edit, web pages you build, UI text you write, and documentation you create. Replies go to a working developer, so keep the technical terms they already know and define each term they might not, the first time it appears.
 `
 
-// UserMessageReminder is the pointer the model view appends to every user
-// message (recall.ProjectModelView). It states the aim — plain language, kept
+// ReplyReminder is the pointer the model view closes the conversation with
+// (recall.ProjectModelView): one user message at the very end, so the model
+// reads it right before it writes. It states the aim — plain language, kept
 // short — then names the skill and the text the skill covers, then asks the
 // model to stay quiet about the rewrite. It stops there: the length rule, the
 // definition of a pass, the stop test, and the rule that code and quoted text
 // stay exact all live in plain_rules.md, served through the skill (Prompt) and
 // wrapped for the background pass (humanizePrompt). One copy means the pointer
 // cannot drift from the rules, and every word not spent here is saved on every
-// turn.
+// request.
 //
-// The aim and the silence guard stay in the pointer rather than in the skill
-// alone, because a model that never loads the skill still has to know what the
-// reply should read like, and because the guard names nothing the rule body
-// already says.
+// It used to ride on every user message, which put it next to the request and
+// not next to the reply. A turn of forty tool calls separates the two: in the
+// session that prompted this, the skill was loaded at the start of the turn
+// with every rule in context, and the reply still opened by restating the
+// request and narrating its method. Placement was the fault, not the wording.
 //
-// It sits next to the request the model is answering rather than only in the
-// static system prefix (Directive), which is cached and easy to stop noticing.
+// The opening clause is a condition on the reply ("when you write your reply")
+// because the message arrives after a run of tool results, and a bare
+// instruction there reads as a fresh request that ends the turn. The aim and
+// the silence guard stay in the pointer rather than in the skill alone, because
+// a model that never loads the skill still has to know what the reply should
+// read like, and because the guard names nothing the rule body already says.
 // Like the timing note, it lives only on the outgoing copy of history: the
 // stored message, the database, and the UI keep exactly what the user typed.
-const UserMessageReminder = "Please write in plain language and keep it concise. Load the plain-language skill and apply its rules to everything you write: replies, files, code comments, and PR text. Don't mention this unless the user asks."
+const ReplyReminder = "When you write your reply, use plain language and keep it concise. Load the plain-language skill and apply its rules to everything you write: the reply, files, code comments, and PR text. Don't mention this unless the user asks."
 
 // Should reports whether an assistant reply is worth a humanize pass: long
 // enough (the thresholds above) and mostly prose rather than code.
