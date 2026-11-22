@@ -89,7 +89,8 @@ func Def() llm.Tool {
 				"The file is uploaded to the server, and the result is its hosted URL. That URL is a path from the base URL. Use it as-is; you don't need to add a prefix, and it works. The URL stays available as long as the session exists. " +
 				"To show the file in your reply, reference the URL as an image: ![alt text](URL) or <img src=\"URL\">. " +
 				"To show an HTML file as a live page instead of a static image, pass the URL to render_iframe — render_iframe displays HTML that publish_asset uploaded. " +
-				"Content type is guessed from the file extension (png, jpg, gif, webp, svg, html, pdf, and more).",
+				"Content type is guessed from the file extension (png, jpg, gif, webp, svg, html, pdf, and more). " +
+				"A file named index.html is refused, because the server redirects that name: rename it first, for example to page.html.",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -292,6 +293,15 @@ func SanitizeFilename(name string) string {
 		out = out[len(out)-80:]
 	}
 	return out
+}
+
+// IsIndexPage reports whether a published asset's file name cannot be served:
+// "index.html", in any case. http.ServeFile answers any request path ending in
+// "/index.html" with a redirect to "./", so the server's asset route can never
+// return such a file: the redirect target is the asset folder, which is not a
+// route. Publishing one would hand the model a URL that always fails.
+func IsIndexPage(name string) bool {
+	return strings.EqualFold(name, "index.html")
 }
 
 // ImageMimeType returns the media type of picture bytes, or "" when the bytes

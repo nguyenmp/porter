@@ -79,6 +79,11 @@ func (st *Store) PublishAsset(id, filename string, content []byte) (string, erro
 // works from any device that can reach the server, with no CORS involved.
 func writeAsset(root, id, filename string, content []byte) (string, error) {
 	name := asset.SanitizeFilename(filename)
+	if asset.IsIndexPage(name) {
+		// http.ServeFile redirects any /index.html request to "./", and the
+		// asset folder is not a route, so this URL could never be served.
+		return "", fmt.Errorf("publish_asset: a file named %s can't be served (the server redirects that name to its folder), so rename the file, e.g. to page.html, and publish that", name)
+	}
 	var b [8]byte
 	if _, err := rand.Read(b[:]); err != nil {
 		return "", fmt.Errorf("generate asset id: %w", err)

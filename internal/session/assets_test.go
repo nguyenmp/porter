@@ -15,6 +15,32 @@ import (
 	"porter/internal/imagegen"
 )
 
+// TestPublishAssetRejectsIndexPage verifies a file named index.html is refused
+// on every publish path: http.ServeFile redirects that name, so the URL would
+// never serve. Any case and any folder are refused the same way, and the error
+// tells the caller to rename the file.
+func TestPublishAssetRejectsIndexPage(t *testing.T) {
+	root := t.TempDir()
+	st := NewStore(memPersister(t), nil)
+	st.SetAssetRoot(root)
+	s := newTestSession(t, "session_7")
+	s.assetRoot = root
+
+	for _, name := range []string{"index.html", "dist/index.html", "INDEX.HTML"} {
+		url, err := s.publishAsset(name, []byte("<h1>hi</h1>"))
+		if err == nil {
+			t.Errorf("publishAsset(%q) = %q, want an error", name, url)
+			continue
+		}
+		if !strings.Contains(err.Error(), "rename") {
+			t.Errorf("publishAsset(%q) error = %v, want a rename hint", name, err)
+		}
+		if _, err := st.PublishAsset("session_7", name, []byte("<h1>hi</h1>")); err == nil {
+			t.Errorf("PublishAsset(%q) succeeded, want an error", name)
+		}
+	}
+}
+
 // TestPublishAssetRoundTrip publishes a file through a session and reads it
 // back through the store's URL validation: the URL is well-formed, the bytes
 // land on disk under the session's folder, and the store resolves the URL
