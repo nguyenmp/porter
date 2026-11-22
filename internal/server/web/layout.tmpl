@@ -196,7 +196,9 @@
 		   — the name truncates, and the "open ↗" action and the time chip sit
 		   at the far right — and the frame below it is the actual rendered
 		   HTML asset. The open link targets the same published page, so a
-		   result is never viewable only inside the small frame. */
+		   result is never viewable only inside the small frame. The frame
+		   stops at 60% of the viewport, so a tall page scrolls inside the
+		   frame instead of pushing the rest of the conversation off screen. */
 		.tool-iframe { background: #fff; border: 1px solid #ddd; border-radius: 4px; padding: 0.4rem 0.5rem 0.5rem; margin-bottom: 0.75rem; }
 		.tool-iframe-head { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.4rem; min-width: 0; }
 		.tool-iframe-head .tool-result-name { flex: 1; min-width: 0; margin: 0; }
@@ -213,7 +215,7 @@
 			white-space: nowrap;
 		}
 		.tool-iframe-open:hover, .tool-iframe-open:focus-visible { background: #eaf2fb; text-decoration: underline; }
-		.tool-iframe-frame { display: block; width: 100%; border: 1px solid #eee; border-radius: 4px; background: #fff; box-sizing: border-box; }
+		.tool-iframe-frame { display: block; width: 100%; max-height: 60vh; max-height: 60dvh; border: 1px solid #eee; border-radius: 4px; background: #fff; box-sizing: border-box; }
 		/* The Cancel button on a running tool block: a small right-aligned
 		   control inside the result summary. It appears only while the tool is
 		   running (JS toggles hidden). */
