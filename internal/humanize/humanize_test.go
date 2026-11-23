@@ -153,15 +153,21 @@ func TestDirectiveNamesSurfaces(t *testing.T) {
 
 // TestDirectiveAsksForConcision checks the standing style asks for concision in
 // as many words, and asks for it before it points at the skill: a model that
-// never loads the skill still gets the instruction.
+// never loads the skill still gets the instruction. It also checks the sentence
+// that keeps length off the work. Without it the call to keep the text short
+// reads as a call to finish soon, which is the failure the closing reminder
+// guards against at the other end of the request.
 func TestDirectiveAsksForConcision(t *testing.T) {
 	d := Directive()
-	at := strings.Index(d, "Be concise.")
+	at := strings.Index(d, "keep it short")
 	if at < 0 {
-		t.Fatalf("directive does not say \"Be concise.\":\n%s", d)
+		t.Fatalf("directive does not say \"keep it short\":\n%s", d)
 	}
 	if skill := strings.Index(d, "Load the plain-language skill"); skill >= 0 && at > skill {
 		t.Errorf("the concision call comes after the skill pointer:\n%s", d)
+	}
+	if !strings.Contains(d, "not a short turn") {
+		t.Errorf("directive does not separate short words from a short turn:\n%s", d)
 	}
 }
 
@@ -338,14 +344,24 @@ func TestInteractiveSetsWorkflowAndLengthRule(t *testing.T) {
 // drift from them and would be paid for on every request. The aim stays because
 // a model that never loads the skill still has to know what the reply should
 // read like, and the silence guard stays because nothing else says it.
+//
+// Two clauses carry the turn-end condition and are checked by their effect, not
+// by a rule: the case that lets the model wait on the user ("only the user can
+// give"), and the line that keeps length off the work ("not the turn"). Without
+// the first, the model cannot ask; without the second, "short" reads as
+// "finish soon", which is how session 1960 answered after two tool calls.
+//
+// The loop and the file are named on purpose, and their cutoffs are not: "pass
+// after pass" and "anything long" stop a model that skims its own draft, and
+// the numbers behind both stay in plain_rules.md so they cannot drift. That is
+// why "scratch file" is no longer on the banned list below.
 func TestReplyReminderIsAPointer(t *testing.T) {
-	for _, want := range []string{SkillName, "concise", "Don't mention"} {
+	for _, want := range []string{SkillName, "short", "Don't mention", "only the user can answer", "not a short turn", "pass after pass", "scratch file"} {
 		if !strings.Contains(ReplyReminder, want) {
 			t.Errorf("ReplyReminder missing %q: %s", want, ReplyReminder)
 		}
 	}
 	for _, banned := range []string{
-		"scratch file",
 		"100 words",
 		"pass is one full read",
 		"trades one quality for another",

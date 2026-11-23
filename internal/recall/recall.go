@@ -171,11 +171,11 @@ func ProjectModelView(msgs []llm.ChatMessage) []llm.ChatMessage {
 	// right before it writes. It rides in its own user message rather than in
 	// the user's text: the stored message, the database, and the UI keep exactly
 	// what the user typed. Two user messages in a row are valid in the chat
-	// format, and the reminder is worded as a condition on the reply ("when you
-	// write your reply") so the model does not read it as a fresh request and
-	// stop working. The equality guard keeps the projection idempotent: a second
-	// projection over an already-projected view ends on the reminder and adds
-	// nothing.
+	// format, and the reminder is worded as a condition on how the turn ends
+	// ("when your turn ends") so the model does not read it as a fresh request
+	// and stop working. The equality guard keeps the projection idempotent: a
+	// second projection over an already-projected view ends on the reminder and
+	// adds nothing.
 	if n := len(out); n > 0 && out[n-1].Content != humanize.ReplyReminder {
 		out = append(out, llm.UserMessage(humanize.ReplyReminder))
 	}

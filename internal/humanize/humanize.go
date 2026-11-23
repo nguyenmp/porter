@@ -261,23 +261,29 @@ func Directive() string { return systemDirective }
 // load that skill. Keeping the rules out of the standing prefix keeps it
 // small, and the one-copy rule base keeps every mode on the same page.
 //
-// The first two sentences are the aims, in plain words: write plainly, and be
-// concise. The skill's rules carry the detail behind both, but a standing
+// The first sentences are the aims, in plain words: write plainly, keep the
+// text short, and know that the length stops at the words rather than ending
+// the turn. That last point answers the same failure the closing reminder
+// guards against: a length instruction read as a reason to stop working. The
+// skill's rules carry the detail behind all three aims, but a standing
 // instruction that states them up front is what a model follows when it never
-// loads the skill, so concision is asked for here as well as there.
-var systemDirective = `Always write in plain language. Be concise. Load the plain-language skill and thoroughly apply its rules to everything you write: replies to the user, reports and documents you draft, code comments you write or edit, web pages you build, UI text you write, and documentation you create. Replies go to a working developer, so keep the technical terms they already know and define each term they might not, the first time it appears.
+// loads the skill, so they are asked for here as well as there.
+var systemDirective = `Always write in plain language, and keep it short. That means short words, not a short turn. Keep going until the task is done. Load the plain-language skill and apply every rule in it, pass after pass, to everything you write: replies, reports and documents, code comments, web pages, UI text, and documentation. Work long text in its scratch file. Your reader is a developer. Use the terms they know, and define any new term the first time you use it.
 `
 
 // ReplyReminder is the pointer the model view closes the conversation with
 // (recall.ProjectModelView): one user message at the very end, so the model
-// reads it right before it writes. It states the aim — plain language, kept
-// short — then names the skill and the text the skill covers, then asks the
-// model to stay quiet about the rewrite. It stops there: the length rule, the
+// reads it right before it writes. It names the moment it applies to — the end
+// of a turn, or a wait on the user — then states the aim, plain language kept
+// short, then names the skill, the loop of passes, and the text the skill
+// covers, then asks the model to stay quiet about the rewrite. It names the
+// loop and the scratch file but not their cutoffs: the length rule, the
 // definition of a pass, the stop test, and the rule that code and quoted text
 // stay exact all live in plain_rules.md, served through the skill (Prompt) and
-// wrapped for the background pass (humanizePrompt). One copy means the pointer
-// cannot drift from the rules, and every word not spent here is saved on every
-// request.
+// wrapped for the background pass (humanizePrompt). A model that reads its
+// draft once and sends it is the failure the loop clause exists to stop, so it
+// earns its words. One copy of the cutoffs means the pointer cannot drift from
+// them, and every word not spent here is saved on every request.
 //
 // It used to ride on every user message, which put it next to the request and
 // not next to the reply. A turn of forty tool calls separates the two: in the
@@ -285,15 +291,31 @@ var systemDirective = `Always write in plain language. Be concise. Load the plai
 // with every rule in context, and the reply still opened by restating the
 // request and narrating its method. Placement was the fault, not the wording.
 //
-// The opening clause is a condition on the reply ("when you write your reply")
-// because the message arrives after a run of tool results, and a bare
-// instruction there reads as a fresh request that ends the turn. The aim and
-// the silence guard stay in the pointer rather than in the skill alone, because
-// a model that never loads the skill still has to know what the reply should
-// read like, and because the guard names nothing the rule body already says.
-// Like the timing note, it lives only on the outgoing copy of history: the
-// stored message, the database, and the UI keep exactly what the user typed.
-const ReplyReminder = "When you write your reply, use plain language and keep it concise. Load the plain-language skill and apply its rules to everything you write: the reply, files, code comments, and PR text. Don't mention this unless the user asks."
+// The opening clause is a condition on how the turn ends — the work is done, or
+// an answer only the user can give is missing — because the message arrives
+// after a run of tool results, and a bare instruction there reads as a fresh
+// request that ends the turn. Both cases are needed. In session 1960 the model
+// answered after one or two tool calls with a plan for the rest ("Next I'll add
+// ..."), and stopped only when the user typed the condition by hand ("only
+// reply when you're done or have questions"). A clause that named only the end
+// of the work would leave the model no way to ask, and one that named only
+// questions would turn asking into an exit from any turn.
+//
+// The line that separates length from work is there for the same reason: a
+// model that reads "keep it short" as "finish soon" answers early. The reload
+// clause is narrower than it looks. recall.Meta cuts a tool result over 16 KiB
+// to its first and last 8 KiB, and a load of this skill returns 32 KiB, so the
+// middle of the rules never reaches the model and a second load fetches the
+// same window. The clause sends the model to recall_tool_output for the cut
+// bytes, and allows a reload only for a copy that has slid far back.
+//
+// The aim and the silence guard stay in the pointer rather than in the skill
+// alone, because a model that never loads the skill still has to know what the
+// reply should read like, and because the guard names nothing the rule body
+// already says. Like the timing note, it lives only on the outgoing copy of
+// history: the stored message, the database, and the UI keep exactly what the
+// user typed.
+const ReplyReminder = "End the turn when the work is done, or when only the user can answer your question. Then reply in plain language and keep it short. Short means short words, not a short turn: keep going until the task is done. Load the plain-language skill once. Reload it only if your copy is far back in the conversation, and use recall_tool_output for any part the load cut off. Apply every rule in it, pass after pass, to the reply, files, code comments, and PR text. Use its scratch file for anything long. Don't mention this unless the user asks."
 
 // Should reports whether an assistant reply is worth a humanize pass: long
 // enough (the thresholds above) and mostly prose rather than code.
