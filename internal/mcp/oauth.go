@@ -145,8 +145,7 @@ func (t *TokenStore) reloadLocked() {
 func (t *TokenStore) Put(e *TokenEntry) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.tokens[e.Server] = e
-	return t.saveLocked()
+	return t.updateLocked(func(tokens map[string]*TokenEntry) { tokens[e.Server] = e })
 }
 
 // Delete removes the entry for a server, persisting the file. It is
@@ -154,17 +153,49 @@ func (t *TokenStore) Put(e *TokenEntry) error {
 func (t *TokenStore) Delete(server string) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if _, ok := t.tokens[server]; !ok {
-		return nil
-	}
-	delete(t.tokens, server)
-	return t.saveLocked()
+	return t.updateLocked(func(tokens map[string]*TokenEntry) { delete(tokens, server) })
 }
 
-// saveLocked writes the store deterministically (servers sorted by URL).
-func (t *TokenStore) saveLocked() error {
-	servers := make([]string, 0, len(t.tokens))
-	for s := range t.tokens {
+// updateLocked applies change to the file's entries and writes the result
+// back. The read, the change, and the write run under a file lock and start
+// from the file, not from this process's copy, so two writers — the execution
+// host and a `porter mcp login`, or two hosts — never drop each other's entry.
+// Writing the in-memory map instead erased a token another process had just
+// rotated. The in-memory copy is replaced with what was written.
+func (t *TokenStore) updateLocked(change func(map[string]*TokenEntry)) error {
+	if err := os.MkdirAll(filepath.Dir(t.path), 0o700); err != nil {
+		return err
+	}
+	unlock, err := lockTokens(t.path + ".lock")
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	tokens := map[string]*TokenEntry{}
+	data, err := os.ReadFile(t.path)
+	switch {
+	case err == nil:
+		tokens, err = parseTokens(data)
+		if err != nil {
+			return fmt.Errorf("parse token store %s: %w", t.path, err)
+		}
+	case !os.IsNotExist(err):
+		return err
+	}
+	change(tokens)
+	if err := writeTokens(t.path, tokens); err != nil {
+		return err
+	}
+	t.tokens = tokens
+	return nil
+}
+
+// writeTokens writes the entries deterministically (servers sorted by URL) at
+// 0600, via a temp file in the same directory and a rename, so a reader never
+// sees a half-written file.
+func writeTokens(path string, tokens map[string]*TokenEntry) error {
+	servers := make([]string, 0, len(tokens))
+	for s := range tokens {
 		servers = append(servers, s)
 	}
 	sort.Strings(servers)
@@ -172,16 +203,29 @@ func (t *TokenStore) saveLocked() error {
 		Servers []*TokenEntry `json:"servers"`
 	}{Servers: make([]*TokenEntry, 0, len(servers))}
 	for _, s := range servers {
-		file.Servers = append(file.Servers, t.tokens[s])
+		file.Servers = append(file.Servers, tokens[s])
 	}
 	data, err := json.MarshalIndent(file, "", "  ")
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(t.path), 0o700); err != nil {
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".tokens-*.json")
+	if err != nil {
 		return err
 	}
-	return os.WriteFile(t.path, data, 0o600)
+	defer os.Remove(tmp.Name())
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), path)
 }
 
 // wellKnown is the RFC 8414 authorization-server metadata document. Only the

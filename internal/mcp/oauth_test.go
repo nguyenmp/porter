@@ -191,6 +191,54 @@ func TestTokenStoreSeesAnotherProcessWrite(t *testing.T) {
 	}
 }
 
+// TestTokenStoreWriteKeepsOtherProcessEntries proves a write merges with the
+// file rather than writing this process's copy. The host's next refresh used
+// to erase a token that `porter mcp login` had just written.
+func TestTokenStoreWriteKeepsOtherProcessEntries(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tokens.json")
+	host, err := OpenTokenStoreAt(path)
+	if err != nil {
+		t.Fatalf("OpenTokenStoreAt: %v", err)
+	}
+	if err := host.Put(&TokenEntry{Server: "https://a", AccessToken: "a1"}); err != nil {
+		t.Fatalf("Put a1: %v", err)
+	}
+	cli, err := OpenTokenStoreAt(path)
+	if err != nil {
+		t.Fatalf("second OpenTokenStoreAt: %v", err)
+	}
+	if err := cli.Put(&TokenEntry{Server: "https://b", AccessToken: "b1"}); err != nil {
+		t.Fatalf("Put b1: %v", err)
+	}
+	// host's copy predates b; its write must not drop b.
+	if err := host.Put(&TokenEntry{Server: "https://a", AccessToken: "a2"}); err != nil {
+		t.Fatalf("Put a2: %v", err)
+	}
+	fresh, err := OpenTokenStoreAt(path)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	if got := fresh.Get("https://a"); got == nil || got.AccessToken != "a2" {
+		t.Errorf("a after write = %+v, want access token a2", got)
+	}
+	if got := fresh.Get("https://b"); got == nil || got.AccessToken != "b1" {
+		t.Errorf("b after a's write = %+v, want access token b1", got)
+	}
+	if err := host.Delete("https://a"); err != nil {
+		t.Fatalf("Delete a: %v", err)
+	}
+	fresh, err = OpenTokenStoreAt(path)
+	if err != nil {
+		t.Fatalf("reopen after delete: %v", err)
+	}
+	if got := fresh.Get("https://a"); got != nil {
+		t.Errorf("a after delete = %+v, want gone", got)
+	}
+	if got := fresh.Get("https://b"); got == nil || got.AccessToken != "b1" {
+		t.Errorf("b after a's delete = %+v, want access token b1", got)
+	}
+}
+
 func TestLoginFlow(t *testing.T) {
 	as := &mockOAuth{authCode: "code-1", accessTok: "tok-1", refreshTok: "ref-1"}
 	asSrv := httptest.NewServer(as.handler())
