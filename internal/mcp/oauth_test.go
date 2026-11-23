@@ -520,6 +520,38 @@ func TestOAuthRefreshOnExpiry(t *testing.T) {
 	}
 }
 
+// TestRefreshExpiringTokens proves the hub refreshes a token that expires
+// within the margin without any call using the server, and leaves a token
+// outside the margin alone.
+func TestRefreshExpiringTokens(t *testing.T) {
+	as := &mockOAuth{accessTok: "tok-1", refreshTok: "ref-1"}
+	asSrv := httptest.NewServer(as.handler())
+	defer asSrv.Close()
+	mcpSrv := oauthMCPServer(t, "fresh-1")
+	defer mcpSrv.Close()
+
+	entry := &TokenEntry{
+		Server: mcpSrv.URL, ClientID: "mock-client",
+		AccessToken: "stale", RefreshToken: "ref-1",
+		TokenURL:  asSrv.URL + "/token",
+		ExpiresAt: time.Now().Add(10 * time.Minute).Unix(),
+	}
+	h, store := oauthHub(t, mcpSrv.URL, "", entry)
+
+	h.RefreshExpiringTokens(context.Background(), time.Hour)
+	if got := store.Get(mcpSrv.URL).AccessToken; got != "fresh-1" {
+		t.Fatalf("access token after refresh = %q, want fresh-1", got)
+	}
+	if n := as.refreshes; n != 1 {
+		t.Fatalf("refreshes = %d, want 1", n)
+	}
+	// The new token lives an hour, so a 30-minute margin leaves it alone.
+	h.RefreshExpiringTokens(context.Background(), 30*time.Minute)
+	if n := as.refreshes; n != 1 {
+		t.Errorf("refreshes after a pass outside the margin = %d, want 1", n)
+	}
+}
+
 // TestOAuth401Retry proves a rejected token triggers a refresh and one retry.
 func TestOAuth401Retry(t *testing.T) {
 	as := &mockOAuth{accessTok: "tok-1", refreshTok: "ref-1"}

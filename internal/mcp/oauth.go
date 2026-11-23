@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -889,4 +890,85 @@ func (s *Server) tokenEntry() *TokenEntry {
 		return nil
 	}
 	return s.tokens.Get(s.URL)
+}
+
+// TokenRefreshInterval is how often a running hub checks for tokens about to
+// expire, and TokenRefreshMargin is how far ahead of expiry it refreshes.
+// Some servers issue a refresh token that lives hours, not days (workspace-mcp
+// gives about six), and porter otherwise refreshes only when a call needs the
+// token, so an idle hub lets a healthy token lapse until the next login.
+// Checking every ten minutes against a one-hour margin costs a few requests a
+// day.
+const (
+	TokenRefreshInterval = 10 * time.Minute
+	TokenRefreshMargin   = time.Hour
+)
+
+// RunTokenRefresh calls RefreshExpiringTokens every interval until ctx is
+// cancelled. Whichever process owns an OAuth hub calls it (today the execution
+// host), so an idle process does not lose its tokens.
+func (h *Hub) RunTokenRefresh(ctx context.Context, interval, margin time.Duration) {
+	if interval <= 0 {
+		interval = TokenRefreshInterval
+	}
+	if margin <= 0 {
+		margin = TokenRefreshMargin
+	}
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			h.RefreshExpiringTokens(ctx, margin)
+		}
+	}
+}
+
+// RefreshExpiringTokens refreshes the access token of every OAuth server that
+// expires within margin, whether or not a call has used the server. A server
+// without stored tokens, or whose refresh fails, is left as it is: its next
+// call reports the failure the same way it does now.
+func (h *Hub) RefreshExpiringTokens(ctx context.Context, margin time.Duration) {
+	h.mu.RLock()
+	servers := make([]*Server, 0, len(h.servers))
+	for _, name := range h.order {
+		servers = append(servers, h.servers[name])
+	}
+	h.mu.RUnlock()
+	var wg sync.WaitGroup
+	for _, s := range servers {
+		if s.Auth.Type != "oauth" {
+			continue
+		}
+		wg.Add(1)
+		go func(s *Server) {
+			defer wg.Done()
+			if err := s.refreshIfExpiring(ctx, h.client, margin); err != nil {
+				log.Printf("mcp: refresh token for %s: %v", s.Name, err)
+			}
+		}(s)
+	}
+	wg.Wait()
+}
+
+// refreshIfExpiring refreshes the server's access token when it expires within
+// margin, and does nothing otherwise. It reads the token store, so a refresh
+// another process already did counts and is not repeated. A token with no known
+// expiry (ExpiresAt 0) is left to the call path.
+func (s *Server) refreshIfExpiring(ctx context.Context, client *http.Client, margin time.Duration) error {
+	if s.Auth.Type != "oauth" {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e := s.tokenEntry()
+	if e == nil || e.AccessToken == "" || e.RefreshToken == "" || e.ExpiresAt == 0 {
+		return nil
+	}
+	if time.Now().Unix() < e.ExpiresAt-int64(margin/time.Second) {
+		return nil
+	}
+	return s.refreshTokenLocked(ctx, client, e)
 }

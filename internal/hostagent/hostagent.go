@@ -120,6 +120,11 @@ func Run(ctx context.Context, cfg config.ClientConfig) error {
 			hub = mcp.New(nil)
 		}
 	}
+	// Keep OAuth tokens alive while the host runs. Some servers issue a refresh
+	// token that lives hours, not days, and a token is otherwise refreshed only
+	// when a call needs it, so a host that sits idle overnight would lose one
+	// that a restart could not recover.
+	go hub.RunTokenRefresh(ctx, mcp.TokenRefreshInterval, mcp.TokenRefreshMargin)
 	if n := len(hub.Names()); n > 0 {
 		log.Printf("execution host: serving %d MCP server(s): %s", n, strings.Join(hub.Names(), ", "))
 	}
