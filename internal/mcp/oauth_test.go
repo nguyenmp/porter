@@ -167,6 +167,30 @@ func TestTokenStoreRoundTrip(t *testing.T) {
 	}
 }
 
+// TestTokenStoreSeesAnotherProcessWrite proves a long-running store picks up a
+// token file that another process wrote, which is what makes `porter mcp
+// login` take effect in a running host without a restart.
+func TestTokenStoreSeesAnotherProcessWrite(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tokens.json")
+	host, err := OpenTokenStoreAt(path)
+	if err != nil {
+		t.Fatalf("OpenTokenStoreAt: %v", err)
+	}
+	if got := host.Get("https://s"); got != nil {
+		t.Fatalf("Get before any write = %+v", got)
+	}
+	cli, err := OpenTokenStoreAt(path)
+	if err != nil {
+		t.Fatalf("second OpenTokenStoreAt: %v", err)
+	}
+	if err := cli.Put(&TokenEntry{Server: "https://s", AccessToken: "new"}); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	if got := host.Get("https://s"); got == nil || got.AccessToken != "new" {
+		t.Fatalf("Get after another store's Put = %+v, want access token new", got)
+	}
+}
+
 func TestLoginFlow(t *testing.T) {
 	as := &mockOAuth{authCode: "code-1", accessTok: "tok-1", refreshTok: "ref-1"}
 	asSrv := httptest.NewServer(as.handler())

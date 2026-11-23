@@ -91,25 +91,54 @@ func OpenTokenStoreAt(path string) (*TokenStore, error) {
 		}
 		return nil, err
 	}
+	tokens, err := parseTokens(data)
+	if err != nil {
+		return nil, fmt.Errorf("parse token store %s: %w", path, err)
+	}
+	t.tokens = tokens
+	return t, nil
+}
+
+// parseTokens decodes the token file into a map keyed by server URL.
+func parseTokens(data []byte) (map[string]*TokenEntry, error) {
 	var file struct {
 		Servers []*TokenEntry `json:"servers"`
 	}
 	if err := json.Unmarshal(data, &file); err != nil {
-		return nil, fmt.Errorf("parse token store %s: %w", path, err)
+		return nil, err
 	}
+	tokens := make(map[string]*TokenEntry, len(file.Servers))
 	for _, e := range file.Servers {
 		if e != nil && e.Server != "" {
-			t.tokens[e.Server] = e
+			tokens[e.Server] = e
 		}
 	}
-	return t, nil
+	return tokens, nil
 }
 
-// Get returns the stored entry for a server, or nil.
+// Get returns the stored entry for a server, or nil. The file is re-read on
+// every call, so a token another process wrote (a `porter mcp login` in a
+// terminal, say) is used without restarting this one.
 func (t *TokenStore) Get(server string) *TokenEntry {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	t.reloadLocked()
 	return t.tokens[server]
+}
+
+// reloadLocked replaces the in-memory copy with the file's contents. A
+// missing, unreadable, or malformed file leaves the copy alone: a transient
+// error must not drop tokens this process already holds.
+func (t *TokenStore) reloadLocked() {
+	data, err := os.ReadFile(t.path)
+	if err != nil {
+		return
+	}
+	tokens, err := parseTokens(data)
+	if err != nil {
+		return
+	}
+	t.tokens = tokens
 }
 
 // Put stores (or replaces) the entry for its server, persisting the file.
