@@ -315,7 +315,7 @@ var systemDirective = `Always write in plain language, and keep it short. That m
 // already says. Like the timing note, it lives only on the outgoing copy of
 // history: the stored message, the database, and the UI keep exactly what the
 // user typed.
-const ReplyReminder = "End the turn when the work is done, or when only the user can answer your question. Then reply in plain language and keep it short. Short means short words, not a short turn: keep going until the task is done. Load the plain-language skill once. Reload it only if your copy is far back in the conversation, and use recall_tool_output for any part the load cut off. Apply every rule in it, pass after pass, to the reply, files, code comments, and PR text. Use its scratch file for anything long. Don't mention this unless the user asks."
+const ReplyReminder = "End the turn when the work is done, or when only the user can answer your question. Then reply in plain language and keep it short. Short means short words, not a short turn: keep going with loops until the task is done. Load the plain-language skill once. Reload it only if your copy is far back in the conversation, and use recall_tool_output for any part the load cut off. Apply every rule in it, pass after pass, to the reply, files, code comments, and PR text. Use its scratch file for anything long. Don't mention this unless the user asks."
 
 // Should reports whether an assistant reply is worth a humanize pass: long
 // enough (the thresholds above) and mostly prose rather than code.
